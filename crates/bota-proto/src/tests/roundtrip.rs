@@ -47,6 +47,13 @@ fn events_survive() {
 }
 
 #[test]
+fn replay_records_survive() {
+    for record in all_replay_records() {
+        assert_eq!(roundtrip(&record), record, "{record:?}");
+    }
+}
+
+#[test]
 fn world_view_survives() {
     let view = world_view(24);
     assert_eq!(roundtrip(&view), view);
@@ -103,8 +110,7 @@ fn every_reject_reason_survives() {
     let reasons = [
         RejectReason::NotYourSlot,
         RejectReason::HeroDead,
-        RejectReason::TargetNotVisible,
-        RejectReason::TargetGone,
+        RejectReason::UnknownTarget,
         RejectReason::WrongTargetKind,
         RejectReason::OnCooldown,
         RejectReason::NotEnoughMana,

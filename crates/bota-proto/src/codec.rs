@@ -83,15 +83,15 @@ pub fn decode_payload<T: DeserializeOwned>(payload: &[u8]) -> Result<T, CodecErr
 /// complete ones left.
 ///
 /// ```
-/// # use bota_proto::{encode_frame, FrameReader, PROTO_VERSION};
+/// # use bota_proto::{encode_frame, FrameReader};
 /// let mut wire = Vec::new();
-/// encode_frame(&PROTO_VERSION, &mut wire).unwrap();
+/// encode_frame(&7u16, &mut wire).unwrap();
 ///
 /// let mut reader = FrameReader::new();
 /// reader.push(&wire[..1]);
 /// assert_eq!(reader.next_message::<u16>().unwrap(), None);
 /// reader.push(&wire[1..]);
-/// assert_eq!(reader.next_message::<u16>().unwrap(), Some(PROTO_VERSION));
+/// assert_eq!(reader.next_message::<u16>().unwrap(), Some(7));
 /// ```
 #[derive(Clone, Debug, Default)]
 pub struct FrameReader {

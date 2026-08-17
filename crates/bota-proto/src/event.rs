@@ -88,11 +88,4 @@ pub enum EventKind {
         /// Which team lost it.
         team: Team,
     },
-    /// A participant sent a chat message.
-    Chat {
-        /// Who sent it.
-        slot: SlotId,
-        /// The message body.
-        text: String,
-    },
 }

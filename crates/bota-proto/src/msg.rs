@@ -71,11 +71,6 @@ pub struct MatchInfo {
     pub mode: TickMode,
     /// Every seat and its hero, sorted by [`SlotId`].
     pub picks: Vec<Pick>,
-    /// Fingerprint of the balance constants and of the order of operations
-    /// inside a tick.
-    ///
-    /// A replay is only meaningful next to the hash it was recorded under.
-    pub ruleset_hash: u64,
 }
 
 /// Why the server refused an order.
@@ -85,10 +80,9 @@ pub enum RejectReason {
     NotYourSlot,
     /// The hero is dead.
     HeroDead,
-    /// The target is not currently visible to this team.
-    TargetNotVisible,
-    /// The target no longer exists.
-    TargetGone,
+    /// The target does not exist, or is not currently visible to this team.
+    /// One answer covers both cases.
+    UnknownTarget,
     /// The ability or item does not accept this kind of target.
     WrongTargetKind,
     /// The ability or item is still on cooldown.
@@ -148,8 +142,6 @@ pub struct MatchStats {
 pub enum ClientMsg {
     /// First message on a connection, before anything else is accepted.
     Hello {
-        /// Wire format version. The server closes the connection on a mismatch.
-        proto: u16,
         /// Why this connection exists.
         role: Role,
         /// Display name for the lobby and the scoreboard.
@@ -181,15 +173,6 @@ pub enum ClientMsg {
         /// The tick being acknowledged.
         tick: u32,
     },
-    /// Say something to the other participants.
-    Chat(String),
-    /// Round trip probe for measuring latency.
-    Ping {
-        /// Echoed back unchanged.
-        nonce: u64,
-    },
-    /// Leave cleanly. The server may keep the seat open for a reconnect.
-    Leave,
 }
 
 /// Anything the server can say to a participant.
@@ -205,8 +188,6 @@ pub enum ServerMsg {
         tick_rate: u16,
         /// How the server advances ticks.
         mode: TickMode,
-        /// Fingerprint of the balance constants and tick order.
-        ruleset_hash: u64,
     },
     /// The current state of the lobby, resent whenever it changes.
     LobbyState {
@@ -256,16 +237,21 @@ pub enum ServerMsg {
         /// match and its hero keeps standing there.
         slot: Option<SlotId>,
     },
-    /// Reply to a [`ClientMsg::Ping`].
-    Pong {
-        /// The nonce that was sent.
-        nonce: u64,
-        /// Which tick the server was on when it replied.
-        server_tick: u32,
-    },
-    /// The server is closing this connection.
-    Kick {
-        /// Human readable explanation.
-        reason: String,
+}
+
+/// One frame of a replay file.
+///
+/// A replay file is a sequence of length-prefixed frames, framed exactly like
+/// the socket, each carrying one record. Read by the client in replay mode.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub enum ReplayRecord {
+    /// A message of the fogless spectator stream.
+    Msg(ServerMsg),
+    /// The orders the server accepted on one tick.
+    Orders {
+        /// Which tick they were applied on.
+        tick: u32,
+        /// At most one order per seat, sorted by [`SlotId`].
+        orders: Vec<(SlotId, Order)>,
     },
 }

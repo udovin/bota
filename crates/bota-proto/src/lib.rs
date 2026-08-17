@@ -12,7 +12,6 @@ mod ids;
 mod math;
 mod msg;
 mod order;
-mod version;
 mod view;
 
 #[cfg(test)]
@@ -24,5 +23,4 @@ pub use ids::*;
 pub use math::*;
 pub use msg::*;
 pub use order::*;
-pub use version::*;
 pub use view::*;

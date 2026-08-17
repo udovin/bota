@@ -121,7 +121,10 @@ fn a_garbage_payload_is_malformed() {
 
 #[test]
 fn a_truncated_payload_is_malformed_not_a_wait() {
-    let msg = ClientMsg::Chat("a fairly long message body".to_string());
+    let msg = ClientMsg::Hello {
+        role: Role::Player,
+        name: "a fairly long message body".to_string(),
+    };
     let frame = encode_frame_to_vec(&msg).unwrap();
     let payload_len = frame.len() - LEN_PREFIX;
 
@@ -138,8 +141,9 @@ fn a_truncated_payload_is_malformed_not_a_wait() {
 
 #[test]
 fn decoding_as_the_wrong_message_type_fails() {
-    let frame = encode_frame_to_vec(&ServerMsg::Kick {
-        reason: "nope".to_string(),
+    let frame = encode_frame_to_vec(&ServerMsg::ParticipantLeft {
+        player_id: PlayerId(3),
+        slot: Some(SlotId(0)),
     })
     .unwrap();
 

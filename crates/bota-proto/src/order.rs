@@ -34,7 +34,7 @@ pub enum OrderTarget {
 /// A single instruction from a participant to its own hero.
 ///
 /// A target the issuing team cannot currently see is rejected with
-/// [`RejectReason::TargetNotVisible`](crate::RejectReason::TargetNotVisible).
+/// [`RejectReason::UnknownTarget`](crate::RejectReason::UnknownTarget).
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Order {
     /// Cancel the current order and stand still.

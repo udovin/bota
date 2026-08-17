@@ -2,7 +2,6 @@
 name = "bota-proto"
 version.workspace = true
 edition.workspace = true
-description = "Shared vocabulary and wire format for the bota game protocol"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

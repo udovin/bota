@@ -157,7 +157,6 @@ pub fn match_info() -> MatchInfo {
                 hero: HeroId(0),
             },
         ],
-        ruleset_hash: 0x0123_4567_89ab_cdef,
     }
 }
 
@@ -279,10 +278,6 @@ pub fn all_events() -> Vec<EventKind> {
             unit: entity(200),
             team: Team::Dire,
         },
-        EventKind::Chat {
-            slot: SlotId(1),
-            text: "gg".to_string(),
-        },
     ]
 }
 
@@ -290,7 +285,6 @@ pub fn all_events() -> Vec<EventKind> {
 pub fn all_client_msgs() -> Vec<ClientMsg> {
     vec![
         ClientMsg::Hello {
-            proto: PROTO_VERSION,
             role: Role::Player,
             name: "player-one".to_string(),
         },
@@ -301,9 +295,6 @@ pub fn all_client_msgs() -> Vec<ClientMsg> {
             order: Order::AttackUnit { target: entity(7) },
         },
         ClientMsg::Ack { tick: 5400 },
-        ClientMsg::Chat("well played".to_string()),
-        ClientMsg::Ping { nonce: u64::MAX },
-        ClientMsg::Leave,
     ]
 }
 
@@ -315,7 +306,6 @@ pub fn all_server_msgs() -> Vec<ServerMsg> {
             slot: Some(SlotId(0)),
             tick_rate: 30,
             mode: TickMode::Realtime,
-            ruleset_hash: 0x0123_4567_89ab_cdef,
         },
         ServerMsg::LobbyState {
             slots: vec![lobby_slot()],
@@ -330,7 +320,7 @@ pub fn all_server_msgs() -> Vec<ServerMsg> {
         },
         ServerMsg::OrderRejected {
             seq: 12345,
-            reason: RejectReason::TargetNotVisible,
+            reason: RejectReason::UnknownTarget,
         },
         ServerMsg::MatchOver {
             winner: Team::Radiant,
@@ -340,12 +330,22 @@ pub fn all_server_msgs() -> Vec<ServerMsg> {
             player_id: PlayerId(3),
             slot: Some(SlotId(0)),
         },
-        ServerMsg::Pong {
-            nonce: 42,
-            server_tick: 5400,
-        },
-        ServerMsg::Kick {
-            reason: "protocol version mismatch".to_string(),
+    ]
+}
+
+/// Every [`ReplayRecord`] variant.
+pub fn all_replay_records() -> Vec<ReplayRecord> {
+    vec![
+        ReplayRecord::Msg(ServerMsg::Events {
+            tick: 5400,
+            events: all_events(),
+        }),
+        ReplayRecord::Orders {
+            tick: 5400,
+            orders: vec![
+                (SlotId(0), Order::Stop),
+                (SlotId(1), Order::AttackUnit { target: entity(7) }),
+            ],
         },
     ]
 }
@@ -359,9 +359,6 @@ pub fn client_msg_name(msg: &ClientMsg) -> &'static str {
         ClientMsg::SetReady(_) => "SetReady",
         ClientMsg::Order { .. } => "Order",
         ClientMsg::Ack { .. } => "Ack",
-        ClientMsg::Chat(_) => "Chat",
-        ClientMsg::Ping { .. } => "Ping",
-        ClientMsg::Leave => "Leave",
     }
 }
 
@@ -377,7 +374,5 @@ pub fn server_msg_name(msg: &ServerMsg) -> &'static str {
         ServerMsg::OrderRejected { .. } => "OrderRejected",
         ServerMsg::MatchOver { .. } => "MatchOver",
         ServerMsg::ParticipantLeft { .. } => "ParticipantLeft",
-        ServerMsg::Pong { .. } => "Pong",
-        ServerMsg::Kick { .. } => "Kick",
     }
 }

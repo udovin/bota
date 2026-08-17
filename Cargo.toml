@@ -6,5 +6,8 @@ members = ["crates/bota-proto", "crates/bota-server"]
 version = "0.1.0"
 edition = "2024"
 
+[workspace.dependencies]
+bota-proto = { path = "crates/bota-proto" }
+
 [workspace.lints.clippy]
 float_arithmetic = "deny"

@@ -1,0 +1,548 @@
+# bota — design
+
+A simplified Dota 2 in Rust for AI bots and humans. Fully deterministic simulation,
+server authority, minimal dependencies.
+
+Code conventions — `CLAUDE.md`.
+
+## Key decisions
+
+| Decision | Choice | Rationale |
+|---|---|---|
+| Client rendering | macroquad | one direct dependency, 2D + text out of the box, Linux/Win/macOS/WASM |
+| Tick mode | Realtime **and** Lockstep | humans play in realtime, bots are debugged/trained in reproducible lockstep |
+| v0.1 scope | 1v1 mid, 1 hero | a vertical slice of the whole stack on minimal content |
+| Transport | TCP + length-prefixed frames | no tokio: a thread per client + a simulation thread + mpsc |
+| Serialization | `serde` + `postcard` | derive removes ~250 lines of manual put/get; the format is compact (varint) and stable within 1.x |
+| Player networking | full snapshots with fog | measured: 1425 bytes per snapshot in 1v1, 41 KB/s at 30 Hz. Deltas will be needed by 5v5, not earlier |
+| Live spectating | the same snapshots, without fog | client-side simulation is impossible, and that is intentional |
+| Replay | fogless `ServerMsg` stream + all orders | plays back without a server: the client reads frames from a file instead of a socket; coupled to the wire format only, so it survives balance changes; the client still cannot simulate |
+| PRNG | `rand_chacha::ChaCha8Rng` in `bota-server` | value-stable by the crate's contract; `rand::StdRng` is **forbidden** — it is allowed to change its algorithm in a minor release |
+
+## Structure
+
+```
+bota/
+├── Cargo.toml               # workspace, resolver = "3"
+├── crates/
+│   ├── bota-proto/          # shared vocabulary + codec. deps: serde, postcard
+│   ├── bota-server/         # simulation + networking + lobby. deps: proto
+│   ├── bota-client/         # macroquad: rendering, input, spectating. deps: proto
+│   └── bota-bot/            # bot SDK + example. deps: proto
+├── assets/
+├── replays/
+└── tests/
+```
+
+```
+        bota-proto
+        ↑    ↑    ↑
+   server  client  bot
+```
+
+The workspace currently contains `bota-proto` and `bota-server`; `bota-client` and
+`bota-bot` join at stage 8.
+
+The bot and the client are symmetric consumers of `proto`: a human and a bot see
+literally the same `WorldView` type. No asymmetry that could be exploited.
+
+### Membership criterion for bota-proto
+
+The single rule deciding where code lives:
+
+> If it does not cross the wire and is not needed to read the wire — it is not in `proto`.
+
+| In `bota-proto` | In `bota-server` |
+|---|---|
+| `Fixed`, `Angle`, `Vec2`, `EntityId`, `SlotId`, `PlayerId`, `Team`, `HeroId`, `AbilityId`, `ItemId`, `AbilitySlot`, `ItemSlot`, `MapId`, `UnitKind` | `World`, `step`, units, combat, movement, vision, economy |
+| `Order`, `EventKind`, `WorldView`, codec and framing | `Command`, `Event.visible_to`, `MatchRng`, `Stream`, `Chance`, `Ratio` |
+| `MatchInfo`, `ClientMsg`, `ServerMsg`, `ReplayRecord` | `MatchConfig`, balance constants, hero stats, ability implementations |
+
+A previous version of the design had a `bota-core` crate holding the simulation. It was
+dropped: "core" had no checkable membership criterion, and `seed`, `tick_rate` and
+`PlayerId` steadily leaked into it — exactly what does not belong there. A side benefit
+of moving the simulation into the server: the client is **structurally** incapable of
+simulating, `World` lives in a crate it does not depend on.
+
+### Module layout
+
+```
+proto/src/
+├── math.rs       Fixed (Q16.16 in i32), Angle (brads), Vec2
+├── ids.rs        EntityId, SlotId, PlayerId, Team, HeroId, AbilityId, ItemId,
+│                 AbilitySlot, ItemSlot, MapId, UnitKind
+├── order.rs      Order, OrderTarget
+├── event.rs      EventKind, DamageKind
+├── view.rs       WorldView, UnitView, PlayerView, ProjectileView, AbilityView,
+│                 ItemView, StatusFlags
+├── msg.rs        ClientMsg, ServerMsg, MatchInfo, lobby, RejectReason, MatchStats,
+│                 ReplayRecord
+└── codec.rs      encode_frame, decode_payload, FrameReader, CodecError
+```
+
+```
+server/src/
+├── sim/          KNOWS NOTHING ABOUT SOCKETS
+│   ├── arena.rs      Arena<T>: generational slot store behind EntityId
+│   ├── rng.rs        MatchRng over ChaCha8Rng: streams by purpose, Ratio/Chance
+│   ├── config.rs     MatchConfig
+│   ├── world.rs      World: entity arenas, tick: u32
+│   ├── units.rs      Unit, Hero, Creep, Tower, Ancient, Ward
+│   ├── heroes/       hero stats and ability implementations
+│   ├── abilities.rs  ability engine (cast point / channel / cooldown / mana)
+│   ├── combat.rs     damage, armor, magic resist, crit, attack point/backswing, projectiles
+│   ├── movement.rs   movement step, collision separation, passability grid
+│   ├── vision.rs     fog of war, representation not pinned down
+│   ├── econ.rs       gold, experience, levels, items
+│   ├── rules.rs      balance constants
+│   ├── project.rs    World → WorldView
+│   └── step.rs       step(&mut World, &[Command]) -> Vec<Event>
+├── net/          connections, framing, reader threads
+├── lobby.rs      slots, picks, readiness, Roster (PlayerId ↔ SlotId)
+├── loop.rs       tick loop, both modes
+└── replay.rs     writes the replay: fogless frames plus per-tick orders
+```
+
+No ECS: `World` is a set of `Arena<T>` stores — generational slot arenas iterated in
+slot order. Removing an entity bumps the slot's generation, so a stale `EntityId` never
+resolves to whoever took the slot over.
+
+## Contracts
+
+### Simulation (server/src/sim)
+
+```rust
+pub struct MatchConfig {
+    pub match_id: u64, pub master_key: [u8; 32], pub picks: Vec<Pick>,
+    pub map: MapId, pub tick_rate: u16, pub mode: TickMode, pub ack_timeout_ticks: u32,
+}
+
+impl MatchConfig {
+    pub fn rng(&self) -> MatchRng;        // see below
+    pub fn info(&self) -> MatchInfo;      // projection onto the wire, the type has no seed field
+}
+```
+
+The match seed is derived with `rand_chacha` itself, no separate hash function needed:
+`master_key` is a 32-byte seed, `match_id` is a stream number. A match is reproducible
+from the pair `(master_key, match_id)`, which is convenient for debugging. Implemented
+in `sim/rng.rs`:
+
+```rust
+// MatchRng::new(master_key, match_id)
+let mut root = ChaCha8Rng::from_seed(*master_key);
+root.set_stream(match_id);
+let mut seed = [0u8; 32];
+root.fill_bytes(&mut seed);
+
+// one stream per purpose — crits, runes, spawn scatter
+rng.global(Purpose::Rune)
+rng.for_unit(Purpose::Crit, unit, source)
+```
+
+Streams are separated by purpose (`Purpose`: `Crit`, `Block`, `Evasion`, `Rune`,
+`NeutralSpawn`) so that a new draw in one place does not shift generation anywhere
+else. A per-unit stream is keyed by `(purpose, slot index, source)` packed into the
+64-bit ChaCha8 stream id — purpose in the top bits, slot index in the middle, a source
+byte to separate several sources of chance on the same unit (a crit passive and a
+bash). The key uses the slot index rather than the full `EntityId`: the stream id
+space stays bounded, and a unit reusing a freed slot continues that slot's hidden
+sequence, which no observer can distinguish from a fresh one.
+
+```rust
+impl World {
+    pub fn new(cfg: &MatchConfig, rng: MatchRng) -> World;  // rng is initial state, not config
+    pub fn step(&mut self, cmds: &[Command]) -> Vec<Event>;
+    pub fn view(&self, team: Team) -> WorldView;        // with fog
+    pub fn view_full(&self) -> WorldView;               // spectator
+    pub fn can_see(&self, team: Team, target: EntityId) -> bool;   // order validation
+    pub fn winner(&self) -> Option<Team>;
+    pub fn stats(&self) -> MatchStats;
+    pub fn hash(&self) -> u64;                          // determinism check
+}
+```
+
+`seed` is not configuration but initial hidden state, so it is passed as a separate
+argument, already a constructed `MatchRng`; the policy of deriving it belongs entirely
+to the server.
+
+The simulation knows about `SlotId` but not `PlayerId`: network identity must not leak
+into the rules of the game. The mapping table lives in `Roster` in the lobby.
+
+`Event.visible_to` is computed by the simulation — who sees what is a gameplay
+question. The network layer only routes; what goes on the wire is `EventKind` without
+the mask.
+
+### Exchange
+
+```
+server:  World --view(team)--> WorldView --encode_frame--> socket
+client:  socket --FrameReader--> WorldView --> rendering
+```
+
+The client's `WorldView` is born from the wire, not from a constructor. The client has
+no `World` and cannot have one, so there is no second `new` contract either. The
+asymmetry of the sides is expressed by two types — `World` versus `WorldView` — not by
+two implementations of one trait.
+
+There is intentionally no trait over `World`: no polymorphic call sites exist, and
+determinism demands exactly one implementation.
+
+## Determinism rules
+
+1. No `f32/f64` in `bota-proto` and `bota-server`: `#![deny(clippy::float_arithmetic)]`.
+   Float operations themselves are deterministic per IEEE-754, but `sin/cos/sqrt` from
+   libm are not — they differ across glibc / musl / macOS / wasm. The client renders in
+   float freely. The bot is also free to think in float: what gets recorded are its
+   orders, not its reasoning.
+2. Scalars are `Fixed` = Q16.16 in `i32`, multiplication through an intermediate `i64`.
+   Range ±32768 units, precision 1/65536.
+3. Angles are "brads": `u16`, 65536 = a full turn. sin/cos from a hardcoded table of
+   1024 entries.
+4. Distances are compared as squares, no sqrt.
+5. Entity iteration is always by ascending `EntityId.idx`. `HashMap` is forbidden in
+   the simulation.
+6. Commands are sorted by `(tick, slot, seq)` before applying.
+7. Time exists only as ticks (`u32`), 30 ticks/sec. No `std::time` in `sim`.
+8. Damage, gold, experience are integers.
+9. External primitives are taken only if value-stable. `rand::StdRng` and
+   `std::collections::hash_map::DefaultHasher` explicitly give no such guarantee
+   between releases: the former is replaced by `rand_chacha::ChaCha8Rng`, and for
+   `world.hash()` we write FNV-1a (ten lines, xor and multiply in a loop).
+10. `world.hash()` covers the whole state, hidden included: entity arenas, stream
+    positions, every `Chance` mask. A divergence in randomness consumption must move
+    the hash on the tick it happens, not when its first visible outcome differs.
+
+### Chances (crits, block, evasion)
+
+The requirements conflict: an exact 30% rate **and** no way to predict the next crit.
+A simple accumulator (`acc += 0.30`, firing at `acc >= 1`) gives the first but not the
+second: it is periodic, an observer sees crits in damage events and reconstructs the
+whole phase after one or two observations.
+
+The solution is exact counting per block with a hidden order inside the block. A chance
+is declared as a fraction:
+
+```rust
+pub struct Ratio { num: u8, den: u8 }     // rules.rs: CRIT_CHANCE = Ratio::new(3, 10)
+
+pub struct Chance {
+    stream: Stream,   // this source's own hidden ChaCha8 stream
+    mask: u64,        // which attempts of the current block hit
+    idx: u8,          // position within the block
+    current: Ratio,   // the ratio the current block was built with
+}
+
+impl Chance {
+    pub fn roll(&mut self, ratio: Ratio) -> bool {
+        if self.idx >= self.current.den() {
+            self.current = ratio;                     // new ratio takes effect here
+            self.reshuffle();                         // partial Fisher-Yates off the stream
+        }
+        let hit = self.mask & (1 << self.idx) != 0;
+        self.idx += 1;
+        hit
+    }
+}
+```
+
+- The rate is exactly `num/den` per block. Balance constants are declared as fractions,
+  `den <= 64` (the width of the mask).
+- The order comes from a ChaCha8 stream: observing past crits says nothing about the
+  next block. A replay reproduces bit-for-bit — the stream is deterministic, just
+  unreachable from outside.
+- The initial block offset of every source is drawn from the same stream, so block
+  boundaries are not known to an observer.
+
+Residual leak: within a block the opponent can count (saw 3 crits in 6 hits — knows the
+next 4 are clean). Unavoidable for any scheme with an exact rate. The alternative is
+giving up the exact rate for a plain hidden PRNG, which contradicts the determinism
+requirement.
+
+When the chance changes (a crit buff), the current block finishes under the old
+fraction; the new one takes effect from the next block.
+
+The PRNG is also used where an exact rate is meaningless (rune drop, spawn scatter).
+Streams are separated by purpose via `ChaCha8Rng::set_stream`, so that a new call in
+one place does not shift the rest of the generation.
+
+### Hidden state
+
+The hard rule: the client receives nothing from which a future outcome can be derived.
+Players send intents, the server alone computes, and every tick it broadcasts the
+outcome.
+
+Secrecy is a property of the channel, not of the data, so the simulation does not think
+about it. The protection is structural: the types of `bota-proto` are incapable of
+expressing hidden state. `MatchInfo` versus `MatchConfig`, `WorldView` versus `World`.
+A leak becomes a compile error, not a review oversight.
+
+The seed is **never** published — not even in replays: a replay is a recorded stream
+plus the orders, nothing in it is re-simulated, so nothing in it needs the seed.
+
+Server-only, never reaches `WorldView`:
+
+- `MatchRng` and the positions of all streams;
+- each unit's `Chance { mask, idx }`;
+- outcomes of scheduled events that have not happened yet (which rune will spawn).
+
+Checked by a test: `view_full()` is run through serialization and compared against a
+whitelist of fields, so a new field in `Unit` cannot leak silently.
+
+It also follows that client-side prediction covers only movement and animation. Damage
+numbers and the fact of a crit arrive as events from the server.
+
+Two further channels are closed by rule, because a reward-driven bot will find and
+exploit any leak a human reviewer shrugs off:
+
+- A reject reason does not depend on hidden state. A dead target and a fogged one get
+  the same `UnknownTarget`, so probing the fog with stale handles reveals nothing.
+- A unit never acts on what its team cannot see. A standing `AttackUnit` order whose
+  target left the team's vision degrades to attack-moving toward the last seen
+  position; the unit does not track the hidden target, so its own path reveals
+  nothing either.
+
+## Game model v0.1
+
+- Map 8192×8192, symmetric along the diagonal, one mid lane. Passability is a 128×128
+  bit grid.
+- Teams Radiant / Dire, 1v1 (the architecture is sized for 5v5).
+- Buildings: 1 tower per side + the Ancient. A fountain that heals and burns.
+- Creeps: 3 melee + 1 ranged every 900 ticks (30 s), a siege creep every 5th wave.
+- Hero: Sylla (ranged carry). 3 abilities + an ultimate, levels 1–10, 6 item slots.
+- Economy: passive gold 1/sec, last hits, kill bounty with streaks.
+- Fog of war is mandatory: without it a bot learns to play with full information.
+- Victory: the Ancient falls.
+
+Hero roadmap (added as data + ability implementations; the engine does not change):
+
+| Hero | Type | Abilities |
+|---|---|---|
+| Sylla | ranged carry | crit passive / attack speed buff / bouncing projectile / ult: multishot |
+| Krag | melee tank | stun dash / cleave passive / armor aura / ult: shield + damage return |
+| Vex | ranged nuker | nuke / slowing AoE / mana passive / ult: AoE burst |
+| Grum | melee initiator | hook / DoT aura / slow / ult: AoE stun |
+| Lira | support | heal / shield / wards / ult: team heal aura |
+
+## Protocol
+
+Frame: `u32 len (LE) | postcard payload`. The message kind is the postcard enum tag
+inside the payload. TCP, `TCP_NODELAY`.
+
+Until the first release there is no versioning and no compatibility: the wire carries
+no version field and no ruleset fingerprint, and nothing — protocol, replay files,
+hash baselines — promises to survive across pre-release commits. Mismatched builds
+are not detected; they are simply not run against each other. Version and fingerprint
+fields appear with the first release, when there is something to be compatible with.
+
+### Client → server
+
+```rust
+enum ClientMsg {
+    Hello { role: Role, name: String },    // Role: Player|Bot|Spectator
+    PickHero { hero: HeroId },
+    SetReady(bool),
+    Order { seq: u32, order: Order },
+    Ack { tick: u32 },                     // lockstep: "I am ready for the tick"
+}
+
+enum Order {
+    Stop, HoldPosition,
+    Move { pos: Vec2 }, AttackMove { pos: Vec2 }, AttackUnit { target: EntityId },
+    CastAbility { slot: AbilitySlot, target: OrderTarget },
+    UseItem { slot: ItemSlot, target: OrderTarget },
+    LevelUpAbility { slot: AbilitySlot },
+    BuyItem { item: ItemId }, SellItem { slot: ItemSlot },
+}
+
+enum OrderTarget { None, Point { pos: Vec2 }, Unit { target: EntityId } }
+```
+
+Casting is one variant, `CastAbility`, with the target kind expressed by
+`OrderTarget`; whether the variant fits the ability is validated by the server
+(`RejectReason::WrongTargetKind`).
+
+There is no chat in the protocol. The server exists for local bot testing; a message
+type that plays no part in the match is not worth its slot in the wire format.
+
+### Server → client
+
+```rust
+enum ServerMsg {
+    Welcome { player_id: PlayerId, slot: Option<SlotId>, tick_rate: u16, mode: TickMode },
+    LobbyState { slots: Vec<LobbySlot> },
+    MatchStart { info: MatchInfo },        // the type has no seed field
+    Snapshot { view: WorldView },          // whole; the tick is inside the view itself
+    Events { tick: u32, events: Vec<EventKind> },
+    OrderRejected { seq: u32, reason: RejectReason },
+    MatchOver { winner: Team, stats: MatchStats },
+    ParticipantLeft { player_id: PlayerId, slot: Option<SlotId> },
+}
+```
+
+A Player/Bot receives a whole `WorldView` on every tick, filtered through its team's
+fog. A live Spectator receives the same stream unfiltered. There are no deltas: a
+client can start rendering from any snapshot, so joining mid-match requires nothing
+special. Measured: 1425 bytes per snapshot in 1v1 (25 entities), 41 KB/s at 30 Hz.
+`diff`/`apply` will arrive together with 5v5, where it would reach about 150 KB/s.
+
+Within a tick the order on the wire is fixed: `Snapshot(t)`, then `Events(t)`. An
+event may name an entity the snapshot no longer carries — it died on that very tick;
+the previous snapshot is what to render such an event against.
+
+A slow consumer cannot stall the simulation: the tick thread never blocks on a
+socket. Snapshots are coalescible by construction — each one is whole, so a
+connection that fell behind is sent only the latest. Events cannot be skipped, so a
+connection whose event queue overflows is closed instead of buffered without bound.
+
+The vision mask does **not** go over the wire. It is derived from the positions and
+`vision_radius` of the units already present in the view: your own units are always
+visible, so the computation needs nothing beyond what the client already received.
+Saves two kilobytes per snapshot.
+
+There is no shared implementation in `proto`, and that is not an omission. The sides
+need different things: the server — an exact answer to "does this team see this
+point", the client — a soft gradient for rendering with fade-out and a memory of the
+explored, the bot often nothing at all. One shared function would either spoil the
+picture or coarsen the filter.
+
+The server-side representation of vision is intentionally not pinned down in the
+design. A grid is not the only option and probably not the best one: as soon as trees
+and vision cones appear, region geometry becomes both more precise and cheaper. This
+is decided when `sim/vision.rs` is implemented. For the same reason each side keeps
+its own mask type and grid constants — they do not cross the wire and are not needed
+to read it.
+
+This rests on two conditions, and breaking either puts the mask back on the wire:
+
+1. Vision is a pure radius. As soon as terrain starts occluding it, the computation
+   becomes a game rule, and rules do not belong in `proto`.
+2. Every source of vision is represented by an entity in the view. Wards already
+   satisfy this; an ability granting vision without a unit must be modeled as an
+   invisible source entity.
+
+Divergence of the computations is safe: the server alone decides which units enter the
+view, so a bug in the client's mask paints the ground a wrong shade and reveals
+nothing.
+
+A replay is a self-contained recording that plays back without a server. A `.brp`
+file is a sequence of length-prefixed frames, framed exactly like the socket, each
+holding a `ReplayRecord`:
+
+```rust
+enum ReplayRecord {
+    Msg(ServerMsg),                                       // the fogless spectator stream
+    Orders { tick: u32, orders: Vec<(SlotId, Order)> },   // what every seat asked for
+}
+```
+
+The server records `MatchStart`, then per tick the fogless `Snapshot`, the `Events`
+and the orders it accepted. `ReplayRecord` lives in `bota-proto`: a replay file is a
+wire, and the client must read it. Replay mode in the client is reading frames from
+the file instead of the socket; the order records can be skipped, or rendered — which
+is what makes a replay more useful than a live spectator seat when debugging a bot.
+Nothing in the file is re-simulated: a replay is coupled to the wire format only,
+survives balance changes, and grants the client nothing beyond what a live spectator
+already gets. Snapshots are whole, so rendering can resume from any point of the
+file. In 1v1 the stream runs at about 2.5 MB per minute; archiving is an external
+compressor's job, not the protocol's.
+
+### Tick modes
+
+- `Realtime` — 30 Hz on the wall clock, a late command applies on the next tick.
+- `Lockstep` — the server waits for `Ack(tick)` from every agent. A bot thinks as long
+  as it needs, the match reproduces bit-for-bit. `--ack-timeout` guards against a hung
+  bot (empty order).
+
+## Server algorithm
+
+```
+main:
+  parse args (--mode realtime|lockstep, --tick-rate, --players, --replay out.brp)
+  listen TCP; the accept thread queues connections
+  state = Lobby
+
+Lobby:
+  Hello → Welcome + LobbyState
+  PickHero / SetReady; when every slot is ready:
+    world = World::new(&cfg, cfg.rng());
+    broadcast MatchStart { info: cfg.info() }; state = Playing
+
+Playing (simulation thread):
+  loop {
+    // 1. gather input
+    realtime: drain incoming until deadline = tick_start + 1/rate
+    lockstep: wait for Ack(t) from every agent (or ack-timeout)
+
+    // 2. validation and PlayerId → SlotId translation through Roster
+    cmds = incoming
+        .filter(the slot belongs to this player_id)
+        .filter(world.can_see(team, target))     // anti-cheat: no clicking into fog
+        .sort_by(slot, seq)
+        .dedup_by(slot)                          // 1 order per slot per tick, the last one wins
+    // 3. append the accepted orders to the replay
+    // 4. events = world.step(&cmds)
+    // 5. broadcast: teams get their view; spectators get the fogless view;
+    //    events go out by Event.visible_to. The fogless frames also go into the replay
+    // 6. if world.winner().is_some() { broadcast MatchOver; flush; break }
+    realtime: sleep until the next tick with drift compensation
+  }
+```
+
+### Order inside `world.step()`
+
+Fixed. Changing it invalidates every recorded replay and every hash baseline.
+
+```
+1.  tick += 1
+2.  apply orders → unit.order
+3.  scheduled events: creep wave, neutral and hero respawns, runes
+4.  status tick: buff durations, DoT, cooldowns, hp/mana regen
+5.  aggro: towers and creeps pick targets by deterministic priorities
+6.  order execution: movement, collision separation
+7.  attacks: attack point → projectile launch / instant hit; projectile movement
+8.  abilities: cast point → effect, channeling
+9.  damage queue resolution: armor, magic resist, crit, block → apply
+10. deaths: gold/xp by radius, respawn timers, denies
+11. vision recompute, per-team fog masks
+12. victory condition check
+13. return the accumulated Events
+```
+
+## bota-bot
+
+```rust
+pub trait Bot {
+    fn on_match_start(&mut self, info: &MatchInfo, me: SlotId) -> HeroId;
+    fn on_tick(&mut self, view: &WorldView, me: EntityId) -> Option<Order>;
+    fn on_events(&mut self, _events: &[EventKind]) {}
+}
+
+pub fn run<B: Bot>(bot: B, addr: &str) -> io::Result<()>;
+```
+
+The first bot is a state machine: `Farm` (last hit when hp < threshold) → `Retreat`
+(hp < 35% or under a tower) → `Fight` (enemy in range and we are stronger) → `Push`.
+The server's `--headless` mode runs a match of N bots without a client — the basis for
+self-play.
+
+A forward model (rolling out hypothetical futures for planning) is not supported and
+not needed now: the bot has no hidden state, so it could not roll forward with the
+real engine anyway. If it becomes needed, the simulation moves out of `bota-server`
+into its own crate, which is cheap since `sim/` is already a separate subtree with no
+dependencies on the network layer.
+
+## Stages
+
+| # | Deliverable | Contents |
+|---|---|---|
+| 0 | ✅ workspace builds | Cargo.toml, `bota-proto`, workspace lint policy |
+| 1 | ✅ `bota-proto` types | `Fixed`, `Angle`, `Vec2`, identifiers, `Order`, `EventKind`, `WorldView`, messages |
+| 2 | ✅ codec | serde derive, postcard, framing, `FrameReader` |
+| 3 | ✅ `bota-proto` tests | round-trip of every message, torn stream into `FrameReader`, snapshot size budget |
+| 4 | ✅ `Fixed` arithmetic | Q16.16 ops through an intermediate `i64`, `Vec2`, `distance_squared` in raw Q32.32, tests in debug and release |
+| 5 | 🔄 `World` ticks | arenas, units, movement, orders, creeps, towers, Ancient; `rng.rs` with streams and Ratio/Chance. Done so far: `arena.rs` (generational entity store), `rng.rs` (`MatchRng`, purpose streams, `Ratio`/`Chance`) |
+| 6 | combat | attacks, projectiles, damage, deaths, gold/xp, victory |
+| 7 | server networking | lobby, both tick modes, snapshot broadcast, replay recording |
+| 8 | `bota-bot` and `bota-client` | SDK + FSM bot, `--headless` bot-vs-bot match; macroquad: map, units, HP bars, input, replays |
+| 9 | hero Sylla complete and determinism test | abilities, levels, items, shop; 20 000-tick hash baseline, run on musl/wasm32; mirror test: a diagonally mirrored match ends in the mirrored outcome |
