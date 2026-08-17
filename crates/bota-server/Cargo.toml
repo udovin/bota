@@ -6,6 +6,7 @@ edition.workspace = true
 [dependencies]
 bota-proto = { workspace = true }
 rand_chacha = "0.10"
+clap = { version = "4", features = ["derive"] }
 
 [lints]
 workspace = true

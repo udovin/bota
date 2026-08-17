@@ -86,21 +86,22 @@ server/src/
 │   ├── arena.rs      Arena<T>: generational slot store behind EntityId
 │   ├── rng.rs        MatchRng over ChaCha8Rng: streams by purpose, Ratio/Chance
 │   ├── config.rs     MatchConfig
-│   ├── world.rs      World: entity arenas, tick: u32
-│   ├── units.rs      Unit, Hero, Creep, Tower, Ancient, Ward
-│   ├── heroes/       hero stats and ability implementations
-│   ├── abilities.rs  ability engine (cast point / channel / cooldown / mana)
-│   ├── combat.rs     damage, armor, magic resist, crit, attack point/backswing, projectiles
-│   ├── movement.rs   movement step, collision separation, passability grid
-│   ├── vision.rs     fog of war, representation not pinned down
-│   ├── econ.rs       gold, experience, levels, items
+│   ├── world.rs      World: entity arenas, tick, spawn, FNV-1a hash
+│   ├── units.rs      Unit, UnitOrder, SeatState; hero/creep/building constructors
+│   ├── heroes/       hero stats and ability implementations (stage 9)
+│   ├── abilities.rs  ability engine: cast point / channel / cooldown / mana (stage 9)
+│   ├── combat.rs     windups, projectiles, the damage queue, armor and resist
+│   ├── movement.rs   isqrt, stepping, collision separation, passability grid
+│   ├── vision.rs     fog of war: pure radius queries, nothing cached
+│   ├── econ.rs       gold, experience, levels, deaths, respawns
 │   ├── rules.rs      balance constants
 │   ├── project.rs    World → WorldView
-│   └── step.rs       step(&mut World, &[Command]) -> Vec<Event>
-├── net/          connections, framing, reader threads
-├── lobby.rs      slots, picks, readiness, Roster (PlayerId ↔ SlotId)
-├── loop.rs       tick loop, both modes
-└── replay.rs     writes the replay: fogless frames plus per-tick orders
+│   └── step.rs       Command, Event, validate, step: the tick order
+├── net/          accept loop, per-connection reader/writer threads, Outbox
+├── lobby.rs      Roster (PlayerId ↔ SlotId), seats, picks, readiness
+├── game_loop.rs  lobby phase, then the tick loop in both modes
+├── replay.rs     writes the replay: fogless frames plus per-tick orders
+└── main.rs       clap arguments
 ```
 
 No ECS: `World` is a set of `Arena<T>` stores — generational slot arenas iterated in
@@ -541,8 +542,8 @@ dependencies on the network layer.
 | 2 | ✅ codec | serde derive, postcard, framing, `FrameReader` |
 | 3 | ✅ `bota-proto` tests | round-trip of every message, torn stream into `FrameReader`, snapshot size budget |
 | 4 | ✅ `Fixed` arithmetic | Q16.16 ops through an intermediate `i64`, `Vec2`, `distance_squared` in raw Q32.32, tests in debug and release |
-| 5 | 🔄 `World` ticks | arenas, units, movement, orders, creeps, towers, Ancient; `rng.rs` with streams and Ratio/Chance. Done so far: `arena.rs` (generational entity store), `rng.rs` (`MatchRng`, purpose streams, `Ratio`/`Chance`) |
-| 6 | combat | attacks, projectiles, damage, deaths, gold/xp, victory |
-| 7 | server networking | lobby, both tick modes, snapshot broadcast, replay recording |
+| 5 | ✅ `World` ticks | arenas, units, movement, orders, creeps, towers, Ancient; `rng.rs` with streams and Ratio/Chance |
+| 6 | ✅ combat | attacks, projectiles, damage, deaths, gold/xp, victory |
+| 7 | ✅ server networking | lobby, both tick modes, snapshot broadcast, replay recording |
 | 8 | `bota-bot` and `bota-client` | SDK + FSM bot, `--headless` bot-vs-bot match; macroquad: map, units, HP bars, input, replays |
 | 9 | hero Sylla complete and determinism test | abilities, levels, items, shop; 20 000-tick hash baseline, run on musl/wasm32; mirror test: a diagonally mirrored match ends in the mirrored outcome |

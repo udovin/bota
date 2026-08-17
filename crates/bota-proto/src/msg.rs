@@ -93,6 +93,10 @@ pub enum RejectReason {
     NotEnoughGold,
     /// The referenced ability or inventory slot is empty.
     EmptySlot,
+    /// The target is a friendly unit that is not low enough to deny.
+    CannotDeny,
+    /// No item with this id is sold.
+    UnknownItem,
     /// No skill point is available, or the ability is already at its cap.
     CannotLevelUp,
     /// Buying and selling require standing in the fountain area.

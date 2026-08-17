@@ -116,6 +116,8 @@ fn every_reject_reason_survives() {
         RejectReason::NotEnoughMana,
         RejectReason::NotEnoughGold,
         RejectReason::EmptySlot,
+        RejectReason::CannotDeny,
+        RejectReason::UnknownItem,
         RejectReason::CannotLevelUp,
         RejectReason::NotAtShop,
         RejectReason::InventoryFull,

@@ -6,4 +6,8 @@
 //!
 //! See `DESIGN.md` for the architecture this follows from.
 
+pub mod game_loop;
+pub mod lobby;
+pub mod net;
+pub mod replay;
 pub mod sim;
