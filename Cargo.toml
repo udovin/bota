@@ -1,0 +1,10 @@
+[workspace]
+resolver = "3"
+members = ["crates/bota-proto", "crates/bota-server"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+
+[workspace.lints.clippy]
+float_arithmetic = "deny"

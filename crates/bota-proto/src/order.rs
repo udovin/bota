@@ -1,0 +1,90 @@
+//! What a participant asks its hero to do.
+//!
+//! An order is an intent. The server validates it, may reject it, and decides
+//! what actually happens; the result shows up in the next snapshot and in
+//! [`EventKind`](crate::EventKind).
+//!
+//! At most one order per seat survives per tick, and the last one submitted
+//! wins. There is no shift-queue in v0.1.
+
+use crate::{AbilitySlot, EntityId, ItemId, ItemSlot, Vec2};
+use serde::{Deserialize, Serialize};
+
+/// What an ability or item is being pointed at.
+///
+/// Which variant is legal depends on the ability being cast. A mismatch is
+/// rejected with
+/// [`RejectReason::WrongTargetKind`](crate::RejectReason::WrongTargetKind).
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum OrderTarget {
+    /// Cast on self or with no target at all.
+    None,
+    /// Cast at a position on the ground.
+    Point {
+        /// Where on the map the cast is aimed.
+        pos: Vec2,
+    },
+    /// Cast at a specific unit.
+    Unit {
+        /// The unit being aimed at. Must be visible to the caster's team.
+        target: EntityId,
+    },
+}
+
+/// A single instruction from a participant to its own hero.
+///
+/// A target the issuing team cannot currently see is rejected with
+/// [`RejectReason::TargetNotVisible`](crate::RejectReason::TargetNotVisible).
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Order {
+    /// Cancel the current order and stand still.
+    Stop,
+    /// Stand still, but attack anything that comes into range.
+    HoldPosition,
+    /// Walk to a position, ignoring enemies on the way.
+    Move {
+        /// Destination.
+        pos: Vec2,
+    },
+    /// Walk to a position, stopping to attack enemies encountered on the way.
+    AttackMove {
+        /// Destination.
+        pos: Vec2,
+    },
+    /// Attack a specific unit, following it if it moves out of range.
+    ///
+    /// Also how a friendly unit is denied, when it is low enough to allow it.
+    AttackUnit {
+        /// The unit to attack.
+        target: EntityId,
+    },
+    /// Cast one of the hero's abilities.
+    CastAbility {
+        /// Which of the four ability slots to cast.
+        slot: AbilitySlot,
+        /// What the ability is aimed at.
+        target: OrderTarget,
+    },
+    /// Activate an item in the inventory.
+    UseItem {
+        /// Which inventory slot holds the item.
+        slot: ItemSlot,
+        /// What the item is aimed at.
+        target: OrderTarget,
+    },
+    /// Spend a skill point on an ability.
+    LevelUpAbility {
+        /// Which of the four ability slots to level.
+        slot: AbilitySlot,
+    },
+    /// Buy an item. Legal only while standing in the fountain area.
+    BuyItem {
+        /// What to buy.
+        item: ItemId,
+    },
+    /// Sell an item from the inventory for part of its cost.
+    SellItem {
+        /// Which inventory slot to empty.
+        slot: ItemSlot,
+    },
+}

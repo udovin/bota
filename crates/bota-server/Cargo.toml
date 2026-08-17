@@ -1,0 +1,12 @@
+[package]
+name = "bota-server"
+version.workspace = true
+edition.workspace = true
+description = "Simulation and network server for bota"
+
+[dependencies]
+bota-proto = { path = "../bota-proto" }
+rand_chacha = "0.10"
+
+[lints]
+workspace = true
