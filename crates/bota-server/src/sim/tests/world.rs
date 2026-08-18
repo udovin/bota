@@ -11,8 +11,16 @@ fn a_fresh_world_has_the_map_furniture_and_the_heroes() {
     let count = |kind: UnitKind| w.units.iter().filter(|(_, u)| u.kind == kind).count();
     assert_eq!(count(UnitKind::Fountain), 2);
     assert_eq!(count(UnitKind::Ancient), 2);
-    assert_eq!(count(UnitKind::Tower), 2);
+    assert_eq!(count(UnitKind::Tower), 22, "eleven towers per side");
     assert_eq!(count(UnitKind::Hero), 2);
+    for team in [Team::Radiant, Team::Dire] {
+        let tier4 = w
+            .units
+            .iter()
+            .filter(|(_, u)| u.kind == UnitKind::Tower && u.team == team && u.tier == 4)
+            .count();
+        assert_eq!(tier4, 2, "a pair of tier fours guards each Ancient");
+    }
     assert_eq!(w.tick, 0);
     assert_eq!(w.winner(), None);
     assert_eq!(w.seats.len(), 2);
@@ -62,7 +70,7 @@ fn a_spectator_sees_everything() {
     let w = world();
     let full = w.view_full();
     assert_eq!(full.viewer, None);
-    assert_eq!(full.units.len(), 8);
+    assert_eq!(full.units.len(), 29, "26 structures, 2 heroes and Roshan");
     assert!(full.players.iter().all(|p| p.gold.is_some()));
 }
 
@@ -89,7 +97,7 @@ fn own_units_are_always_in_view() {
         .iter()
         .filter(|u| u.team == Team::Radiant)
         .count();
-    assert_eq!(own, 4, "fountain, ancient, tower, hero");
+    assert_eq!(own, 14, "fountain, ancient, eleven towers, hero");
 }
 
 #[test]
@@ -106,7 +114,7 @@ fn an_enemy_near_a_friendly_unit_is_visible() {
     let mut w = world();
     let dire_hero = hero_id(&w, 1);
     let radiant_hero = hero_id(&w, 0);
-    let near = Vec2::from_ints(700, 700);
+    let near = Vec2::from_ints(2200, 2700);
     w.units.get_mut(dire_hero).unwrap().pos = near;
     assert!(w.can_see(Team::Radiant, dire_hero));
     assert!(w.can_see(Team::Radiant, radiant_hero), "own unit");

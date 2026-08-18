@@ -59,6 +59,21 @@ fn checkpoints_differ_from_each_other() {
 #[test]
 fn a_one_sided_push_wins_the_match() {
     let mut w = world();
+    // Thin the Dire defences so the whole march fits inside a test run: the
+    // full tower set holds an unaided push for far too many ticks.
+    let dire_structures: Vec<_> = w
+        .units
+        .iter()
+        .filter(|(_, u)| {
+            u.team == bota_proto::Team::Dire
+                && u.is_structure()
+                && u.kind != bota_proto::UnitKind::Fountain
+        })
+        .map(|(id, _)| id)
+        .collect();
+    for id in dire_structures {
+        w.units.get_mut(id).unwrap().hp = 200;
+    }
     // Dire never acts; Radiant pushes with its creeps forever.
     let mut winner = None;
     for t in 0..60_000u32 {

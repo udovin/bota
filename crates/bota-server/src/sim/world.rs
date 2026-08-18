@@ -3,7 +3,8 @@
 use bota_proto::{EntityId, HeroId, MatchStats, SlotId, SlotStats, Team, UnitKind, Vec2};
 
 use crate::sim::{
-    Arena, MatchConfig, MatchRng, PassGrid, Projectile, SeatState, Unit, UnitOrder, Windup, rules,
+    Arena, Chance, Ground, MatchConfig, MatchRng, PassGrid, Projectile, SeatState, Stream, Unit,
+    UnitOrder, Windup, rules,
 };
 
 /// Everything the simulation knows.
@@ -22,6 +23,16 @@ pub struct World {
     pub seats: Vec<SeatState>,
     /// The walkability grid.
     pub grid: PassGrid,
+    /// The terrain: elevation tiers, water, ground walkability.
+    pub ground: Ground,
+    /// Cells that block sight lines: trees and the fog blocker walls.
+    pub tree_cover: PassGrid,
+    /// The shared uphill miss chance of ranged attacks.
+    pub uphill: Chance,
+    /// Ticks until Roshan returns to his pit. Zero while he lives.
+    pub roshan_respawn: u32,
+    /// The hidden draws behind Roshan's respawn waits.
+    pub roshan_rng: Stream,
     /// The hidden randomness of the match.
     pub rng: MatchRng,
     /// Which side has won. The world stops stepping once set.
@@ -34,19 +45,58 @@ impl World {
     /// `rng` is initial hidden state, not configuration; deriving it is the
     /// server's business.
     pub fn new(cfg: &MatchConfig, rng: MatchRng) -> World {
+        let uphill = Chance::new(rng.global(crate::sim::Purpose::Evasion), rules::UPHILL_MISS);
+        let roshan_rng = rng.global(crate::sim::Purpose::Roshan);
         let mut world = World {
             tick: 0,
             units: Arena::new(),
             projectiles: Arena::new(),
             seats: Vec::new(),
             grid: PassGrid::open(),
+            ground: Ground::decode(),
+            tree_cover: crate::sim::build_sight_block(),
+            uphill,
+            roshan_respawn: 0,
+            roshan_rng,
             rng,
             winner: None,
         };
+        // The terrain closes its own ground: cliffs, pits, the map edge.
+        for cy in 0..rules::GRID_CELLS {
+            for cx in 0..rules::GRID_CELLS {
+                if !world.ground.cell_walkable(cx, cy) {
+                    world.grid.close_cell(cx, cy);
+                }
+            }
+        }
         for team in [Team::Radiant, Team::Dire] {
             world.units.insert(Unit::fountain(team, fountain_pos(team)));
             world.units.insert(Unit::ancient(team, ancient_pos(team)));
-            world.units.insert(Unit::tower(team, tower_pos(team)));
+        }
+        for &(lane, tier, pos) in rules::RADIANT_TOWERS.iter() {
+            world
+                .units
+                .insert(Unit::tower(Team::Radiant, pos, lane, tier));
+        }
+        for &(lane, tier, pos) in rules::DIRE_TOWERS.iter() {
+            world.units.insert(Unit::tower(Team::Dire, pos, lane, tier));
+        }
+        let footprints: Vec<(Vec2, bota_proto::Fixed)> = world
+            .units
+            .iter()
+            .filter(|(_, u)| u.is_structure())
+            .map(|(_, u)| (u.pos, u.radius))
+            .collect();
+        for (pos, radius) in footprints {
+            world
+                .grid
+                .block_circle(pos, crate::sim::structure_clearance(radius));
+        }
+        for pos in tree_positions() {
+            world.grid.block_circle(
+                pos,
+                crate::sim::structure_clearance(rules::units(rules::TREE_RADIUS)),
+            );
         }
         for pick in &cfg.picks {
             world.seats.push(SeatState {
@@ -67,11 +117,14 @@ impl World {
                 structure_damage: 0,
                 respawn_left: 0,
                 kill_streak: 0,
+                items: vec![None; crate::sim::TOTAL_SLOTS],
+                abilities: crate::sim::hero_kit(),
             });
         }
         for i in 0..world.seats.len() {
             world.spawn_hero(i);
         }
+        world.units.insert(Unit::roshan());
         world
     }
 
@@ -86,6 +139,13 @@ impl World {
             hero_spawn_pos(seat.team),
         );
         let id = self.units.insert(unit);
+        // The crit stream is keyed by the arena slot, so a respawned hero
+        // continues its sequence rather than restarting it.
+        let chance = crate::sim::Chance::new(
+            self.rng.for_unit(crate::sim::Purpose::Crit, id, 0),
+            crate::sim::Ratio::NEVER,
+        );
+        self.units.get_mut(id).expect("just inserted").crit = Some(chance);
         self.seats[seat_index].unit = Some(id);
         self.seats[seat_index].respawn_left = 0;
     }
@@ -93,6 +153,11 @@ impl World {
     /// The seat behind a slot, if the slot is in the match.
     pub fn seat(&self, slot: SlotId) -> Option<&SeatState> {
         self.seats.iter().find(|s| s.slot == slot)
+    }
+
+    /// The mutable seat behind a slot, if the slot is in the match.
+    pub fn seat_mut(&mut self, slot: SlotId) -> Option<&mut SeatState> {
+        self.seats.iter_mut().find(|s| s.slot == slot)
     }
 
     /// Which side has won, if any.
@@ -130,6 +195,7 @@ impl World {
     pub fn hash(&self) -> u64 {
         let mut f = Fnv::new();
         f.u32(self.tick);
+        f.u32(self.roshan_respawn);
         match self.winner {
             None => f.u8(0),
             Some(team) => {
@@ -179,16 +245,36 @@ impl World {
             f.i32(seat.structure_damage);
             f.u32(seat.respawn_left);
             f.i32(seat.kill_streak);
+            for stack in &seat.items {
+                match stack {
+                    None => f.u8(0),
+                    Some(s) => {
+                        f.u8(1);
+                        f.u32(u32::from(s.id.0));
+                        f.u32(u32::from(s.charges));
+                        f.u32(s.cooldown);
+                        f.u32(s.bought_tick);
+                        f.u8(u8::from(s.touched));
+                    }
+                }
+            }
+            for a in &seat.abilities {
+                f.u32(u32::from(a.id.0));
+                f.u32(u32::from(a.level));
+                f.u32(a.cooldown);
+            }
         }
         f.finish()
     }
 }
 
-/// The fountain position of a team.
+/// The fountain position of a team. The jungle's is the map center: it has
+/// no fountain, and nothing ever stands there.
 pub fn fountain_pos(team: Team) -> Vec2 {
     match team {
         Team::Radiant => rules::RADIANT_FOUNTAIN_POS,
         Team::Dire => rules::DIRE_FOUNTAIN_POS,
+        Team::Neutral => Vec2::from_ints(rules::MAP_SIZE / 2, rules::MAP_SIZE / 2),
     }
 }
 
@@ -197,6 +283,7 @@ pub fn hero_spawn_pos(team: Team) -> Vec2 {
     let offset = match team {
         Team::Radiant => Vec2::from_ints(rules::HERO_SPAWN_OFFSET, rules::HERO_SPAWN_OFFSET),
         Team::Dire => Vec2::from_ints(-rules::HERO_SPAWN_OFFSET, -rules::HERO_SPAWN_OFFSET),
+        Team::Neutral => Vec2::ZERO,
     };
     fountain_pos(team) + offset
 }
@@ -206,30 +293,121 @@ pub fn ancient_pos(team: Team) -> Vec2 {
     match team {
         Team::Radiant => rules::RADIANT_ANCIENT_POS,
         Team::Dire => rules::DIRE_ANCIENT_POS,
+        Team::Neutral => Vec2::from_ints(rules::MAP_SIZE / 2, rules::MAP_SIZE / 2),
     }
 }
 
-/// The mid tower position of a team.
-pub fn tower_pos(team: Team) -> Vec2 {
+/// The mirror of a position through the map center.
+pub fn mirror(pos: Vec2) -> Vec2 {
+    Vec2::from_ints(rules::MAP_SIZE, rules::MAP_SIZE) - pos
+}
+
+/// Every tree on the map: the real Dota forest, with this map's own lane
+/// corridors and bases kept clear so the straightened lanes stay walkable.
+pub fn tree_positions() -> Vec<Vec2> {
+    let lane_clear = {
+        let r = i64::from(rules::units(rules::TREE_LANE_CLEAR).raw);
+        r * r
+    };
+    let base_clear = rules::units(rules::TREE_BASE_CLEAR);
+    crate::sim::DOTA_TREES
+        .iter()
+        .map(|&(x, y)| Vec2::from_ints(i32::from(x), i32::from(y)))
+        .filter(|&pos| {
+            for lane in [rules::LANE_MID, rules::LANE_TOP, rules::LANE_BOT] {
+                if lane_offset_squared(lane, pos) < lane_clear {
+                    return false;
+                }
+            }
+            !pos.within(rules::RADIANT_FOUNTAIN_POS, base_clear)
+                && !pos.within(rules::DIRE_FOUNTAIN_POS, base_clear)
+        })
+        .collect()
+}
+
+/// The lane the diagonal mirror turns a lane into: the sides swap.
+pub fn mirrored_lane(lane: u8) -> u8 {
+    match lane {
+        rules::LANE_TOP => rules::LANE_BOT,
+        rules::LANE_BOT => rules::LANE_TOP,
+        other => other,
+    }
+}
+
+/// The physical centerline of a lane, Radiant base first.
+///
+/// The line runs through every tower of the lane, so a wave walks from tower
+/// to tower and cannot wander past one out of its own acquisition range.
+pub fn lane_polyline(lane: u8) -> Vec<Vec2> {
+    let tower_of = |table: &[(u8, u8, Vec2); 11], tier: u8| {
+        table
+            .iter()
+            .find(|&&(tl, tt, _)| tl == lane && tt == tier)
+            .map(|&(_, _, pos)| pos)
+    };
+    let mut line = vec![rules::RADIANT_ANCIENT_POS];
+    for tier in [3u8, 2, 1] {
+        if let Some(pos) = tower_of(&rules::RADIANT_TOWERS, tier) {
+            line.push(pos);
+        }
+    }
+    match lane {
+        rules::LANE_TOP => line.push(rules::TOP_CORNER),
+        rules::LANE_BOT => line.push(rules::BOT_CORNER),
+        _ => {}
+    }
+    for tier in [1u8, 2, 3] {
+        if let Some(pos) = tower_of(&rules::DIRE_TOWERS, tier) {
+            line.push(pos);
+        }
+    }
+    line.push(rules::DIRE_ANCIENT_POS);
+    line
+}
+
+/// The waypoints a team's creeps push through on a lane, enemy Ancient last.
+pub fn lane_route(team: Team, lane: u8) -> Vec<Vec2> {
+    let mut line = lane_polyline(lane);
+    if team == Team::Dire {
+        line.reverse();
+    }
+    line.remove(0);
+    line
+}
+
+/// Squared distance from a lane's centerline.
+pub fn lane_offset_squared(lane: u8, pos: Vec2) -> i64 {
+    let line = lane_polyline(lane);
+    line.windows(2)
+        .map(|s| crate::sim::segment_distance_squared(pos, s[0], s[1]))
+        .min()
+        .expect("a lane has at least one segment")
+}
+
+/// The nearest point of a lane's centerline.
+pub fn lane_return_point(lane: u8, pos: Vec2) -> Vec2 {
+    let line = lane_polyline(lane);
+    line.windows(2)
+        .map(|s| crate::sim::segment_nearest(pos, s[0], s[1]))
+        .min_by_key(|p| pos.distance_squared(*p))
+        .expect("a lane has at least one segment")
+}
+
+/// The creep spawn position of a team on a lane. The jungle runs no lanes.
+pub fn creep_spawn_pos(team: Team, lane: u8) -> Vec2 {
     match team {
-        Team::Radiant => rules::RADIANT_TOWER_POS,
-        Team::Dire => rules::DIRE_TOWER_POS,
+        Team::Radiant => rules::RADIANT_CREEP_SPAWNS[usize::from(lane)],
+        Team::Dire => rules::DIRE_CREEP_SPAWNS[usize::from(lane)],
+        Team::Neutral => Vec2::from_ints(rules::MAP_SIZE / 2, rules::MAP_SIZE / 2),
     }
 }
 
-/// The creep spawn position of a team.
-pub fn creep_spawn_pos(team: Team) -> Vec2 {
-    match team {
-        Team::Radiant => rules::RADIANT_CREEP_SPAWN,
-        Team::Dire => rules::DIRE_CREEP_SPAWN,
-    }
-}
-
-/// The side a team's creeps push towards.
+/// The side a team's creeps push towards. The jungle pushes nowhere.
 pub fn enemy_of(team: Team) -> Team {
     match team {
         Team::Radiant => Team::Dire,
         Team::Dire => Team::Radiant,
+        Team::Neutral => Team::Neutral,
     }
 }
 
@@ -283,6 +461,7 @@ fn team_code(team: Team) -> u8 {
     match team {
         Team::Radiant => 0,
         Team::Dire => 1,
+        Team::Neutral => 2,
     }
 }
 
@@ -339,6 +518,35 @@ fn hash_unit(f: &mut Fnv, unit: &Unit) {
         }
     }
     f.u32(unit.attack_cooldown);
+    f.u32(unit.attack_backswing);
+    f.u32(unit.recovering);
+    f.u8(u8::from(unit.moving));
+    f.u32(unit.stuck_ticks);
+    f.u32(unit.frenzy_ticks);
+    f.i32(unit.frenzy_pct);
+    f.u32(unit.salve_ticks);
+    f.u32(unit.clarity_ticks);
+    f.i32(unit.item_bonus.move_speed);
+    f.i32(unit.item_bonus.damage);
+    f.i32(unit.item_bonus.armor);
+    f.i32(unit.item_bonus.hp);
+    f.i32(unit.item_bonus.mana);
+    hash_vec2(f, unit.path_goal);
+    f.u32(unit.path.len() as u32);
+    for w in &unit.path {
+        hash_vec2(f, *w);
+    }
+    f.u32(unit.provoked_ticks);
+    f.u32(unit.aggro_cooldown);
+    match unit.shunned {
+        None => f.u8(0),
+        Some(id) => {
+            f.u8(1);
+            hash_entity(f, id);
+        }
+    }
+    f.u8(u8::from(unit.returning));
+    hash_vec2(f, unit.camp);
     match unit.owner {
         None => f.u8(0),
         Some(SlotId(s)) => {
@@ -354,6 +562,9 @@ fn hash_unit(f: &mut Fnv, unit: &Unit) {
         }
     }
     f.u8(unit.level);
+    f.u8(unit.lane);
+    f.u8(unit.lane_step);
+    f.u8(unit.tier);
     f.i32(unit.bounty);
     f.i32(unit.xp_reward);
 }
@@ -389,5 +600,6 @@ fn kind_code(kind: UnitKind) -> u8 {
         UnitKind::Ancient => 6,
         UnitKind::Fountain => 7,
         UnitKind::Ward => 8,
+        UnitKind::Roshan => 9,
     }
 }

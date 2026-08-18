@@ -60,7 +60,13 @@ pub fn hero_unit() -> UnitView {
         owner: Some(SlotId(0)),
         level: 6,
         abilities: (0..4).map(ability_view).collect(),
-        items: (0..3).map(item_view).collect(),
+        items: (0..9)
+            .map(|i| if i < 3 { Some(item_view(i)) } else { None })
+            .collect(),
+        effects: vec![EffectView {
+            id: EffectId(0),
+            ticks_left: 120,
+        }],
     }
 }
 
@@ -92,6 +98,7 @@ pub fn creep_unit(idx: u32) -> UnitView {
         level: 0,
         abilities: Vec::new(),
         items: Vec::new(),
+        effects: Vec::new(),
     }
 }
 
@@ -117,6 +124,11 @@ pub fn player_view(slot: u8) -> PlayerView {
         level: 6,
         xp: 2400,
         gold: Some(1200),
+        stash: Some(
+            (0..6)
+                .map(|i| if i == 0 { Some(item_view(9)) } else { None })
+                .collect(),
+        ),
         kills: 3,
         deaths: 1,
         assists: 0,
@@ -144,6 +156,20 @@ pub fn match_info() -> MatchInfo {
         match_id: 0xdead_beef,
         map: MapId(1),
         tick_rate: 30,
+        pregame_ticks: 900,
+        trees: vec![
+            Vec2 {
+                x: fixed(5000),
+                y: fixed(4000),
+            },
+            Vec2 {
+                x: fixed(11384),
+                y: fixed(12384),
+            },
+        ],
+        terrain_cells: 4,
+        terrain_rle: vec![(12, 0x81), (4, 0xc0)],
+        opaque_cells: vec![(1, 1), (2, 1)],
         mode: TickMode::Lockstep,
         picks: vec![
             Pick {

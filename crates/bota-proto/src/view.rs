@@ -4,7 +4,9 @@
 //! war. It is the only shape of game state that leaves the server, and the same
 //! type is delivered to humans and to bots.
 
-use crate::{AbilityId, Angle, EntityId, Fixed, HeroId, ItemId, SlotId, Team, UnitKind, Vec2};
+use crate::{
+    AbilityId, Angle, EffectId, EntityId, Fixed, HeroId, ItemId, SlotId, Team, UnitKind, Vec2,
+};
 use serde::{Deserialize, Serialize};
 
 /// Conditions currently affecting a unit.
@@ -53,6 +55,15 @@ pub struct AbilityView {
     pub cooldown_left: u32,
     /// Mana the next cast would cost at the current level.
     pub mana_cost: i32,
+}
+
+/// A timed effect currently on a visible unit.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct EffectView {
+    /// Which effect it is.
+    pub id: EffectId,
+    /// Ticks until it wears off.
+    pub ticks_left: u32,
 }
 
 /// One inventory slot of a visible hero.
@@ -121,8 +132,11 @@ pub struct UnitView {
     pub level: u8,
     /// Ability slots. Empty for anything that is not a hero.
     pub abilities: Vec<AbilityView>,
-    /// Inventory slots. Empty for anything that is not a hero.
-    pub items: Vec<ItemView>,
+    /// The six inventory and three backpack slots, in slot order. Empty for
+    /// anything that is not a hero.
+    pub items: Vec<Option<ItemView>>,
+    /// Timed effects currently on the unit.
+    pub effects: Vec<EffectView>,
 }
 
 /// A projectile in flight that the viewing team can see.
@@ -144,7 +158,7 @@ pub struct ProjectileView {
 ///
 /// Present for every seat in the match, including enemies. Fields that are
 /// hidden from the viewing team are absent individually.
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct PlayerView {
     /// Which seat this describes.
     pub slot: SlotId,
@@ -160,6 +174,9 @@ pub struct PlayerView {
     pub xp: i32,
     /// Unspent gold. Absent for the opposing team.
     pub gold: Option<i32>,
+    /// The six stash slots at the home shop, in slot order. Absent for the
+    /// opposing team.
+    pub stash: Option<Vec<Option<ItemView>>>,
     /// Kills scored.
     pub kills: u16,
     /// Times died.

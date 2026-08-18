@@ -286,7 +286,8 @@ impl Server {
                 let frame = match seat_team {
                     Some(Team::Radiant) => radiant_frame.clone(),
                     Some(Team::Dire) => dire_frame.clone(),
-                    None => full_frame.clone(),
+                    // Seats never sit on the jungle's side.
+                    Some(Team::Neutral) | None => full_frame.clone(),
                 };
                 conn.send_snapshot(frame);
                 let visible: Vec<bota_proto::EventKind> = events

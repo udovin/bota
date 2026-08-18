@@ -11,7 +11,7 @@ Code conventions — `CLAUDE.md`.
 |---|---|---|
 | Client rendering | macroquad | one direct dependency, 2D + text out of the box, Linux/Win/macOS/WASM |
 | Tick mode | Realtime **and** Lockstep | humans play in realtime, bots are debugged/trained in reproducible lockstep |
-| v0.1 scope | 1v1 mid, 1 hero | a vertical slice of the whole stack on minimal content |
+| v0.1 scope | 1v1, three lanes, 1 hero | a vertical slice of the whole stack on minimal content |
 | Transport | TCP + length-prefixed frames | no tokio: a thread per client + a simulation thread + mpsc |
 | Serialization | `serde` + `postcard` | derive removes ~250 lines of manual put/get; the format is compact (varint) and stable within 1.x |
 | Player networking | full snapshots with fog | measured: 1425 bytes per snapshot in 1v1, 41 KB/s at 30 Hz. Deltas will be needed by 5v5, not earlier |
@@ -40,8 +40,8 @@ bota/
    server  client  bot
 ```
 
-The workspace currently contains `bota-proto` and `bota-server`; `bota-client` and
-`bota-bot` join at stage 8.
+The workspace currently contains `bota-proto`, `bota-server` and `bota-client`;
+`bota-bot` joins at stage 8.
 
 The bot and the client are symmetric consumers of `proto`: a human and a bot see
 literally the same `WorldView` type. No asymmetry that could be exploited.
@@ -91,7 +91,8 @@ server/src/
 │   ├── heroes/       hero stats and ability implementations (stage 9)
 │   ├── abilities.rs  ability engine: cast point / channel / cooldown / mana (stage 9)
 │   ├── combat.rs     windups, projectiles, the damage queue, armor and resist
-│   ├── movement.rs   isqrt, stepping, collision separation, passability grid
+│   ├── movement.rs   isqrt, stepping, blocking, turning, passability grid
+│   ├── path.rs       A* over the grid, grid line of sight
 │   ├── vision.rs     fog of war: pure radius queries, nothing cached
 │   ├── econ.rs       gold, experience, levels, deaths, respawns
 │   ├── rules.rs      balance constants
@@ -197,7 +198,9 @@ determinism demands exactly one implementation.
    float freely. The bot is also free to think in float: what gets recorded are its
    orders, not its reasoning.
 2. Scalars are `Fixed` = Q16.16 in `i32`, multiplication through an intermediate `i64`.
-   Range ±32768 units, precision 1/65536.
+   Range ±32768 units, precision 1/65536. The 16384-unit map keeps squared distances
+   inside an `i64`; segment projections that would square a dot product go through
+   `i128`.
 3. Angles are "brads": `u16`, 65536 = a full turn. sin/cos from a hardcoded table of
    1024 entries.
 4. Distances are compared as squares, no sqrt.
@@ -305,15 +308,174 @@ exploit any leak a human reviewer shrugs off:
 
 ## Game model v0.1
 
-- Map 8192×8192, symmetric along the diagonal, one mid lane. Passability is a 128×128
-  bit grid.
+- Map 16384×16384 — Dota's scale, so speeds, ranges and vision keep their Dota
+  absolute values. Symmetric along the diagonal. Three lanes: mid along the diagonal,
+  top up the west edge and along the north edge, bottom its mirror; the diagonal
+  mirror that swaps the sides also swaps top and bottom. Passability is a 256×256 bit
+  grid.
 - Teams Radiant / Dire, 1v1 (the architecture is sized for 5v5).
-- Buildings: 1 tower per side + the Ancient. A fountain that heals and burns.
-- Creeps: 3 melee + 1 ranged every 900 ticks (30 s), a siege creep every 5th wave.
-- Hero: Sylla (ranged carry). 3 abilities + an ultimate, levels 1–10, 6 item slots.
+- Buildings: three towers per lane per side — tier one by the river, tier three by
+  the base — plus a pair of tier fours by each Ancient. The Ancient is invulnerable
+  until its last tier four falls. A fountain that heals and burns. Barracks and the
+  rest come later.
+- A lane's centerline runs through every tower of the lane, so a wave marches from
+  tower to tower and can never wander past one outside its own acquisition range.
+- The match opens with a 30 s pregame: the game clock counts up from -0:30 and the
+  first wave walks out at 0:00, when passive gold starts. `MatchInfo` carries the
+  pregame length so the clock renders without knowing the ruleset.
+- The landmarks are the current Dota 2 map, extracted from the installed game's
+  `dota.vpk` with ValveResourceFormat and shifted by half the map so Dota's
+  origin sits at the center: `MAP_SIZE` 18432, both fountains, both Ancients,
+  all 22 towers, all 6 lane spawners and all 28 neutral camps at their real
+  positions. The two sides are not mirrors; each carries its own table, and
+  `mirror()` survives only as a utility.
+- The terrain is the same map's own ground, baked in `sim/terrain.rs`: the
+  gridnav's static walkability (cliffs, pits, the map edge close their cells
+  before trees and buildings do) and, from the physics mesh, an elevation tier
+  per cell in 128-unit steps — river bed 0, lane ground 1, highground 2, bases
+  3 — plus the water mask of the river and pools. A ranged attack landing on
+  ground higher than it was fired from misses one time in four, from a
+  match-global exact-ratio chance stream; abilities never miss. The terrain
+  rides in `MatchStart` run-length encoded, and the client bakes it into the
+  ground texture for the world and the minimap.
+- Vision is a radius with sight lines walked over the terrain cells. A cell is
+  opaque to a viewer when its ground is higher than the viewer's, when a tree
+  stands on it, or when one of the map's own fog blocker walls crosses it —
+  eleven named walls of `ent_fow_blocker_node` points, imported like
+  everything else, which is what seals the Roshan pit even through its
+  entrance. A named group holds several separate walls: only nodes within
+  the blocker span of each other bridge a segment, so the far-apart jumps
+  inside a group — the two pits share one name — are breaks, not walls. Buildings, water and units block nothing. The viewer's own cell
+  and the target's cell never block, so standing beside a tree does not blind
+  and a treeline's edge stays visible; a target on ground above the viewer is
+  always dark. The opaque cells ride in `MatchStart`, and the client walks
+  the same sight lines from its own units to shade unseen ground in the world
+  view and on the minimap; spectators see everything. The map's
+  `ent_fow_revealer` points wait for outposts.
+- Trees are static blockers imported one for one from the same map: all 2475
+  positions — the main entity lump plus the base layers of both sides — live as
+  a table in `sim/trees.rs`. Two carves adapt them to this map: trees within
+  the lane-clear band of a straightened lane centerline are dropped — the real
+  forest follows the real curved roads, and these lanes walk tower-to-tower
+  chords — and a small pad around each fountain stays clear. The
+  full tree list rides in `MatchStart`, so the client draws without knowing the
+  layout rules. Trees are closed into the passability grid at world build; they
+  do not block vision yet and are indestructible until an axe exists.
+- Roshan stands on the map's own spawner point in the south-east river pit —
+  both pit enclosures came in with the terrain, and the north-west one stays
+  empty until day and night exist. He behaves like a neutral: answers whoever
+  comes close or hits him, leashes back to the pit and heals in full. His
+  death pays the killing seat the bounty, every seat of the killing team the
+  team gold, and experience around the pit; the grave lasts eight minutes plus
+  up to three more on a hidden draw, then he returns. No Aegis until items can
+  resurrect.
+- The jungle belongs to `Team::Neutral`, hostile to both sides; seats never sit
+  there. The twenty-eight camps stand where Dota's own neutral spawners stand. They
+  fill with neutral creeps one minute past the horn and every minute after, but only while the camp box is empty — any body inside
+  blocks the spawn, which is camp blocking. A neutral answers whoever comes into
+  its aggro range or hits it, and dragged beyond its leash it goes home deaf and
+  arrives at full health. Its bounty goes to the killer, its experience to the
+  killer's team nearby.
+- Creeps: 3 melee + 1 ranged every 900 ticks (30 s) on every lane, a siege creep
+  every 5th wave. A wave marches its own lane's waypoints and is leashed to its own
+  lane.
+- Hero: Sylla (ranged carry). 3 abilities + an ultimate, levels 1–10.
 - Economy: passive gold 1/sec, last hits, kill bounty with streaks.
+- Items follow the Dota slot topology, engine in `sim/items.rs`. A seat owns
+  fifteen slots: six inventory, where items work; three backpack, where they ride
+  inert — and a stack leaving the backpack for the inventory is muted for six
+  seconds before it works again; six stash. A purchase spends gold anywhere, but lands in the
+  inventory only inside the home shop area (the fountain circle) — bought
+  remotely it waits in the stash, and the stash itself opens only at that shop.
+  Selling also happens at the shop: half price back, the full price for an
+  untouched item within ten seconds of purchase. `MoveItem` swaps any two slots.
+  Carried bonuses are flat and apply only from unmuted inventory slots; growing a
+  pool keeps its filled fraction. Consumables (Healing Salve, Clarity) drip over
+  thirty seconds and spill on any hit from a hero. Items survive the hero's
+  death on the seat. No courier yet.
 - Fog of war is mandatory: without it a bot learns to play with full information.
 - Victory: the Ancient falls.
+
+Aggro replicates Dota. Nobody ranks targets by kind: creeps and towers take the
+closest enemy in reach — creeps fighting creeps and towers shooting creeps are
+emergent, because creeps arrive first. On top of that sit the aggro calls:
+
+- An attack order against an enemy hero, and every attack swing at one, calls the
+  victim's creeps within a radius of the attacker — and the victim's towers the
+  attacker stands in reach of — onto the attacker. Creeps hold the grudge for a
+  couple of seconds; a tower holds its target for as long as it stays in reach.
+- An order aimed at any ally calls enemy creeps and towers off the orderer: the
+  classic last-hit-under-pressure trick. Against a healthy ally the order itself is a
+  follow, turning into a deny once the ally is low enough.
+- Each creep and tower can be called onto a target at most once per call cooldown. A
+  call-off works at any time, and until that cooldown expires the called-off unit
+  prefers any other target over the orderer, coming back only when nobody else is in
+  reach: the trick redirects, it does not blind.
+- A creep holds a non-hero target until it dies or the chase breaks: standing closer
+  steals no attention, so last-hitting next to a busy wave is safe. A target inside
+  the creep's own attack range is held no matter what it is — a ranged creep keeps
+  firing at a hero who stays in its range. What the aggro window limits is chasing a
+  hero beyond that range: when it closes, the creep re-assesses from the closest
+  again, and a kited chase loses to whatever got closer on the way, a tower included.
+  Last-hitting creeps calls nobody.
+- A hero fights only when told to, but a fight it was told to have carries itself:
+  when an attack order's target dies, the attack rolls onto the closest enemy in
+  acquisition range. Rest never starts one — standing idle, arriving off a move
+  order or stopping leaves the wave alone. A move order ignores enemies for its
+  whole length, Hold attacks whatever is in range without moving, attack-move
+  acquires along the way.
+- Collision follows Dota's documented two-pather model. The long path is planned
+  against static blockers only — structures on the grid; the short path steers the
+  walker along it around standing bodies in continuous space: within the steer
+  range the walker aims at a tangent point of the first standing circle across its
+  segment, resolved over a few hops when one tangent uncovers the next body, so a
+  stander is skirted along its hull at full speed — standing in front of a wave
+  does not hold it, exactly as in Dota, where stationary units are avoidance
+  obstacles for the short pather. Whoever occupies the walker's own goal is not
+  steered around. All contact is solid: the distance between two units never drops
+  below the sum of their radii, a step deeper into anybody's circle is refused,
+  and a walker pressed right against a stander traces its circle by sidesteps.
+  The static grid is a hard wall too: a step or sidestep into a cell closed by a
+  structure or a tree is refused outright, while a step out of one is always
+  allowed, so nothing ever wedges inside the forest. A
+  unit that is walking is not avoided at all: whoever runs into it presses into
+  the body, fully stopped, for the block wait, and only then starts sidestepping
+  around. That stop, paid again on every new contact, is what makes creep-blocking
+  work — a hero zigzagging across the wave's path re-stops every creep whose step
+  his hull intersects, while a hero standing still is simply flowed around. Nobody
+  is ever pushed: the unit standing its ground does not move a hair, and a unit
+  stands still for its whole attack point and backswing.
+- A calm creep dragged off the lane beyond its leash gives up, goes deaf to targets
+  and walks straight back to the nearest point of the lane; an open aggro window
+  overrides the leash.
+- Units turn at a finite rate and only walk or swing once they face their current
+  path leg, so corners cost time. Buildings do not turn.
+
+Movement routes around structures with A* over the passability grid: structures close
+cells when the world is built and reopen them when they fall. A unit walks straight
+whenever the grid says the line is clear, and otherwise follows the corner waypoints
+of a route; each leg is walked only after turning onto it, so corners cost time.
+Standing units are hugged around at contact, walking units stop whoever runs into
+them — and every swing ends in a backswing the unit stands through, which is the
+pause a creep makes over its kill before marching on. A hero's order cancels its
+backswing.
+
+Abilities run on a shared engine in `sim/abilities.rs`: four slots per hero, each
+with a level and a cooldown, held on the seat like items, so both survive the
+hero's death — and cooldowns keep running while it is dead. A skill point arrives
+with every hero level; basic ability level k needs hero level 2k-1, ultimate
+levels open at 6, 8 and 10. A cast
+order is validated (learned, off cooldown, mana, target kind, cast range) and
+executes in the ability phase of the same tick, instantly — cast points and
+channeling come later. Casts of the same tick run after cooldown ticking, so a
+fresh cooldown surfaces at its full value. Sylla's kit: slot 0 a critical strike
+passive fed by the hidden per-unit `Chance` stream (the stream is keyed by the
+arena slot, so respawning continues the sequence); slot 1 an attack speed
+self-buff that shortens the attack interval for its duration; slot 2 a magical
+projectile that bounces to the closest unhit enemy in range, never a structure;
+slot 3 an ultimate volley launching an attack projectile at every enemy unit in
+its radius. A crit rolls once at windup completion and rides the projectile,
+reported only in the `Damaged` event.
 
 Hero roadmap (added as data + ability implementations; the engine does not change):
 
@@ -545,5 +707,5 @@ dependencies on the network layer.
 | 5 | ✅ `World` ticks | arenas, units, movement, orders, creeps, towers, Ancient; `rng.rs` with streams and Ratio/Chance |
 | 6 | ✅ combat | attacks, projectiles, damage, deaths, gold/xp, victory |
 | 7 | ✅ server networking | lobby, both tick modes, snapshot broadcast, replay recording |
-| 8 | `bota-bot` and `bota-client` | SDK + FSM bot, `--headless` bot-vs-bot match; macroquad: map, units, HP bars, input, replays |
+| 8 | 🔄 `bota-bot` and `bota-client` | SDK + FSM bot, bot-vs-bot match. Done: the client — macroquad: map, units, HP bars, orders, lobby, spectating, replay playback |
 | 9 | hero Sylla complete and determinism test | abilities, levels, items, shop; 20 000-tick hash baseline, run on musl/wasm32; mirror test: a diagonally mirrored match ends in the mirrored outcome |

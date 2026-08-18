@@ -1,7 +1,11 @@
+mod abilities;
 mod arena;
 mod determinism;
 mod fixtures;
 mod flow;
+mod items;
+mod jungle;
 mod movement;
 mod rng;
+mod terrain;
 mod world;

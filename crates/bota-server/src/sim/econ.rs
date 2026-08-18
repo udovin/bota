@@ -7,7 +7,9 @@ use crate::sim::{Death, Event, EventVisibility, Unit, World, enemy_of, fountain_
 impl World {
     /// Hands out the periodic passive gold.
     pub fn passive_gold(&mut self) {
-        if self.tick.is_multiple_of(rules::PASSIVE_GOLD_PERIOD_TICKS) {
+        if self.tick > rules::PREGAME_TICKS
+            && (self.tick - rules::PREGAME_TICKS).is_multiple_of(rules::PASSIVE_GOLD_PERIOD_TICKS)
+        {
             for seat in &mut self.seats {
                 seat.gold += 1;
                 seat.net_worth += 1;
@@ -59,17 +61,63 @@ impl World {
         let wave = (self.tick - rules::FIRST_WAVE_TICK) / rules::WAVE_PERIOD_TICKS + 1;
         let with_siege = wave.is_multiple_of(rules::SIEGE_WAVE_PERIOD);
         for team in [Team::Radiant, Team::Dire] {
-            let spawn = crate::sim::creep_spawn_pos(team);
-            for i in 0..rules::MELEE_PER_WAVE {
-                let pos = spawn + rules::WAVE_SPAWN_OFFSETS[i as usize];
-                self.units.insert(Unit::melee_creep(team, pos));
+            for lane in [rules::LANE_MID, rules::LANE_TOP, rules::LANE_BOT] {
+                let spawn = crate::sim::creep_spawn_pos(team, lane);
+                let mut recruit = |unit: Unit, offset: usize| {
+                    let pos = spawn + rules::WAVE_SPAWN_OFFSETS[offset];
+                    let id = self.units.insert(Unit { pos, lane, ..unit });
+                    let _ = id;
+                };
+                for i in 0..rules::MELEE_PER_WAVE {
+                    recruit(Unit::melee_creep(team, spawn), i as usize);
+                }
+                recruit(
+                    Unit::ranged_creep(team, spawn),
+                    rules::MELEE_PER_WAVE as usize,
+                );
+                if with_siege {
+                    recruit(
+                        Unit::siege_creep(team, spawn),
+                        rules::MELEE_PER_WAVE as usize + 1,
+                    );
+                }
             }
-            let ranged_pos = spawn + rules::WAVE_SPAWN_OFFSETS[rules::MELEE_PER_WAVE as usize];
-            self.units.insert(Unit::ranged_creep(team, ranged_pos));
-            if with_siege {
-                let siege_pos =
-                    spawn + rules::WAVE_SPAWN_OFFSETS[rules::MELEE_PER_WAVE as usize + 1];
-                self.units.insert(Unit::siege_creep(team, siege_pos));
+        }
+    }
+
+    /// Fills every empty, unblocked neutral camp on the minute mark.
+    ///
+    /// A camp with any unit inside its box — a leftover neutral, a hero, a
+    /// creep — spawns nothing, which is what makes camp blocking work.
+    pub fn spawn_neutrals(&mut self) {
+        if self.tick < rules::FIRST_NEUTRAL_TICK
+            || !(self.tick - rules::FIRST_NEUTRAL_TICK)
+                .is_multiple_of(rules::NEUTRAL_SPAWN_PERIOD_TICKS)
+        {
+            return;
+        }
+        let box_radius = rules::units(rules::CAMP_BOX_RADIUS);
+        for camp in rules::NEUTRAL_CAMPS {
+            let blocked = self
+                .units
+                .iter()
+                .any(|(_, u)| !u.is_structure() && u.pos.within(camp, box_radius));
+            if blocked {
+                continue;
+            }
+            for i in 0..rules::NEUTRALS_PER_CAMP {
+                let offset = Vec2::from_ints(60 * i as i32 - 30, 30 - 60 * i as i32);
+                self.units.insert(Unit::neutral_creep(camp + offset, camp));
+            }
+        }
+    }
+
+    /// Counts down Roshan's grave and puts him back in his pit.
+    pub fn tick_roshan(&mut self) {
+        if self.roshan_respawn > 0 {
+            self.roshan_respawn -= 1;
+            if self.roshan_respawn == 0 {
+                self.units.insert(Unit::roshan());
             }
         }
     }
@@ -80,6 +128,11 @@ impl World {
             let Some(unit) = self.units.remove(death.id) else {
                 continue;
             };
+            if unit.is_structure() {
+                // A fallen building stops blocking the ground it stood on.
+                self.grid
+                    .open_circle(unit.pos, crate::sim::structure_clearance(unit.radius));
+            }
             let denied = death.killer_team == unit.team;
             let death_event_visibility = if unit.kind == UnitKind::Hero || unit.is_structure() {
                 EventVisibility::Everyone
@@ -96,6 +149,23 @@ impl World {
             });
             match unit.kind {
                 UnitKind::Hero => self.process_hero_death(&unit, &death, events),
+                UnitKind::Roshan => {
+                    // The killing seat takes the bounty, the whole killing
+                    // team the team gold, and the grave clock starts on a
+                    // hidden draw.
+                    self.pay_gold(death.killer_slot, unit.bounty);
+                    for seat in &mut self.seats {
+                        if seat.team == death.killer_team {
+                            seat.gold += rules::ROSHAN_TEAM_GOLD;
+                            seat.net_worth += rules::ROSHAN_TEAM_GOLD;
+                        }
+                    }
+                    self.grant_xp_around(unit.pos, death.killer_team, unit.xp_reward, events);
+                    self.roshan_respawn = rules::ROSHAN_RESPAWN_MIN_TICKS
+                        + self
+                            .roshan_rng
+                            .below(rules::ROSHAN_RESPAWN_SPREAD_TICKS + 1);
+                }
                 UnitKind::Tower => {
                     self.pay_gold(death.killer_slot, unit.bounty);
                     events.push(Event {
@@ -105,6 +175,23 @@ impl World {
                         },
                         visible_to: EventVisibility::Everyone,
                     });
+                    // The last tier-four tower falling opens the Ancient.
+                    if unit.tier == 4 {
+                        let team = unit.team;
+                        let another_stands = self.units.iter().any(|(_, u)| {
+                            u.kind == UnitKind::Tower && u.team == team && u.tier == 4
+                        });
+                        if !another_stands {
+                            let ancient = self
+                                .units
+                                .iter()
+                                .find(|(_, u)| u.kind == UnitKind::Ancient && u.team == team)
+                                .map(|(id, _)| id);
+                            if let Some(id) = ancient {
+                                self.units.get_mut(id).expect("just found").invulnerable = false;
+                            }
+                        }
+                    }
                 }
                 UnitKind::Ancient => {
                     events.push(Event {
@@ -144,7 +231,14 @@ impl World {
         } else {
             unit.xp_reward
         };
-        self.grant_xp_around(unit.pos, enemy_of(unit.team), xp, events);
+        // A neutral has no enemy side: its experience goes to whoever's
+        // team brought it down.
+        let heirs = if unit.team == Team::Neutral {
+            death.killer_team
+        } else {
+            enemy_of(unit.team)
+        };
+        self.grant_xp_around(unit.pos, heirs, xp, events);
     }
 
     fn process_hero_death(&mut self, unit: &Unit, death: &Death, events: &mut Vec<Event>) {

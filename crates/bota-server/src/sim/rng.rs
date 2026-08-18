@@ -24,6 +24,8 @@ pub enum Purpose {
     Rune = 3,
     /// Scatter of neutral camp spawns.
     NeutralSpawn = 4,
+    /// Roshan's respawn wait.
+    Roshan = 5,
 }
 
 /// The root of all hidden randomness in one match.

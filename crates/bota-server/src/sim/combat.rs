@@ -1,8 +1,13 @@
 //! Attacks, projectiles and the damage queue.
 
-use bota_proto::{AbilityId, Angle, DamageKind, EntityId, EventKind, Fixed, SlotId, Team, Vec2};
+use bota_proto::{
+    AbilityId, Angle, DamageKind, EntityId, EventKind, Fixed, SlotId, Team, UnitKind, Vec2,
+};
 
-use crate::sim::{Event, Unit, Windup, World, facing_towards, move_towards, per_tick, rules};
+use crate::sim::{
+    Event, Unit, Windup, World, facing_gap, facing_towards, move_towards, per_tick, rules,
+    turn_towards,
+};
 
 /// An attack projectile in flight.
 ///
@@ -29,6 +34,15 @@ pub struct Projectile {
     pub kind: DamageKind,
     /// Which ability launched it. Absent for a plain attack.
     pub ability: Option<AbilityId>,
+    /// The elevation tier the attack was launched from. Attacks landing on
+    /// higher ground may miss.
+    pub launch_tier: u8,
+    /// Whether the hit is a critical strike.
+    pub crit: bool,
+    /// Jumps left after the current target is hit.
+    pub bounces_left: u8,
+    /// Everyone this projectile has already been aimed at.
+    pub bounced: Vec<EntityId>,
 }
 
 /// One chunk of damage waiting to be applied.
@@ -46,6 +60,8 @@ pub struct DamageInst {
     pub amount: i32,
     /// Which reduction applies.
     pub kind: DamageKind,
+    /// Whether the hit is a critical strike.
+    pub crit: bool,
 }
 
 /// A unit brought to zero health this tick, waiting for death processing.
@@ -107,6 +123,12 @@ impl World {
                         facing_towards(unit.pos, target.pos),
                     );
                     if connects {
+                        let (damage, crit) = match self.roll_crit(id) {
+                            None => (damage, false),
+                            Some(pct) => {
+                                (((i64::from(damage) * i64::from(pct)) / 100) as i32, true)
+                            }
+                        };
                         match speed {
                             None => dmg.push(DamageInst {
                                 source: Some(id),
@@ -115,8 +137,10 @@ impl World {
                                 target: w.target,
                                 amount: damage,
                                 kind: DamageKind::Physical,
+                                crit,
                             }),
                             Some(speed) => {
+                                let launch_tier = self.ground.tier(from);
                                 self.projectiles.insert(Projectile {
                                     pos: from,
                                     facing,
@@ -128,6 +152,10 @@ impl World {
                                     damage,
                                     kind: DamageKind::Physical,
                                     ability: None,
+                                    launch_tier,
+                                    crit,
+                                    bounces_left: 0,
+                                    bounced: Vec::new(),
                                 });
                             }
                         }
@@ -135,6 +163,7 @@ impl World {
                     let u = self.units.get_mut(id).expect("looked up above");
                     u.windup = None;
                     u.facing = facing;
+                    u.recovering = u.attack_backswing;
                 }
                 continue;
             }
@@ -151,15 +180,27 @@ impl World {
             if target.hp <= 0 || !in_attack_range(unit, target, Fixed::ZERO) {
                 continue;
             }
-            let facing = facing_towards(unit.pos, target.pos);
-            let (point, interval) = (unit.attack_point, unit.attack_interval);
+            let desired = facing_towards(unit.pos, target.pos);
+            let turned = if unit.is_structure() {
+                desired
+            } else {
+                turn_towards(unit.facing, desired, rules::TURN_RATE_BRADS)
+            };
+            if facing_gap(turned, desired) > rules::TURN_TOLERANCE_BRADS {
+                // Not facing the target yet: keep turning, swing later.
+                self.units.get_mut(id).expect("looked up above").facing = turned;
+                continue;
+            }
+            let (point, interval) = (unit.attack_point, unit.current_attack_interval());
             let u = self.units.get_mut(id).expect("looked up above");
             u.windup = Some(Windup {
                 target: target_id,
                 ticks_left: point,
             });
             u.attack_cooldown = interval;
-            u.facing = facing;
+            u.facing = turned;
+            // Every swing at a hero keeps calling the victim's creeps.
+            self.provoke_creeps(id, target_id);
         }
     }
 
@@ -180,15 +221,40 @@ impl World {
             let step = per_tick(p.speed);
             let next = move_towards(p.pos, target.pos, step);
             if next.within(target.pos, target.radius) {
-                dmg.push(DamageInst {
-                    source: p.source,
-                    slot: p.slot,
-                    team: p.team,
-                    target: p.target,
-                    amount: p.damage,
-                    kind: p.kind,
-                });
-                self.projectiles.remove(id);
+                // An attack landing on higher ground than it was fired from
+                // can miss. Abilities never do.
+                let uphill = p.ability.is_none() && self.ground.tier(target.pos) > p.launch_tier;
+                let missed = uphill && self.uphill.roll(rules::UPHILL_MISS);
+                if !missed {
+                    dmg.push(DamageInst {
+                        source: p.source,
+                        slot: p.slot,
+                        team: p.team,
+                        target: p.target,
+                        amount: p.damage,
+                        kind: p.kind,
+                        crit: p.crit,
+                    });
+                }
+                // A projectile with jumps left springs to the next target.
+                let hop = if p.bounces_left > 0 {
+                    crate::sim::next_bounce_target(self, p.team, target.pos, &p.bounced)
+                } else {
+                    None
+                };
+                match hop {
+                    None => {
+                        self.projectiles.remove(id);
+                    }
+                    Some(next_target) => {
+                        let from = target.pos;
+                        let p = self.projectiles.get_mut(id).expect("looked up above");
+                        p.pos = from;
+                        p.target = next_target;
+                        p.bounces_left -= 1;
+                        p.bounced.push(next_target);
+                    }
+                }
             } else {
                 let facing = facing_towards(next, target.pos);
                 let p = self.projectiles.get_mut(id).expect("looked up above");
@@ -223,7 +289,12 @@ impl World {
             );
             let t = self.units.get_mut(inst.target).expect("looked up above");
             t.hp -= applied;
+            // A hit wakes a resting neutral onto its attacker.
+            if t.kind == UnitKind::CreepNeutral && t.engage.is_none() && !t.returning {
+                t.engage = inst.source;
+            }
             let dead = t.hp <= 0;
+            self.dispel_regen(inst.target, inst.source);
             if let Some(slot) = inst.slot
                 && target_team != inst.team
                 && let Some(seat) = self.seats.iter_mut().find(|s| s.slot == slot)
@@ -241,7 +312,7 @@ impl World {
                     target: inst.target,
                     amount: applied,
                     kind: inst.kind,
-                    crit: false,
+                    crit: inst.crit,
                 },
                 visible_to: self.point_visibility(pos, target_team),
             });

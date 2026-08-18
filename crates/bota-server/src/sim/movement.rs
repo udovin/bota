@@ -1,4 +1,4 @@
-//! Deterministic integer geometry: stepping, separation, facing, bounds.
+//! Deterministic integer geometry: stepping, blocking, turning, bounds.
 
 use bota_proto::{Angle, EntityId, Fixed, Vec2};
 
@@ -95,97 +95,244 @@ pub fn clamp_to_map(pos: Vec2) -> Vec2 {
 
 /// The walkability grid of the map.
 ///
-/// One bit per cell, `true` is walkable. The v0.1 map is open ground, so every
-/// cell starts walkable; buildings do not occupy cells, they collide by radius.
+/// One bit per cell, `true` is walkable. The map is open ground; structures
+/// close the cells they stand on when the world is built.
 #[derive(Clone, Debug)]
 pub struct PassGrid {
-    /// One row per entry, one cell per bit.
-    rows: [u128; rules::GRID_CELLS],
+    /// One bit per cell, row-major.
+    bits: Vec<u64>,
 }
 
 impl PassGrid {
     /// A fully walkable map.
     pub fn open() -> PassGrid {
         PassGrid {
-            rows: [u128::MAX; rules::GRID_CELLS],
+            bits: vec![u64::MAX; rules::GRID_CELLS * rules::GRID_CELLS / 64],
         }
     }
 
-    /// Whether a position is on the map and walkable.
-    pub fn walkable(&self, pos: Vec2) -> bool {
+    /// The cell a position falls into, if it is on the map.
+    pub fn cell_of(pos: Vec2) -> Option<(usize, usize)> {
         if pos.x.raw < 0 || pos.y.raw < 0 {
-            return false;
+            return None;
         }
         let cx = pos.x.to_int() / rules::GRID_CELL_SIZE;
         let cy = pos.y.to_int() / rules::GRID_CELL_SIZE;
         if cx >= rules::GRID_CELLS as i32 || cy >= rules::GRID_CELLS as i32 {
-            return false;
+            return None;
         }
-        self.rows[cy as usize] & (1 << cx) != 0
+        Some((cx as usize, cy as usize))
+    }
+
+    /// The center of a cell.
+    pub fn cell_center(cell: (usize, usize)) -> Vec2 {
+        Vec2::from_ints(
+            cell.0 as i32 * rules::GRID_CELL_SIZE + rules::GRID_CELL_SIZE / 2,
+            cell.1 as i32 * rules::GRID_CELL_SIZE + rules::GRID_CELL_SIZE / 2,
+        )
+    }
+
+    /// Whether a cell is walkable.
+    pub fn cell_open(&self, cx: usize, cy: usize) -> bool {
+        let idx = cy * rules::GRID_CELLS + cx;
+        self.bits[idx / 64] & (1 << (idx % 64)) != 0
+    }
+
+    /// Whether a position is on the map and walkable.
+    pub fn walkable(&self, pos: Vec2) -> bool {
+        match PassGrid::cell_of(pos) {
+            None => false,
+            Some((cx, cy)) => self.cell_open(cx, cy),
+        }
+    }
+
+    /// Closes every cell whose center lies within `radius` of `center`.
+    pub fn block_circle(&mut self, center: Vec2, radius: Fixed) {
+        self.paint_circle(center, radius, false);
+    }
+
+    /// Reopens every cell whose center lies within `radius` of `center`.
+    pub fn open_circle(&mut self, center: Vec2, radius: Fixed) {
+        self.paint_circle(center, radius, true);
+    }
+
+    /// Closes one cell.
+    pub fn close_cell(&mut self, cx: usize, cy: usize) {
+        let idx = cy * rules::GRID_CELLS + cx;
+        self.bits[idx / 64] &= !(1 << (idx % 64));
+    }
+
+    fn paint_circle(&mut self, center: Vec2, radius: Fixed, open: bool) {
+        let cells = rules::GRID_CELLS as i32;
+        let span = radius.to_int() / rules::GRID_CELL_SIZE + 1;
+        let ccx = center.x.to_int() / rules::GRID_CELL_SIZE;
+        let ccy = center.y.to_int() / rules::GRID_CELL_SIZE;
+        for cy in (ccy - span).max(0)..=(ccy + span).min(cells - 1) {
+            for cx in (ccx - span).max(0)..=(ccx + span).min(cells - 1) {
+                let c = PassGrid::cell_center((cx as usize, cy as usize));
+                if c.within(center, radius) {
+                    let idx = cy as usize * rules::GRID_CELLS + cx as usize;
+                    if open {
+                        self.bits[idx / 64] |= 1 << (idx % 64);
+                    } else {
+                        self.bits[idx / 64] &= !(1 << (idx % 64));
+                    }
+                }
+            }
+        }
     }
 }
 
-/// Pushes overlapping units apart.
+/// The grid clearance a structure blocks: its own radius, the widest walker
+/// and a margin.
+pub fn structure_clearance(radius: Fixed) -> Fixed {
+    radius + rules::units(rules::HERO_RADIUS + rules::STEER_MARGIN)
+}
+
+/// The shortest signed rotation from one facing to another, in brads.
 ///
-/// Pairs resolve in ascending id order, one pass per tick; a deep overlap
-/// finishes separating over the following ticks. Two movable units split the
-/// push, a movable unit yields fully to a structure.
-pub fn separate_collisions(units: &mut Arena<Unit>) {
-    let ids: Vec<EntityId> = units.ids();
-    for (i, &a_id) in ids.iter().enumerate() {
-        for &b_id in &ids[i + 1..] {
-            let (Some(a), Some(b)) = (units.get(a_id), units.get(b_id)) else {
-                continue;
-            };
-            let a_static = a.move_speed == Fixed::ZERO;
-            let b_static = b.move_speed == Fixed::ZERO;
-            if a_static && b_static {
-                continue;
-            }
-            let dx = i64::from(b.pos.x.raw) - i64::from(a.pos.x.raw);
-            let dy = i64::from(b.pos.y.raw) - i64::from(a.pos.y.raw);
-            let min_dist = i64::from((a.radius + b.radius).raw);
-            let dist2 = dx * dx + dy * dy;
-            if dist2 >= min_dist * min_dist {
-                continue;
-            }
-            let dist = isqrt64(dist2);
-            // Perfectly stacked units get a deterministic axis to part along.
-            let (ux, uy, dist) = if dist == 0 {
-                (1 << Fixed::FRAC_BITS, 0, 1 << Fixed::FRAC_BITS)
-            } else {
-                (dx, dy, dist)
-            };
-            let overlap = min_dist - dist;
-            let (push_a, push_b) = if a_static {
-                (0, overlap)
-            } else if b_static {
-                (overlap, 0)
-            } else {
-                (overlap / 2, overlap - overlap / 2)
-            };
-            if push_a > 0 {
-                let unit = units.get_mut(a_id).expect("checked above");
-                unit.pos = clamp_to_map(Vec2 {
-                    x: Fixed {
-                        raw: unit.pos.x.raw.saturating_sub((ux * push_a / dist) as i32),
-                    },
-                    y: Fixed {
-                        raw: unit.pos.y.raw.saturating_sub((uy * push_a / dist) as i32),
-                    },
-                });
-            }
-            if push_b > 0 {
-                let unit = units.get_mut(b_id).expect("checked above");
-                unit.pos = clamp_to_map(Vec2 {
-                    x: Fixed {
-                        raw: unit.pos.x.raw.saturating_add((ux * push_b / dist) as i32),
-                    },
-                    y: Fixed {
-                        raw: unit.pos.y.raw.saturating_add((uy * push_b / dist) as i32),
-                    },
-                });
-            }
+/// An exactly opposite facing turns counter-clockwise.
+pub fn angle_delta(from: Angle, to: Angle) -> i32 {
+    let d = (i32::from(to.brads) - i32::from(from.brads)) & 0xFFFF;
+    if d > 32768 { d - 65536 } else { d }
+}
+
+/// One tick of turning from a facing towards another, clamped by the rate.
+pub fn turn_towards(from: Angle, to: Angle, rate: u16) -> Angle {
+    let clamped = angle_delta(from, to).clamp(-i32::from(rate), i32::from(rate));
+    Angle {
+        brads: (i32::from(from.brads) + clamped) as u16,
+    }
+}
+
+/// How far a facing is from another, in brads, ignoring direction.
+pub fn facing_gap(a: Angle, b: Angle) -> u16 {
+    angle_delta(a, b).unsigned_abs() as u16
+}
+
+/// Squared distance from a point to a segment, in the raw units of
+/// [`Vec2::distance_squared`].
+pub fn segment_distance_squared(p: Vec2, a: Vec2, b: Vec2) -> i64 {
+    let apx = i64::from(p.x.raw) - i64::from(a.x.raw);
+    let apy = i64::from(p.y.raw) - i64::from(a.y.raw);
+    let abx = i64::from(b.x.raw) - i64::from(a.x.raw);
+    let aby = i64::from(b.y.raw) - i64::from(a.y.raw);
+    let dot = apx * abx + apy * aby;
+    if dot <= 0 {
+        return p.distance_squared(a);
+    }
+    let len2 = abx * abx + aby * aby;
+    if dot >= len2 {
+        return p.distance_squared(b);
+    }
+    let cross = apx * aby - apy * abx;
+    (i128::from(cross) * i128::from(cross) / i128::from(len2)) as i64
+}
+
+/// The nearest point of a segment.
+pub fn segment_nearest(p: Vec2, a: Vec2, b: Vec2) -> Vec2 {
+    let apx = i64::from(p.x.raw) - i64::from(a.x.raw);
+    let apy = i64::from(p.y.raw) - i64::from(a.y.raw);
+    let abx = i64::from(b.x.raw) - i64::from(a.x.raw);
+    let aby = i64::from(b.y.raw) - i64::from(a.y.raw);
+    let dot = apx * abx + apy * aby;
+    let len2 = abx * abx + aby * aby;
+    if dot <= 0 || len2 == 0 {
+        return a;
+    }
+    if dot >= len2 {
+        return b;
+    }
+    let x = i64::from(a.x.raw) + (i128::from(abx) * i128::from(dot) / i128::from(len2)) as i64;
+    let y = i64::from(a.y.raw) + (i128::from(aby) * i128::from(dot) / i128::from(len2)) as i64;
+    Vec2 {
+        x: Fixed { raw: x as i32 },
+        y: Fixed { raw: y as i32 },
+    }
+}
+
+/// Whether stepping from `from` to `next` runs the mover into another unit.
+///
+/// A step deeper into any unit's circle is refused; a step out of an
+/// existing overlap is allowed, so nothing can get stuck.
+pub fn blocked_by_units(units: &Arena<Unit>, mover: EntityId, from: Vec2, next: Vec2) -> bool {
+    let Some(u) = units.get(mover) else {
+        return false;
+    };
+    for (id, other) in units.iter() {
+        if id == mover {
+            continue;
+        }
+        let min = i64::from((u.radius + other.radius).raw);
+        let next_d2 = next.distance_squared(other.pos);
+        if next_d2 < min * min && next_d2 < from.distance_squared(other.pos) {
+            return true;
         }
     }
+    false
+}
+
+/// Whether stepping from `from` to `next` runs the mover deeper into a unit
+/// standing this tick.
+pub fn blocked_by_stander(units: &Arena<Unit>, mover: EntityId, from: Vec2, next: Vec2) -> bool {
+    let Some(u) = units.get(mover) else {
+        return false;
+    };
+    for (id, other) in units.iter() {
+        if id == mover || other.moving {
+            continue;
+        }
+        let min = i64::from((u.radius + other.radius).raw);
+        let next_d2 = next.distance_squared(other.pos);
+        if next_d2 < min * min && next_d2 < from.distance_squared(other.pos) {
+            return true;
+        }
+    }
+    false
+}
+
+/// A sidestep around whatever blocks the straight step towards `target`:
+/// the least turned of four step rotations that is not blocked by a unit or
+/// by the static grid, or nothing when every one is. Nobody is ever pushed.
+pub fn unit_slide(
+    units: &Arena<Unit>,
+    grid: &PassGrid,
+    mover: EntityId,
+    target: Vec2,
+    step: Fixed,
+) -> Option<Vec2> {
+    let u = units.get(mover)?;
+    let pos = u.pos;
+    let dx = i64::from(target.x.raw) - i64::from(pos.x.raw);
+    let dy = i64::from(target.y.raw) - i64::from(pos.y.raw);
+    let dist = isqrt64(dx * dx + dy * dy);
+    if dist == 0 {
+        return None;
+    }
+    let sx = dx * i64::from(step.raw) / dist;
+    let sy = dy * i64::from(step.raw) / dist;
+    // The step rotated 45 and 90 degrees to either side, forward-most
+    // first; 181/256 approximates the diagonal cosine.
+    let diag = |v: i64| v * 181 / 256;
+    let turns = [
+        (diag(sx + sy), diag(sy - sx)),
+        (diag(sx - sy), diag(sy + sx)),
+        (sy, -sx),
+        (-sy, sx),
+    ];
+    for (tx, ty) in turns {
+        let next = clamp_to_map(Vec2 {
+            x: Fixed {
+                raw: pos.x.raw.saturating_add(tx as i32),
+            },
+            y: Fixed {
+                raw: pos.y.raw.saturating_add(ty as i32),
+            },
+        });
+        let grid_ok = grid.walkable(next) || !grid.walkable(pos);
+        if next != pos && grid_ok && !blocked_by_units(units, mover, pos, next) {
+            return Some(next);
+        }
+    }
+    None
 }

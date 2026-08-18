@@ -123,7 +123,7 @@ fn a_realtime_match_reaches_two_clients() {
     c1.send(&ClientMsg::Order {
         seq: 2,
         order: Order::BuyItem {
-            item: bota_proto::ItemId(0),
+            item: bota_proto::ItemId(999),
         },
     });
     let (seq, reason) = c1.recv_until(|msg| match msg {

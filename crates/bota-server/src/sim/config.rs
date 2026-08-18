@@ -39,6 +39,11 @@ impl MatchConfig {
             match_id: self.match_id,
             map: self.map,
             tick_rate: self.tick_rate,
+            pregame_ticks: crate::sim::rules::PREGAME_TICKS,
+            trees: crate::sim::tree_positions(),
+            terrain_cells: crate::sim::TERRAIN_CELLS as u32,
+            terrain_rle: crate::sim::Ground::wire_rle(),
+            opaque_cells: crate::sim::sight_block_cells(),
             mode: self.mode,
             picks: self.picks.clone(),
         }

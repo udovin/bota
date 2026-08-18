@@ -23,7 +23,18 @@ impl World {
                 None => true,
                 Some(team) => u.team == team || self.can_see_point(team, u.pos),
             })
-            .map(|(id, u)| project_unit(id, u))
+            .map(|(id, u)| {
+                let carried_slots =
+                    crate::sim::rules::INVENTORY_SLOTS + crate::sim::rules::BACKPACK_SLOTS;
+                let seat = u.owner.and_then(|slot| self.seat(slot));
+                let carried = seat
+                    .map(|s| crate::sim::item_views(&s.items[..carried_slots]))
+                    .unwrap_or_default();
+                let abilities = seat
+                    .map(|s| crate::sim::ability_views(&s.abilities))
+                    .unwrap_or_default();
+                project_unit(id, u, carried, abilities)
+            })
             .collect();
         let projectiles = self
             .projectiles
@@ -55,6 +66,13 @@ impl World {
                     Some(team) if team == s.team => Some(s.gold),
                     Some(_) => None,
                 },
+                stash: match viewer {
+                    Some(team) if team != s.team => None,
+                    _ => Some(crate::sim::item_views(
+                        &s.items[crate::sim::rules::INVENTORY_SLOTS
+                            + crate::sim::rules::BACKPACK_SLOTS..],
+                    )),
+                },
                 kills: s.kills,
                 deaths: s.deaths,
                 assists: s.assists,
@@ -73,7 +91,12 @@ impl World {
     }
 }
 
-fn project_unit(id: bota_proto::EntityId, u: &Unit) -> UnitView {
+fn project_unit(
+    id: bota_proto::EntityId,
+    u: &Unit,
+    items: Vec<Option<bota_proto::ItemView>>,
+    abilities: Vec<bota_proto::AbilityView>,
+) -> UnitView {
     UnitView {
         id,
         kind: u.kind,
@@ -87,7 +110,7 @@ fn project_unit(id: bota_proto::EntityId, u: &Unit) -> UnitView {
         move_speed: u.move_speed,
         attack_damage: u.attack_damage,
         attack_range: u.attack_range,
-        attack_interval: u.attack_interval,
+        attack_interval: u.current_attack_interval(),
         armor: bota_proto::Fixed::from_int(u.armor),
         magic_resist: bota_proto::Fixed::from_ratio(u.magic_resist_pct, 100),
         radius: u.radius,
@@ -96,7 +119,26 @@ fn project_unit(id: bota_proto::EntityId, u: &Unit) -> UnitView {
         hero: u.hero,
         owner: u.owner,
         level: u.level,
-        abilities: Vec::new(),
-        items: Vec::new(),
+        abilities,
+        items,
+        effects: unit_effects(u),
     }
+}
+
+/// The timed effects of a unit, in a fixed order: frenzy, salve, clarity.
+fn unit_effects(u: &Unit) -> Vec<bota_proto::EffectView> {
+    let mut out = Vec::new();
+    for (id, ticks) in [
+        (0u16, u.frenzy_ticks),
+        (1, u.salve_ticks),
+        (2, u.clarity_ticks),
+    ] {
+        if ticks > 0 {
+            out.push(bota_proto::EffectView {
+                id: bota_proto::EffectId(id),
+                ticks_left: ticks,
+            });
+        }
+    }
+    out
 }

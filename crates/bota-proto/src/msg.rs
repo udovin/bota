@@ -1,6 +1,6 @@
 //! The messages themselves, and the lobby types they carry.
 
-use crate::{EventKind, HeroId, MapId, Order, PlayerId, SlotId, Team, WorldView};
+use crate::{EventKind, HeroId, MapId, Order, PlayerId, SlotId, Team, Vec2, WorldView};
 use serde::{Deserialize, Serialize};
 
 /// Why a participant connected.
@@ -67,6 +67,21 @@ pub struct MatchInfo {
     pub map: MapId,
     /// Simulation ticks per second.
     pub tick_rate: u16,
+    /// Ticks before the game clock reaches zero. The clock counts up from
+    /// minus this; creep waves start at zero.
+    pub pregame_ticks: u32,
+    /// Every tree on the map. Static for the whole match; sent once here so
+    /// the client can draw and never has to know the layout rules.
+    pub trees: Vec<Vec2>,
+    /// Cells per terrain axis.
+    pub terrain_cells: u32,
+    /// Run-length encoded terrain cells, row-major from the south-west
+    /// corner, one byte each: bit 7 walkable ground, bit 6 river water, the
+    /// low bits the elevation tier.
+    pub terrain_rle: Vec<(u16, u8)>,
+    /// Cells that block sight lines regardless of elevation: trees and the
+    /// map's fog blocker walls. The client shades its own fog with these.
+    pub opaque_cells: Vec<(u16, u16)>,
     /// How the server advances ticks.
     pub mode: TickMode,
     /// Every seat and its hero, sorted by [`SlotId`].
@@ -87,14 +102,14 @@ pub enum RejectReason {
     WrongTargetKind,
     /// The ability or item is still on cooldown.
     OnCooldown,
+    /// The target is beyond the ability's cast range.
+    OutOfRange,
     /// Not enough mana.
     NotEnoughMana,
     /// Not enough gold.
     NotEnoughGold,
     /// The referenced ability or inventory slot is empty.
     EmptySlot,
-    /// The target is a friendly unit that is not low enough to deny.
-    CannotDeny,
     /// No item with this id is sold.
     UnknownItem,
     /// No skill point is available, or the ability is already at its cap.

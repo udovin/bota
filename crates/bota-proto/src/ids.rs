@@ -30,13 +30,15 @@ pub struct SlotId(pub u8);
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PlayerId(pub u32);
 
-/// One of the two sides of the map.
+/// A side of the map, or nobody's side.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Team {
     /// The side spawning in the lower left corner.
     Radiant,
     /// The side spawning in the upper right corner.
     Dire,
+    /// The jungle's own: hostile to both sides, seats never sit here.
+    Neutral,
 }
 
 /// Selects one of the playable heroes.
@@ -53,13 +55,20 @@ pub struct AbilityId(pub u16);
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ItemId(pub u16);
 
+/// Names one kind of timed effect a unit can be under.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct EffectId(pub u16);
+
 /// Which of a hero's four ability slots is meant.
 ///
 /// Slots 0 to 2 are the basic abilities and slot 3 is the ultimate.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct AbilitySlot(pub u8);
 
-/// Which of a hero's six inventory slots is meant.
+/// One of a hero's fifteen item slots.
+///
+/// Slots 0-5 are the inventory, where items work; 6-8 the backpack, where
+/// they are carried inert; 9-14 the stash waiting at the home shop.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ItemSlot(pub u8);
 
@@ -80,6 +89,8 @@ pub enum UnitKind {
     CreepSiege,
     /// A neutral camp creep.
     CreepNeutral,
+    /// Roshan, the boss of the river pit.
+    Roshan,
     /// A lane tower.
     Tower,
     /// The structure that ends the match when destroyed.

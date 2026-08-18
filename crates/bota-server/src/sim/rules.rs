@@ -6,45 +6,211 @@
 
 use bota_proto::{Fixed, Vec2};
 
+use crate::sim::Ratio;
+
 /// Simulation ticks per second of game time.
 pub const TICKS_PER_SECOND: u32 = 30;
 
 /// The map spans `0..MAP_SIZE` on both axes.
-pub const MAP_SIZE: i32 = 8192;
+pub const MAP_SIZE: i32 = 18432;
 
-/// Cells per axis of the passability grid.
-pub const GRID_CELLS: usize = 128;
+/// Cells per axis of the passability grid; matches the terrain layout.
+pub const GRID_CELLS: usize = 288;
 
 /// World units covered by one passability cell.
 pub const GRID_CELL_SIZE: i32 = MAP_SIZE / GRID_CELLS as i32;
 
-// Landmarks. The map is symmetric across the main diagonal; every Dire
-// position is the Radiant one mirrored through the map center.
+// Landmarks: the current Dota 2 map, every position shifted by half the map
+// so Dota's origin sits at the center. The two sides are not mirror images;
+// each carries its own table.
 
 /// Center of the Radiant fountain area.
-pub const RADIANT_FOUNTAIN_POS: Vec2 = Vec2::from_ints(256, 256);
+pub const RADIANT_FOUNTAIN_POS: Vec2 = Vec2::from_ints(1760, 2278);
 /// Center of the Dire fountain area.
-pub const DIRE_FOUNTAIN_POS: Vec2 = Vec2::from_ints(MAP_SIZE - 256, MAP_SIZE - 256);
+pub const DIRE_FOUNTAIN_POS: Vec2 = Vec2::from_ints(16624, 16064);
 /// The Radiant Ancient.
-pub const RADIANT_ANCIENT_POS: Vec2 = Vec2::from_ints(768, 768);
+pub const RADIANT_ANCIENT_POS: Vec2 = Vec2::from_ints(3296, 3864);
 /// The Dire Ancient.
-pub const DIRE_ANCIENT_POS: Vec2 = Vec2::from_ints(MAP_SIZE - 768, MAP_SIZE - 768);
-/// The Radiant mid tower.
-pub const RADIANT_TOWER_POS: Vec2 = Vec2::from_ints(2304, 2304);
-/// The Dire mid tower.
-pub const DIRE_TOWER_POS: Vec2 = Vec2::from_ints(MAP_SIZE - 2304, MAP_SIZE - 2304);
+pub const DIRE_ANCIENT_POS: Vec2 = Vec2::from_ints(14744, 14216);
 /// How far from the fountain center a hero appears, along both axes towards
 /// the map center. Keeps the spawn clear of the fountain's collision radius.
-pub const HERO_SPAWN_OFFSET: i32 = 140;
-/// Where Radiant creep waves appear.
-pub const RADIANT_CREEP_SPAWN: Vec2 = Vec2::from_ints(1152, 1152);
-/// Where Dire creep waves appear.
-pub const DIRE_CREEP_SPAWN: Vec2 = Vec2::from_ints(MAP_SIZE - 1152, MAP_SIZE - 1152);
+pub const HERO_SPAWN_OFFSET: i32 = 280;
+
+// Lanes. Lane 0 is mid across the middle; lane 1 is top, up the west edge
+// and along the north edge; lane 2 is bottom along the south and east.
+
+/// The mid lane.
+pub const LANE_MID: u8 = 0;
+/// The top lane.
+pub const LANE_TOP: u8 = 1;
+/// The bottom lane.
+pub const LANE_BOT: u8 = 2;
+/// Corner of the top lane, where the west edge meets the north edge.
+pub const TOP_CORNER: Vec2 = Vec2::from_ints(3050, 15150);
+/// Corner of the bottom lane.
+pub const BOT_CORNER: Vec2 = Vec2::from_ints(15400, 2900);
+/// A lane waypoint counts as passed within this distance.
+pub const LANE_WAYPOINT_RADIUS: i32 = 250;
+
+/// Radiant towers: lane, tier and position, straight from the map.
+pub const RADIANT_TOWERS: [(u8, u8, Vec2); 11] = [
+    (LANE_MID, 1, Vec2::from_ints(7672, 7808)),
+    (LANE_MID, 2, Vec2::from_ints(6026, 6290)),
+    (LANE_MID, 3, Vec2::from_ints(4576, 5072)),
+    (LANE_TOP, 1, Vec2::from_ints(2880, 11072)),
+    (LANE_TOP, 2, Vec2::from_ints(2715, 8344)),
+    (LANE_TOP, 3, Vec2::from_ints(2624, 5808)),
+    (LANE_BOT, 1, Vec2::from_ints(14076, 2837)),
+    (LANE_BOT, 2, Vec2::from_ints(8856, 2960)),
+    (LANE_BOT, 3, Vec2::from_ints(5264, 3104)),
+    (LANE_MID, 4, Vec2::from_ints(3504, 4352)),
+    (LANE_MID, 4, Vec2::from_ints(3824, 4024)),
+];
+
+/// Dire towers: lane, tier and position, straight from the map.
+pub const DIRE_TOWERS: [(u8, u8, Vec2); 11] = [
+    (LANE_MID, 1, Vec2::from_ints(9740, 9868)),
+    (LANE_MID, 2, Vec2::from_ints(11712, 11328)),
+    (LANE_MID, 3, Vec2::from_ints(13488, 12975)),
+    (LANE_TOP, 1, Vec2::from_ints(3941, 15252)),
+    (LANE_TOP, 2, Vec2::from_ints(9088, 15232)),
+    (LANE_TOP, 3, Vec2::from_ints(12768, 14992)),
+    (LANE_BOT, 1, Vec2::from_ints(15485, 6976)),
+    (LANE_BOT, 2, Vec2::from_ints(15616, 9600)),
+    (LANE_BOT, 3, Vec2::from_ints(15552, 12248)),
+    (LANE_MID, 4, Vec2::from_ints(14160, 13992)),
+    (LANE_MID, 4, Vec2::from_ints(14496, 13648)),
+];
+
+/// Where Radiant creep waves appear, indexed by lane: the map's own lane
+/// spawner positions.
+pub const RADIANT_CREEP_SPAWNS: [Vec2; 3] = [
+    Vec2::from_ints(4208, 4728),
+    Vec2::from_ints(2608, 5152),
+    Vec2::from_ints(5568, 3104),
+];
+
+/// Where Dire creep waves appear, indexed by lane.
+pub const DIRE_CREEP_SPAWNS: [Vec2; 3] = [
+    Vec2::from_ints(13312, 12800),
+    Vec2::from_ints(12384, 15008),
+    Vec2::from_ints(15488, 12864),
+];
+
+// Trees and the jungle.
+
+/// Tree trunk collision radius.
+pub const TREE_RADIUS: i32 = 48;
+/// Imported trees this close to a lane centerline are dropped: the real
+/// forest follows the real curved lanes, and this map walks straightened
+/// ones.
+pub const TREE_LANE_CLEAR: i32 = 450;
+/// Tree-free radius around each fountain: the spawn pad. The rest of the
+/// base keeps its real trees.
+pub const TREE_BASE_CLEAR: i32 = 500;
+
+/// Every neutral camp on the map, both jungles: the map's own spawner
+/// positions.
+pub const NEUTRAL_CAMPS: [Vec2; 28] = [
+    Vec2::from_ints(8364, 14156),
+    Vec2::from_ints(12608, 7808),
+    Vec2::from_ints(13194, 4189),
+    Vec2::from_ints(17144, 9096),
+    Vec2::from_ints(4392, 13131),
+    Vec2::from_ints(13865, 5517),
+    Vec2::from_ints(7762, 5860),
+    Vec2::from_ints(9402, 4019),
+    Vec2::from_ints(4201, 9120),
+    Vec2::from_ints(13568, 9264),
+    Vec2::from_ints(7233, 4401),
+    Vec2::from_ints(10440, 13392),
+    Vec2::from_ints(5203, 10208),
+    Vec2::from_ints(8496, 1520),
+    Vec2::from_ints(9552, 16912),
+    Vec2::from_ints(10280, 11796),
+    Vec2::from_ints(17646, 10479),
+    Vec2::from_ints(903, 8663),
+    Vec2::from_ints(6336, 16592),
+    Vec2::from_ints(6620, 13066),
+    Vec2::from_ints(11984, 880),
+    Vec2::from_ints(11138, 5241),
+    Vec2::from_ints(5305, 14045),
+    Vec2::from_ints(1193, 7378),
+    Vec2::from_ints(11232, 17112),
+    Vec2::from_ints(6801, 814),
+    Vec2::from_ints(13632, 784),
+    Vec2::from_ints(5008, 17552),
+];
+/// Any unit inside this radius of a camp center blocks its spawn.
+pub const CAMP_BOX_RADIUS: i32 = 300;
+/// Neutrals aggro whoever comes this close to them.
+pub const NEUTRAL_AGGRO_RANGE: i32 = 400;
+/// A neutral dragged this far from its camp gives up and walks home.
+pub const NEUTRAL_LEASH: i32 = 700;
+/// Being this close to the camp again ends the walk home, at full health.
+pub const NEUTRAL_RETURN: i32 = 100;
+/// Tick of the first neutral spawn, one minute past the horn.
+pub const FIRST_NEUTRAL_TICK: u32 = PREGAME_TICKS + 60 * TICKS_PER_SECOND;
+/// Ticks between neutral spawn checks.
+pub const NEUTRAL_SPAWN_PERIOD_TICKS: u32 = 60 * TICKS_PER_SECOND;
+/// Neutrals living in one camp.
+pub const NEUTRALS_PER_CAMP: u32 = 2;
+/// Neutral creep health.
+pub const NEUTRAL_HP: i32 = 550;
+/// Neutral creep attack damage.
+pub const NEUTRAL_ATTACK_DAMAGE: i32 = 30;
+/// Neutral creep armor.
+pub const NEUTRAL_ARMOR: i32 = 2;
+/// Neutral creep movement speed, world units per second.
+pub const NEUTRAL_MOVE_SPEED: i32 = 315;
+/// Neutral creep gold bounty.
+pub const NEUTRAL_BOUNTY: i32 = 40;
+/// Neutral creep experience.
+pub const NEUTRAL_XP: i32 = 60;
+
+// Roshan. The map's own spawner point, in the south-east river pit; the
+// north-west pit stands empty until day and night exist.
+
+/// Where Roshan stands.
+pub const ROSHAN_PIT: Vec2 = Vec2::from_ints(12047, 6476);
+/// Roshan's health.
+pub const ROSHAN_HP: i32 = 6500;
+/// Roshan's attack damage.
+pub const ROSHAN_ATTACK_DAMAGE: i32 = 90;
+/// Roshan's attack range.
+pub const ROSHAN_ATTACK_RANGE: i32 = 150;
+/// Ticks between Roshan's attack starts.
+pub const ROSHAN_ATTACK_INTERVAL: u32 = 57;
+/// Ticks from Roshan's attack start to the hit.
+pub const ROSHAN_ATTACK_POINT: u32 = 14;
+/// Roshan's armor.
+pub const ROSHAN_ARMOR: i32 = 30;
+/// Roshan's magic resistance, percent.
+pub const ROSHAN_MAGIC_RESIST_PCT: i32 = 55;
+/// Roshan's movement speed, world units per second.
+pub const ROSHAN_MOVE_SPEED: i32 = 270;
+/// Roshan's collision radius.
+pub const ROSHAN_RADIUS: i32 = 60;
+/// Roshan's fog light radius.
+pub const ROSHAN_VISION: i32 = 1200;
+/// Gold to the killing seat.
+pub const ROSHAN_BOUNTY: i32 = 300;
+/// Gold to every seat of the killing team, the killer included.
+pub const ROSHAN_TEAM_GOLD: i32 = 200;
+/// Experience granted around Roshan's death.
+pub const ROSHAN_XP: i32 = 1400;
+/// Shortest wait before Roshan returns, ticks.
+pub const ROSHAN_RESPAWN_MIN_TICKS: u32 = 8 * 60 * TICKS_PER_SECOND;
+/// The respawn wait stretches up to this much further, hidden-random.
+pub const ROSHAN_RESPAWN_SPREAD_TICKS: u32 = 3 * 60 * TICKS_PER_SECOND;
 
 // Creep waves.
 
+/// Ticks of pregame: the game clock counts up from minus this, thirty
+/// seconds, and reaches zero when the first wave walks out.
+pub const PREGAME_TICKS: u32 = 30 * TICKS_PER_SECOND;
 /// Tick of the first creep wave.
-pub const FIRST_WAVE_TICK: u32 = 90;
+pub const FIRST_WAVE_TICK: u32 = PREGAME_TICKS;
 /// Ticks between creep waves.
 pub const WAVE_PERIOD_TICKS: u32 = 900;
 /// Every n-th wave brings a siege creep.
@@ -82,8 +248,8 @@ pub const HERO_PROJECTILE_SPEED: i32 = 900;
 pub const HERO_ARMOR: i32 = 3;
 /// Hero magic resistance, percent.
 pub const HERO_MAGIC_RESIST_PCT: i32 = 25;
-/// Hero collision radius.
-pub const HERO_RADIUS: i32 = 24;
+/// Hero collision radius, the Dota hero hull.
+pub const HERO_RADIUS: i32 = 27;
 /// Hero fog light radius.
 pub const HERO_VISION: i32 = 1800;
 /// Extra health per level past the first.
@@ -153,8 +319,8 @@ pub const CREEP_ATTACK_INTERVAL: u32 = 30;
 pub const CREEP_ATTACK_POINT: u32 = 8;
 /// Melee creep armor.
 pub const MELEE_CREEP_ARMOR: i32 = 2;
-/// Creep collision radius.
-pub const CREEP_RADIUS: i32 = 16;
+/// Lane creep collision radius, the Dota small hull.
+pub const CREEP_RADIUS: i32 = 8;
 /// Creep fog light radius.
 pub const CREEP_VISION: i32 = 850;
 /// Creep and siege attack projectile speed, world units per second.
@@ -162,10 +328,14 @@ pub const CREEP_PROJECTILE_SPEED: i32 = 900;
 
 // Buildings.
 
-/// Tower health.
-pub const TOWER_HP: i32 = 1800;
-/// Tower attack damage.
-pub const TOWER_ATTACK_DAMAGE: i32 = 110;
+/// Tower health, indexed by tier minus one.
+pub const TOWER_TIER_HP: [i32; 4] = [1800, 2000, 2200, 2600];
+/// Tower attack damage, indexed by tier minus one.
+pub const TOWER_TIER_DAMAGE: [i32; 4] = [110, 128, 144, 152];
+/// Tower armor, indexed by tier minus one.
+pub const TOWER_TIER_ARMOR: [i32; 4] = [12, 14, 15, 21];
+/// Gold paid to the killer of a tower, indexed by tier minus one.
+pub const TOWER_TIER_BOUNTY: [i32; 4] = [200, 250, 300, 350];
 /// Tower attack range.
 pub const TOWER_ATTACK_RANGE: i32 = 700;
 /// Ticks between tower attack starts.
@@ -174,14 +344,10 @@ pub const TOWER_ATTACK_INTERVAL: u32 = 29;
 pub const TOWER_ATTACK_POINT: u32 = 6;
 /// Tower attack projectile speed, world units per second.
 pub const TOWER_PROJECTILE_SPEED: i32 = 750;
-/// Tower armor.
-pub const TOWER_ARMOR: i32 = 12;
 /// Tower collision radius.
 pub const TOWER_RADIUS: i32 = 40;
 /// Tower fog light radius.
 pub const TOWER_VISION: i32 = 1900;
-/// Gold paid to the killer of a tower.
-pub const TOWER_BOUNTY: i32 = 200;
 
 /// Ancient health.
 pub const ANCIENT_HP: i32 = 4500;
@@ -209,14 +375,216 @@ pub const FOUNTAIN_HEAL_HP_PER_TICK: i32 = 25;
 /// Mana restored per tick to allies inside the fountain area.
 pub const FOUNTAIN_HEAL_MANA_PER_TICK: i32 = 15;
 /// Radius of the fountain heal area.
-pub const FOUNTAIN_HEAL_RADIUS: i32 = 500;
+pub const FOUNTAIN_HEAL_RADIUS: i32 = 1000;
 
 // Combat.
 
 /// How far past attack range a started attack still connects.
 pub const ATTACK_RANGE_LEEWAY: i32 = 100;
-/// How far an idle unit looks for something to attack.
+/// How far an idle hero looks for something to attack.
 pub const ACQUISITION_RANGE: i32 = 600;
+/// How far a lane creep looks for something to attack.
+pub const CREEP_ACQUISITION_RANGE: i32 = 500;
+/// Radius around a hero within which its attacks against heroes call enemy
+/// creeps, and its orders at allies call them off.
+pub const AGGRO_CALL_RADIUS: i32 = 500;
+/// Ticks a hero holds a creep's attention, however it was gained.
+pub const CREEP_PROVOKE_TICKS: u32 = 70;
+/// Ticks before aggro can be called onto the same creep or tower again.
+pub const AGGRO_CALL_COOLDOWN_TICKS: u32 = 90;
+/// A creep drops a non-hero target that got this far away.
+pub const CREEP_CHASE_RANGE: i32 = 750;
+/// How close a hero follows an ally it was ordered to attack but may not.
+pub const FOLLOW_DISTANCE: i32 = 150;
+/// Extra clearance added around structures when blocking grid cells.
+pub const STEER_MARGIN: i32 = 8;
+/// A path waypoint counts as reached within this distance.
+pub const WAYPOINT_RADIUS: i32 = 40;
+/// A stored path is recomputed once its goal drifted this far.
+pub const REPATH_DRIFT: i32 = 128;
+/// Ticks a walker presses into a walking blocker, fully stopped, before it
+/// starts sidestepping around.
+pub const BLOCK_WAIT_TICKS: u32 = 12;
+/// How far ahead a walker steers around standing bodies.
+pub const SHORT_PATH_RANGE: i32 = 600;
+/// Tangent detours resolved per tick when steering.
+pub const STEER_HOPS: u32 = 4;
+/// Ticks a hero recovers after a swing. Cancelled by any order.
+pub const HERO_ATTACK_BACKSWING: u32 = 12;
+/// Ticks a creep recovers after a swing.
+pub const CREEP_ATTACK_BACKSWING: u32 = 15;
+/// Ticks a tower recovers after a shot.
+pub const TOWER_ATTACK_BACKSWING: u32 = 4;
+/// Ticks the fountain recovers after a shot.
+pub const FOUNTAIN_ATTACK_BACKSWING: u32 = 2;
+/// How far from the mid lane a calm creep may stray before it turns back.
+pub const LANE_LEASH: i32 = 800;
+/// Being this close to the lane again ends a creep's walk back.
+pub const LANE_RETURN: i32 = 400;
+/// How fast a mobile unit turns, in brads per tick.
+pub const TURN_RATE_BRADS: u16 = 6000;
+/// A unit walks or swings only when facing within this error, in brads.
+pub const TURN_TOLERANCE_BRADS: u16 = 8192;
+
+// Abilities.
+
+/// Levels a basic ability can reach.
+pub const ABILITY_MAX_LEVEL: u8 = 4;
+/// Levels the ultimate can reach.
+pub const ULT_MAX_LEVEL: u8 = 3;
+/// Hero level required for each ultimate level.
+pub const ULT_LEVEL_FLOORS: [u8; 3] = [6, 8, 10];
+
+// Sylla: crit passive / attack speed buff / bouncing projectile / multishot.
+
+/// Chance for a ranged attack to miss a target on higher ground.
+pub const UPHILL_MISS: Ratio = Ratio::new(1, 4);
+
+/// Fog blocker nodes further apart than this belong to different walls of
+/// the same named group, not to one span.
+pub const FOW_BLOCKER_SPAN: i32 = 600;
+
+/// Chance of a critical strike per crit level.
+pub const SYLLA_CRIT_CHANCE: [Ratio; 4] = [
+    Ratio::new(1, 5),
+    Ratio::new(1, 4),
+    Ratio::new(3, 10),
+    Ratio::new(7, 20),
+];
+/// Critical strike damage per crit level, percent of a normal hit.
+pub const SYLLA_CRIT_MULT_PCT: [i32; 4] = [175, 200, 225, 250];
+/// Frenzy mana cost per level.
+pub const SYLLA_FRENZY_MANA: [i32; 4] = [30, 40, 50, 60];
+/// Frenzy cooldown per level, ticks.
+pub const SYLLA_FRENZY_COOLDOWN: [u32; 4] = [450, 420, 390, 360];
+/// Frenzy attack interval reduction per level, percent.
+pub const SYLLA_FRENZY_HASTE_PCT: [i32; 4] = [20, 28, 36, 44];
+/// Frenzy duration, ticks.
+pub const SYLLA_FRENZY_TICKS: u32 = 180;
+/// Bounce mana cost per level.
+pub const SYLLA_BOUNCE_MANA: [i32; 4] = [90, 100, 110, 120];
+/// Bounce cooldown per level, ticks.
+pub const SYLLA_BOUNCE_COOLDOWN: [u32; 4] = [300, 270, 240, 210];
+/// Bounce magical damage per hit per level.
+pub const SYLLA_BOUNCE_DAMAGE: [i32; 4] = [70, 140, 210, 280];
+/// Extra targets after the first per level.
+pub const SYLLA_BOUNCE_COUNT: [u8; 4] = [2, 4, 6, 8];
+/// Cast range of the bounce.
+pub const SYLLA_BOUNCE_CAST_RANGE: i32 = 550;
+/// How far the bounce jumps between targets.
+pub const SYLLA_BOUNCE_RANGE: i32 = 500;
+/// Bounce projectile speed, world units per second.
+pub const SYLLA_BOUNCE_SPEED: i32 = 900;
+/// Multishot mana cost per level.
+pub const SYLLA_MULTI_MANA: [i32; 3] = [100, 150, 200];
+/// Multishot cooldown per level, ticks.
+pub const SYLLA_MULTI_COOLDOWN: [u32; 3] = [2100, 1800, 1500];
+/// Multishot damage per level, percent of attack damage.
+pub const SYLLA_MULTI_DMG_PCT: [i32; 3] = [80, 100, 120];
+/// Radius the multishot volley covers.
+pub const SYLLA_MULTI_RADIUS: i32 = 700;
+
+// Items and the shop.
+
+/// The flat bonuses and price of one purchasable item.
+///
+/// `charges` above zero makes the item a consumable with that many uses and
+/// no bonuses while carried.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ItemDef {
+    /// Price in gold.
+    pub cost: i32,
+    /// Movement speed added.
+    pub move_speed: i32,
+    /// Attack damage added.
+    pub damage: i32,
+    /// Armor added.
+    pub armor: i32,
+    /// Maximum health added.
+    pub hp: i32,
+    /// Maximum mana added.
+    pub mana: i32,
+    /// Uses a consumable carries. Zero for carried bonuses.
+    pub charges: u8,
+}
+
+const fn passive(
+    cost: i32,
+    move_speed: i32,
+    damage: i32,
+    armor: i32,
+    hp: i32,
+    mana: i32,
+) -> ItemDef {
+    ItemDef {
+        cost,
+        move_speed,
+        damage,
+        armor,
+        hp,
+        mana,
+        charges: 0,
+    }
+}
+
+/// The catalog, indexed by `ItemId`: Boots of Speed, Blades of Attack,
+/// Broadsword, Claymore, Platemail, Vitality Booster, Energy Booster,
+/// Healing Salve, Clarity.
+pub const ITEMS: [ItemDef; 9] = [
+    passive(500, 45, 0, 0, 0, 0),
+    passive(450, 0, 9, 0, 0, 0),
+    passive(1000, 0, 16, 0, 0, 0),
+    passive(1400, 0, 20, 0, 0, 0),
+    passive(1400, 0, 0, 10, 0, 0),
+    passive(1100, 0, 0, 0, 250, 0),
+    passive(800, 0, 0, 0, 0, 250),
+    ItemDef {
+        cost: 110,
+        move_speed: 0,
+        damage: 0,
+        armor: 0,
+        hp: 0,
+        mana: 0,
+        charges: 1,
+    },
+    ItemDef {
+        cost: 95,
+        move_speed: 0,
+        damage: 0,
+        armor: 0,
+        hp: 0,
+        mana: 0,
+        charges: 1,
+    },
+];
+/// Item id of the Healing Salve.
+pub const ITEM_SALVE: u16 = 7;
+/// Item id of the Clarity.
+pub const ITEM_CLARITY: u16 = 8;
+/// Health the salve restores per pulse.
+pub const SALVE_HP_PER_PULSE: i32 = 4;
+/// Mana the clarity restores per pulse.
+pub const CLARITY_MANA_PER_PULSE: i32 = 8;
+/// Ticks between salve pulses; 100 pulses of 4 make 400 health over 30 s.
+pub const SALVE_PULSE_TICKS: u32 = 9;
+/// Ticks between clarity pulses; 30 pulses of 8 make 240 mana over 30 s.
+pub const CLARITY_PULSE_TICKS: u32 = 30;
+/// Ticks either regeneration runs when drunk.
+pub const REGEN_BUFF_TICKS: u32 = 900;
+/// Inventory slots, where items work.
+pub const INVENTORY_SLOTS: usize = 6;
+/// Backpack slots, where items are carried inert.
+pub const BACKPACK_SLOTS: usize = 3;
+/// Stash slots at the home shop.
+pub const STASH_SLOTS: usize = 6;
+/// Ticks an item stays muted after leaving the backpack for the inventory.
+pub const BACKPACK_MUTE_TICKS: u32 = 180;
+/// How close to the home fountain the shop, the stash and selling work.
+pub const SHOP_RANGE: i32 = 1000;
+/// Percent of the price a sale returns.
+pub const SELL_PCT: i32 = 50;
+/// Ticks after purchase in which an unused item refunds in full.
+pub const SELL_REFUND_TICKS: u32 = 300;
 /// Denominator scale of the armor formula: each point of armor adds
 /// `ARMOR_SCALE` to a base of one hundred.
 pub const ARMOR_SCALE: i32 = 6;

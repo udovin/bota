@@ -53,7 +53,9 @@ pub enum Order {
     },
     /// Attack a specific unit, following it if it moves out of range.
     ///
-    /// Also how a friendly unit is denied, when it is low enough to allow it.
+    /// Against a friendly unit this is a follow, turning into a deny once the
+    /// unit is low enough to allow one. Either way the order calls off any
+    /// enemy creeps and towers currently aggroed on the issuer.
     AttackUnit {
         /// The unit to attack.
         target: EntityId,
@@ -71,6 +73,15 @@ pub enum Order {
         slot: ItemSlot,
         /// What the item is aimed at.
         target: OrderTarget,
+    },
+    /// Move an item between two slots, swapping whatever is in the way.
+    ///
+    /// Stash slots take part only while standing in the home shop area.
+    MoveItem {
+        /// The slot being moved from.
+        from: ItemSlot,
+        /// The slot being moved to.
+        to: ItemSlot,
     },
     /// Spend a skill point on an ability.
     LevelUpAbility {
