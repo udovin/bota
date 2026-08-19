@@ -5,7 +5,7 @@
 
 use bota_proto::{Angle, Fixed, Team, UnitKind, Vec2};
 
-use crate::engine::{Entity, World};
+use crate::engine::{Entity, Target, World};
 
 /// FNV-1a over the state a tick depends on.
 pub struct Fnv {
@@ -122,8 +122,8 @@ impl World {
             if let Some(mana) = self.mana.get(entity) {
                 fnv.fixed(mana.mana);
             }
-            if let Some(engaged) = self.engage.get(entity) {
-                fnv.entity(*engaged);
+            if let Some(Target(on)) = self.target.get(entity) {
+                fnv.entity(*on);
             }
             if let Some(attacking) = self.attacking.get(entity) {
                 fnv.u32(attacking.cooldown);

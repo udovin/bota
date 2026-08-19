@@ -84,9 +84,10 @@ impl World {
 
     /// Whether one entity attacks another of its own accord.
     ///
-    /// Team alone does not decide it: the jungle is hostile to both sides, but
-    /// only the pull camps are hostile back to lane creeps, and buildings never
-    /// shoot the jungle at all.
+    /// Team alone does not decide it: what a side cannot see it does not take
+    /// on, the jungle is hostile to both sides but only the pull camps are
+    /// hostile back to lane creeps, and buildings never shoot the jungle at
+    /// all.
     pub fn hostile(&self, seeker: Entity, target: Entity) -> bool {
         let (Some(mine), Some(theirs)) = (
             self.team.get(seeker).copied(),
@@ -95,6 +96,10 @@ impl World {
             return false;
         };
         if mine == theirs || !self.alive(target) {
+            return false;
+        }
+        // Nothing is taken on that its side has no eyes on.
+        if !self.can_see(mine, target) {
             return false;
         }
         if self.stats.get(target).is_some_and(|s| s.invulnerable) {
@@ -220,5 +225,56 @@ impl World {
             .filter(|&(class, distance, _)| class == best_class && distance <= nearest + tie)
             .min_by_key(|&(_, distance, other)| (self.behaviour_rank(side, other), distance, other))
             .map(|(_, _, other)| other)
+    }
+}
+
+impl World {
+    /// Whether one entity may be attacked by another on an order.
+    ///
+    /// An enemy always may. One of your own may only once it is worn down far
+    /// enough to be denied, and only a lane creep or a building ever is.
+    pub fn may_attack_on_order(&self, attacker: Entity, on: Entity) -> bool {
+        if !self.alive(on) || !self.can_see_of(attacker, on) {
+            return false;
+        }
+        let (Some(mine), Some(theirs)) =
+            (self.team.get(attacker).copied(), self.team.get(on).copied())
+        else {
+            return false;
+        };
+        if mine != theirs {
+            return !self.stats.get(on).is_some_and(|s| s.invulnerable);
+        }
+        self.deniable(on)
+    }
+
+    /// Whether one of your own is worn down far enough to be put out.
+    ///
+    /// A lane creep goes at [`rules::DENY_HP_PCT`] of what it can hold, a
+    /// building only at [`rules::DENY_BUILDING_HP_PCT`]. Nothing else of your
+    /// own goes at all.
+    pub fn deniable(&self, entity: Entity) -> bool {
+        let Some(kind) = self.kind.get(entity).copied() else {
+            return false;
+        };
+        let share = if lane_creep(kind) {
+            rules::DENY_HP_PCT
+        } else if is_structure(kind) {
+            rules::DENY_BUILDING_HP_PCT
+        } else {
+            return false;
+        };
+        let (Some(health), Some(stats)) = (self.health.get(entity), self.stats.get(entity)) else {
+            return false;
+        };
+        i64::from(health.hp.raw) * 100 < i64::from(stats.max_hp.raw) * i64::from(share)
+    }
+
+    /// Whether the attacker's side sees the other one.
+    fn can_see_of(&self, attacker: Entity, on: Entity) -> bool {
+        self.team
+            .get(attacker)
+            .copied()
+            .is_some_and(|side| self.can_see(side, on))
     }
 }

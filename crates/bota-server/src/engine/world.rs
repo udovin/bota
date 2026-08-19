@@ -3,11 +3,13 @@
 use bota_proto::{HeroId, SlotId, Team, UnitKind};
 
 use crate::engine::{
-    AbilityBook, Attacking, Bounty, CampHome, Def, Entity, EntityAllocator, Health, Hull,
-    Inventory, Lane, LaneAi, Level, Mana, March, NeutralAi, Orders, PendingCast, Projectile, Route,
-    Seat, SightCx, Stats, StatsCx, Statuses, Table, Tier, Transform, Upgrades, Visibility,
-    derive_stats, regenerate, visibility_system,
+    AbilityBook, AttackCx, Attacking, Bounty, CampHome, Def, Entity, EntityAllocator, Health, Hit,
+    Hull, Inventory, Lane, LaneAi, Level, Mana, March, NeutralAi, Orders, PendingCast, Projectile,
+    Route, Seat, SightCx, Stats, StatsCx, Statuses, Table, Target, Tier, Transform, Upgrades,
+    Visibility, attacking_system, derive_stats, hitting_system, missile_system, regenerate,
+    visibility_system,
 };
+use crate::engine::{HitCx, MissileCx};
 
 /// Everything a match is made of.
 ///
@@ -45,6 +47,8 @@ pub struct World {
     pub kind: Table<UnitKind>,
     /// Which side each entity is on.
     pub team: Table<Team>,
+    /// Blows waiting to be felt.
+    pub hit: Table<Hit>,
 
     /// Health, for whatever can be hurt.
     pub health: Table<Health>,
@@ -72,7 +76,7 @@ pub struct World {
     /// The order each entity is following.
     pub orders: Table<Orders>,
     /// Who each entity is set on. Absent when it is set on nobody.
-    pub engage: Table<Entity>,
+    pub target: Table<Target>,
     /// Where each entity is in its attack cycle.
     pub attacking: Table<Attacking>,
     /// Casts ordered and not yet started.
@@ -129,6 +133,7 @@ impl World {
             hull: Table::new(),
             kind: Table::new(),
             team: Table::new(),
+            hit: Table::new(),
             health: Table::new(),
             mana: Table::new(),
             def: Table::new(),
@@ -140,7 +145,7 @@ impl World {
             route: Table::new(),
             march: Table::new(),
             orders: Table::new(),
-            engage: Table::new(),
+            target: Table::new(),
             attacking: Table::new(),
             casting: Table::new(),
             lane_ai: Table::new(),
@@ -160,6 +165,40 @@ impl World {
     /// Adds an entity carrying no components.
     pub fn spawn(&mut self) -> Entity {
         self.entities.alloc()
+    }
+
+    /// Who an entity is set on, if it is set on anybody.
+    pub fn target_of(&self, entity: Entity) -> Option<Entity> {
+        self.target.get(entity).map(|Target(on)| *on)
+    }
+
+    /// Sets an entity on another.
+    pub fn set_target(&mut self, entity: Entity, on: Entity) {
+        self.target.insert(entity, Target(on));
+    }
+
+    /// Leaves a blow for the next tick of resolving to take off somebody.
+    ///
+    /// What an ability deals goes through the same door as what a swing does.
+    pub fn spawn_hit(
+        &mut self,
+        source: Option<Entity>,
+        target: Entity,
+        amount: i32,
+        kind: bota_proto::DamageKind,
+    ) -> Entity {
+        let blow = self.spawn();
+        self.hit.insert(
+            blow,
+            Hit {
+                source,
+                target,
+                amount,
+                kind,
+                crit: false,
+            },
+        );
+        blow
     }
 
     /// Puts an entity on a side.
@@ -251,7 +290,6 @@ impl World {
     /// One tick. Systems run in the order they are written here.
     pub fn step(&mut self) -> Vec<crate::sim::Event> {
         let mut events = Vec::new();
-        let mut hits = Vec::new();
         self.tick += 1;
         self.spawn_waves();
         self.fill_camps();
@@ -291,10 +329,43 @@ impl World {
             &mut self.health,
             &mut self.mana,
         );
-        self.swing(&mut hits);
-        self.fly(&mut hits);
-        self.run_casts(&mut events, &mut hits);
-        let fallen = self.resolve(hits, &mut events);
+        attacking_system(AttackCx {
+            entities: &mut self.entities,
+            transform: &mut self.transform,
+            hull: &self.hull,
+            team: &mut self.team,
+            health: &self.health,
+            stats: &self.stats,
+            visibility: &mut self.visibility,
+            target: &self.target,
+            attacking: &mut self.attacking,
+            hit: &mut self.hit,
+            projectile: &mut self.projectile,
+        });
+        missile_system(MissileCx {
+            entities: &mut self.entities,
+            projectile: &mut self.projectile,
+            transform: &mut self.transform,
+            team: &mut self.team,
+            visibility: &mut self.visibility,
+            health: &self.health,
+            hit: &mut self.hit,
+        });
+        self.run_casts(&mut events);
+        let felt = hitting_system(HitCx {
+            entities: &mut self.entities,
+            hit: &mut self.hit,
+            transform: &self.transform,
+            team: &self.team,
+            stats: &self.stats,
+            health: &mut self.health,
+        });
+        self.tell_of(&felt, &mut events);
+        let fallen = felt
+            .iter()
+            .filter(|blow| blow.fatal)
+            .map(|blow| (blow.target, blow.source))
+            .collect();
         self.bury(fallen, &mut events);
         events
     }

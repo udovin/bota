@@ -470,10 +470,14 @@ pub const FOUNTAIN_ATTACK_BACKSWING: u32 = 2;
 /// The shipped `MovementTurnRate` is radians per 0.03 seconds; a half, which
 /// every lane creep carries, is this many brads over a tick of a thirtieth.
 pub const TURN_RATE_BRADS: u16 = 5795;
-/// A unit walks or swings only when facing within this error, in brads.
+/// A unit swings only when facing within this error of its target, in brads.
 ///
-/// An eighth of a right angle, which is what Dota allows a cast order before
-/// the unit has to come round first.
+/// An eighth of a right angle less a touch: the 11.5 degrees Dota allows an
+/// order before the unit has to come round first.
+pub const ATTACK_ANGLE_BRADS: u16 = 2094;
+
+/// A unit walks only when facing within this error of where it is going, in
+/// brads.
 pub const TURN_TOLERANCE_BRADS: u16 = 8192;
 
 // Abilities.
@@ -661,6 +665,10 @@ pub const XP_RADIUS: i32 = 1500;
 /// A friendly creep may be denied when its health is strictly below this
 /// fraction of the maximum, expressed as a percent.
 pub const DENY_HP_PCT: i32 = 50;
+
+/// A friendly building may be denied when its health is strictly below this
+/// fraction of the maximum, expressed as a percent.
+pub const DENY_BUILDING_HP_PCT: i32 = 10;
 /// Denied creeps grant this percent of their experience.
 pub const DENIED_XP_PCT: i32 = 50;
 

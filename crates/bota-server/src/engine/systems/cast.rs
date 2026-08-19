@@ -2,7 +2,7 @@
 
 use bota_proto::{DamageKind, EventKind, Fixed, OrderTarget, Team};
 
-use crate::engine::{Entity, Hit, PendingCast, Projectile, Status, StatusKind, World, wire_id};
+use crate::engine::{Entity, PendingCast, Projectile, Status, StatusKind, World, wire_id};
 use crate::sim::{Event, rules};
 
 impl World {
@@ -25,7 +25,7 @@ impl World {
     /// A cast waits on nothing but its own cost: the level must be learned,
     /// the cooldown run out, and the mana be there. What it cannot pay for is
     /// dropped rather than held.
-    pub fn run_casts(&mut self, events: &mut Vec<Event>, hits: &mut Vec<Hit>) {
+    pub fn run_casts(&mut self, events: &mut Vec<Event>) {
         for entity in self.entities.iter().collect::<Vec<_>>() {
             let Some(cast) = self.casting.remove(entity) else {
                 continue;
@@ -61,7 +61,7 @@ impl World {
             let went = match ability.id.0 {
                 1 => self.cast_frenzy(entity, level),
                 2 => self.cast_bounce(entity, level, cast.target),
-                3 => self.cast_multishot(entity, level.min(2), hits),
+                3 => self.cast_multishot(entity, level.min(2)),
                 _ => false,
             };
             if !went {
@@ -146,7 +146,7 @@ impl World {
     }
 
     /// Strikes every enemy standing near the caster at once.
-    fn cast_multishot(&mut self, caster: Entity, level: usize, hits: &mut Vec<Hit>) -> bool {
+    fn cast_multishot(&mut self, caster: Entity, level: usize) -> bool {
         let Some(at) = self.transform.get(caster).map(|t| t.pos) else {
             return false;
         };
@@ -166,12 +166,7 @@ impl World {
             })
             .collect();
         for mark in struck {
-            hits.push(Hit {
-                source: Some(caster),
-                target: mark,
-                amount: damage,
-                kind: DamageKind::Physical,
-            });
+            self.spawn_hit(Some(caster), mark, damage, DamageKind::Physical);
         }
         true
     }

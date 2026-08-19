@@ -690,7 +690,7 @@ fn a_tower_takes_the_nearest_enemy_and_brings_it_down() {
     world.settle();
     world.step();
     assert_eq!(
-        world.engage.get(tower).copied(),
+        world.target_of(tower),
         Some(near),
         "the nearer one is taken"
     );
@@ -1010,7 +1010,7 @@ fn a_neutral_led_too_far_gives_up_and_walks_home() {
         "its patience ran out"
     );
     assert!(
-        world.engage.get(beast).is_none(),
+        world.target.get(beast).is_none(),
         "and it takes nothing on while it walks back"
     );
 }
@@ -1377,7 +1377,7 @@ fn a_creep_gives_up_a_chase_it_cannot_finish() {
     );
     world.settle();
     world.step();
-    assert_eq!(world.engage.get(creep).copied(), Some(prey), "it takes it");
+    assert_eq!(world.target_of(creep), Some(prey), "it takes it");
     // Carried out of everything it can see, and the creep held where it was.
     let away = bota_proto::Vec2::from_ints(5900, 5000);
     for _ in 0..rules::CREEP_CHASE_TICKS + 2 {
@@ -1390,7 +1390,7 @@ fn a_creep_gives_up_a_chase_it_cannot_finish() {
         world.step();
     }
     assert_eq!(
-        world.engage.get(creep).copied(),
+        world.target_of(creep),
         None,
         "the chase ran out and it let go"
     );
@@ -1435,13 +1435,13 @@ fn an_attack_order_at_an_ally_never_hands_the_creep_the_one_who_gave_it() {
     world.settle();
     world.provoke(creep, hero, true);
     assert_eq!(
-        world.engage.get(creep).copied(),
+        world.target_of(creep),
         Some(other),
         "the nearer hero is put last, so the creep takes the creep"
     );
     world.provoke(creep, hero, false);
     assert_eq!(
-        world.engage.get(creep).copied(),
+        world.target_of(creep),
         Some(hero),
         "an attack at an enemy hands it over outright"
     );
@@ -1751,4 +1751,618 @@ fn a_missile_is_seen_from_the_tick_it_is_thrown() {
         "its own side has it"
     );
     let _ = (archer, watcher);
+}
+
+/// Runs one tick of the attack cycle and nothing else.
+fn swing_once(world: &mut World) {
+    crate::engine::attacking_system(crate::engine::AttackCx {
+        entities: &mut world.entities,
+        transform: &mut world.transform,
+        hull: &world.hull,
+        team: &mut world.team,
+        health: &world.health,
+        stats: &world.stats,
+        visibility: &mut world.visibility,
+        target: &world.target,
+        attacking: &mut world.attacking,
+        hit: &mut world.hit,
+        projectile: &mut world.projectile,
+    });
+}
+
+/// An attacker and its mark, standing where they are put and nothing else.
+fn duel(gap: i32) -> (World, Entity, Entity) {
+    let mut world = World::new();
+    let at = bota_proto::Vec2::from_ints(5000, 5000);
+    let attacker = world.spawn_unit(&MELEE_CREEP, Team::Radiant, at);
+    let mark = world.spawn_unit(
+        &MELEE_CREEP,
+        Team::Dire,
+        bota_proto::Vec2::from_ints(5000 + gap, 5000),
+    );
+    world.settle();
+    (world, attacker, mark)
+}
+
+#[test]
+fn a_swing_waits_on_the_angle_it_is_looking_at() {
+    let (mut world, attacker, mark) = duel(100);
+    world.set_target(attacker, mark);
+    // Turned right away from it: in reach, seen, but not looked at.
+    if let Some(at) = world.transform.get_mut(attacker) {
+        at.facing = bota_proto::Angle { brads: 32768 };
+    }
+    swing_once(&mut world);
+    assert_eq!(
+        world.attacking.get(attacker).and_then(|a| a.windup),
+        None,
+        "nothing begins while it is looking the other way"
+    );
+    // Looking straight at it.
+    if let Some(at) = world.transform.get_mut(attacker) {
+        at.facing = bota_proto::Angle { brads: 0 };
+    }
+    swing_once(&mut world);
+    assert!(
+        world
+            .attacking
+            .get(attacker)
+            .and_then(|a| a.windup)
+            .is_some(),
+        "and begins once it is"
+    );
+}
+
+#[test]
+fn a_swing_waits_on_being_able_to_see_at_all() {
+    let (mut world, attacker, mark) = duel(100);
+    world.set_target(attacker, mark);
+    if let Some(seen) = world.visibility.get_mut(mark) {
+        seen.clear();
+    }
+    swing_once(&mut world);
+    assert_eq!(
+        world.attacking.get(attacker).and_then(|a| a.windup),
+        None,
+        "what a side has no eyes on it does not swing at"
+    );
+}
+
+#[test]
+fn a_swing_waits_on_reach() {
+    let (mut world, attacker, mark) = duel(600);
+    world.set_target(attacker, mark);
+    swing_once(&mut world);
+    assert_eq!(
+        world.attacking.get(attacker).and_then(|a| a.windup),
+        None,
+        "too far to touch"
+    );
+}
+
+#[test]
+fn a_swing_lands_on_whoever_it_began_against() {
+    let (mut world, attacker, mark) = duel(100);
+    let other = world.spawn_unit(
+        &MELEE_CREEP,
+        Team::Dire,
+        bota_proto::Vec2::from_ints(5100, 5000),
+    );
+    world.settle();
+    world.set_target(attacker, mark);
+    world.step();
+    assert!(
+        world
+            .attacking
+            .get(attacker)
+            .and_then(|a| a.windup)
+            .is_some(),
+        "the swing began"
+    );
+    // Set on somebody else halfway through.
+    world.set_target(attacker, other);
+    let was = world.health.get(mark).expect("standing").hp;
+    for _ in 0..rules::MELEE_CREEP_ATTACK_POINT + 1 {
+        world.step();
+    }
+    assert!(
+        world.health.get(mark).expect("standing").hp < was,
+        "and landed on the one it began against"
+    );
+}
+
+#[test]
+fn a_hero_told_to_attack_comes_round_and_closes() {
+    let mut world = World::new();
+    let hero = world.spawn_hero(
+        Team::Radiant,
+        bota_proto::Vec2::from_ints(5000, 5000),
+        bota_proto::SlotId(0),
+        bota_proto::HeroId(0),
+    );
+    let mark = world.spawn_unit(
+        &MELEE_CREEP,
+        Team::Dire,
+        bota_proto::Vec2::from_ints(4000, 5000),
+    );
+    world.settle();
+    // Ordered at it, the way a player does.
+    world.orders.insert(
+        hero,
+        crate::engine::Orders {
+            current: crate::engine::UnitOrder::Attack {
+                target: mark,
+                last_seen: bota_proto::Vec2::from_ints(4000, 5000),
+            },
+            cooldown: 0,
+        },
+    );
+    let start = world.transform.get(hero).expect("standing").pos;
+    for _ in 0..60 {
+        world.step();
+    }
+    let now = world.transform.get(hero).expect("standing").pos;
+    assert!(now.x < start.x, "it walked at what it was set on: {now:?}");
+}
+
+#[test]
+fn a_swing_that_began_still_connects_a_little_past_reach() {
+    let (mut world, attacker, mark) = duel(100);
+    world.set_target(attacker, mark);
+    world.step();
+    assert!(
+        world
+            .attacking
+            .get(attacker)
+            .and_then(|a| a.windup)
+            .is_some(),
+        "the swing began in reach"
+    );
+    // Backs off by less than the leeway while the swing is under way.
+    let just_out = rules::MELEE_CREEP_ATTACK_RANGE + 60;
+    let was = world.health.get(mark).expect("standing").hp;
+    for _ in 0..rules::MELEE_CREEP_ATTACK_POINT + 1 {
+        if let Some(at) = world.transform.get_mut(mark) {
+            at.pos = bota_proto::Vec2::from_ints(5000 + just_out, 5000);
+        }
+        world.step();
+    }
+    assert!(
+        world.health.get(mark).expect("standing").hp < was,
+        "a step past reach does not shake it off"
+    );
+}
+
+#[test]
+fn a_swing_is_given_up_when_the_target_gets_away() {
+    let (mut world, attacker, mark) = duel(100);
+    world.set_target(attacker, mark);
+    world.step();
+    assert!(
+        world
+            .attacking
+            .get(attacker)
+            .and_then(|a| a.windup)
+            .is_some(),
+        "the swing began in reach"
+    );
+    let far = rules::MELEE_CREEP_ATTACK_RANGE + rules::ATTACK_RANGE_LEEWAY + 200;
+    let was = world.health.get(mark).expect("standing").hp;
+    if let Some(at) = world.transform.get_mut(mark) {
+        at.pos = bota_proto::Vec2::from_ints(5000 + far, 5000);
+    }
+    world.step();
+    assert_eq!(
+        world.attacking.get(attacker).and_then(|a| a.windup),
+        None,
+        "the swing is given up the moment it gets away"
+    );
+    assert_eq!(
+        world.attacking.get(attacker).map(|a| a.cooldown),
+        Some(0),
+        "and costs nothing, so the next one may start at once"
+    );
+    assert_eq!(
+        world.health.get(mark).expect("standing").hp,
+        was,
+        "nothing was struck"
+    );
+}
+
+#[test]
+fn a_swing_is_given_up_when_the_target_falls() {
+    let (mut world, attacker, mark) = duel(100);
+    world.set_target(attacker, mark);
+    world.step();
+    assert!(
+        world
+            .attacking
+            .get(attacker)
+            .and_then(|a| a.windup)
+            .is_some()
+    );
+    world.health.insert(mark, Health { hp: Fixed::ZERO });
+    world.step();
+    assert_eq!(
+        world.attacking.get(attacker).and_then(|a| a.windup),
+        None,
+        "there is nothing left to strike"
+    );
+}
+
+#[test]
+fn a_swing_is_given_up_when_the_target_is_lost_from_sight() {
+    let (mut world, attacker, mark) = duel(100);
+    world.set_target(attacker, mark);
+    world.step();
+    assert!(
+        world
+            .attacking
+            .get(attacker)
+            .and_then(|a| a.windup)
+            .is_some()
+    );
+    // Blinded to it, the way stepping into fog would.
+    if let Some(seen) = world.visibility.get_mut(mark) {
+        seen.clear();
+    }
+    swing_once(&mut world);
+    assert_eq!(
+        world.attacking.get(attacker).and_then(|a| a.windup),
+        None,
+        "it does not finish a swing at what it can no longer see"
+    );
+}
+
+/// A hero, an enemy standing in its way, and the order it was given.
+fn hero_past_an_enemy(order: crate::engine::UnitOrder) -> (World, Entity, Entity) {
+    let mut world = World::new();
+    world.seats.push(crate::engine::Seat::new(
+        bota_proto::SlotId(0),
+        Team::Radiant,
+        bota_proto::HeroId(0),
+        0,
+        rules::STASH_SLOTS,
+    ));
+    let hero = world.spawn_hero(
+        Team::Radiant,
+        bota_proto::Vec2::from_ints(5000, 5000),
+        bota_proto::SlotId(0),
+        bota_proto::HeroId(0),
+    );
+    let enemy = world.spawn_unit(
+        &MELEE_CREEP,
+        Team::Dire,
+        bota_proto::Vec2::from_ints(5400, 5000),
+    );
+    world.settle();
+    world.seats[0].unit = Some(hero);
+    world.orders.insert(
+        hero,
+        crate::engine::Orders {
+            current: order,
+            cooldown: 0,
+        },
+    );
+    (world, hero, enemy)
+}
+
+#[test]
+fn a_hero_told_to_walk_walks_past_what_it_meets() {
+    let (mut world, hero, enemy) = hero_past_an_enemy(crate::engine::UnitOrder::Move {
+        pos: bota_proto::Vec2::from_ints(7000, 5000),
+    });
+    let was = world.health.get(enemy).expect("standing").hp;
+    for _ in 0..120 {
+        world.step();
+    }
+    assert_eq!(
+        world.target_of(hero),
+        None,
+        "walking somewhere, it takes on nothing"
+    );
+    assert_eq!(
+        world.health.get(enemy).expect("standing").hp,
+        was,
+        "and strikes nothing"
+    );
+    let now = world.transform.get(hero).expect("standing").pos;
+    assert!(
+        now.x.to_int() > 6000,
+        "it kept walking where it was sent: {now:?}"
+    );
+}
+
+#[test]
+fn a_hero_told_to_walk_and_attack_stops_for_what_it_meets() {
+    let (mut world, hero, enemy) = hero_past_an_enemy(crate::engine::UnitOrder::AttackMove {
+        pos: bota_proto::Vec2::from_ints(7000, 5000),
+    });
+    let was = world.health.get(enemy).expect("standing").hp;
+    for _ in 0..120 {
+        world.step();
+    }
+    assert_eq!(world.target_of(hero), Some(enemy), "it took on what it met");
+    assert!(
+        world.health.get(enemy).expect("standing").hp < was,
+        "and struck it"
+    );
+}
+
+#[test]
+fn a_hero_holding_comes_round_but_never_leaves_the_spot() {
+    let (mut world, hero, enemy) = hero_past_an_enemy(crate::engine::UnitOrder::Hold);
+    // Out of reach, so anything that walked would walk.
+    if let Some(at) = world.transform.get_mut(enemy) {
+        at.pos = bota_proto::Vec2::from_ints(5500, 5000);
+    }
+    let stood = world.transform.get(hero).expect("standing").pos;
+    for _ in 0..60 {
+        world.step();
+    }
+    assert_eq!(
+        world.target_of(hero),
+        Some(enemy),
+        "holding, it still takes on what comes near"
+    );
+    assert_eq!(
+        world.transform.get(hero).expect("standing").pos,
+        stood,
+        "but it does not go after it"
+    );
+}
+
+#[test]
+fn a_hero_told_to_stop_stands_and_takes_on_nothing() {
+    let (mut world, hero, enemy) = hero_past_an_enemy(crate::engine::UnitOrder::AttackMove {
+        pos: bota_proto::Vec2::from_ints(7000, 5000),
+    });
+    world.step();
+    assert_eq!(
+        world.target_of(hero),
+        Some(enemy),
+        "walking to attack, it took the enemy on"
+    );
+    // The stop key.
+    world.advance(&[crate::sim::Command {
+        slot: bota_proto::SlotId(0),
+        order: bota_proto::Order::Stop,
+    }]);
+    assert_eq!(
+        world.target_of(hero),
+        None,
+        "stopped, it gives up what it was on"
+    );
+    let stood = world.transform.get(hero).expect("standing").pos;
+    let was = world.health.get(enemy).expect("standing").hp;
+    for _ in 0..120 {
+        world.step();
+    }
+    assert_eq!(world.target_of(hero), None, "and takes on nothing more");
+    assert_eq!(
+        world.health.get(enemy).expect("standing").hp,
+        was,
+        "so it strikes nothing"
+    );
+    assert_eq!(
+        world.transform.get(hero).expect("standing").pos,
+        stood,
+        "and keeps the ground it was left on"
+    );
+}
+
+/// A hero of a side and one of its own creeps beside it.
+fn hero_and_own_creep() -> (World, Entity, Entity) {
+    let mut world = World::new();
+    world.seats.push(crate::engine::Seat::new(
+        bota_proto::SlotId(0),
+        Team::Radiant,
+        bota_proto::HeroId(0),
+        0,
+        rules::STASH_SLOTS,
+    ));
+    let hero = world.spawn_hero(
+        Team::Radiant,
+        bota_proto::Vec2::from_ints(5000, 5000),
+        bota_proto::SlotId(0),
+        bota_proto::HeroId(0),
+    );
+    world.seats[0].unit = Some(hero);
+    let own = world.spawn_unit(
+        &MELEE_CREEP,
+        Team::Radiant,
+        bota_proto::Vec2::from_ints(5100, 5000),
+    );
+    world.settle();
+    world.fill_pools(hero);
+    world.fill_pools(own);
+    (world, hero, own)
+}
+
+#[test]
+fn one_of_your_own_at_full_health_cannot_be_struck() {
+    let (mut world, hero, own) = hero_and_own_creep();
+    assert!(
+        !world.may_attack_on_order(hero, own),
+        "a creep at full health is nobody to strike"
+    );
+    let order = bota_proto::Order::AttackUnit {
+        target: crate::engine::wire_id(own),
+    };
+    assert_eq!(
+        world.validate_order(bota_proto::SlotId(0), &order),
+        Err(bota_proto::RejectReason::WrongTargetKind),
+        "and the order is turned down rather than dropped"
+    );
+    world.advance(&[crate::sim::Command {
+        slot: bota_proto::SlotId(0),
+        order,
+    }]);
+    let was = world.health.get(own).expect("standing").hp;
+    for _ in 0..90 {
+        world.step();
+    }
+    assert_eq!(
+        world.target_of(hero),
+        None,
+        "it takes on nothing of its own"
+    );
+    assert_eq!(
+        world.health.get(own).expect("standing").hp,
+        was,
+        "and strikes nothing"
+    );
+}
+
+#[test]
+fn one_of_your_own_worn_down_far_enough_may_be_put_out() {
+    let (mut world, hero, own) = hero_and_own_creep();
+    let max = world.stats.get(own).expect("settled").max_hp;
+    // A shade under half of what it can hold.
+    world.health.insert(
+        own,
+        Health {
+            hp: Fixed {
+                raw: max.raw * 49 / 100,
+            },
+        },
+    );
+    assert!(
+        world.may_attack_on_order(hero, own),
+        "worn down, it may be put out"
+    );
+    let order = bota_proto::Order::AttackUnit {
+        target: crate::engine::wire_id(own),
+    };
+    assert_eq!(world.validate_order(bota_proto::SlotId(0), &order), Ok(()));
+    world.advance(&[crate::sim::Command {
+        slot: bota_proto::SlotId(0),
+        order,
+    }]);
+    assert_eq!(world.target_of(hero), Some(own), "it takes it on");
+    let was = world.health.get(own).expect("standing").hp;
+    for _ in 0..90 {
+        world.step();
+    }
+    let now = world
+        .health
+        .get(own)
+        .map_or(Fixed::ZERO, |health| health.hp);
+    assert!(now < was, "and strikes it");
+}
+
+#[test]
+fn a_deny_is_given_up_when_the_creep_is_no_longer_worn_down() {
+    let (mut world, hero, own) = hero_and_own_creep();
+    let max = world.stats.get(own).expect("settled").max_hp;
+    world.health.insert(
+        own,
+        Health {
+            hp: Fixed {
+                raw: max.raw * 49 / 100,
+            },
+        },
+    );
+    world.advance(&[crate::sim::Command {
+        slot: bota_proto::SlotId(0),
+        order: bota_proto::Order::AttackUnit {
+            target: crate::engine::wire_id(own),
+        },
+    }]);
+    assert_eq!(world.target_of(hero), Some(own));
+    // Mended back over the line.
+    world.health.insert(own, Health { hp: max });
+    world.step();
+    assert_eq!(
+        world.target_of(hero),
+        None,
+        "back on its feet, it is nobody to strike again"
+    );
+}
+
+#[test]
+fn your_own_building_goes_only_at_a_tenth() {
+    let mut world = World::new();
+    world.seats.push(crate::engine::Seat::new(
+        bota_proto::SlotId(0),
+        Team::Radiant,
+        bota_proto::HeroId(0),
+        0,
+        rules::STASH_SLOTS,
+    ));
+    let hero = world.spawn_hero(
+        Team::Radiant,
+        bota_proto::Vec2::from_ints(5000, 5000),
+        bota_proto::SlotId(0),
+        bota_proto::HeroId(0),
+    );
+    world.seats[0].unit = Some(hero);
+    let tower = world.spawn_unit(
+        crate::engine::tower_def(1),
+        Team::Radiant,
+        bota_proto::Vec2::from_ints(5300, 5000),
+    );
+    world.settle();
+    world.fill_pools(hero);
+    world.fill_pools(tower);
+    let max = world.stats.get(tower).expect("settled").max_hp;
+    assert!(
+        !world.may_attack_on_order(hero, tower),
+        "standing tall, it is nobody to strike"
+    );
+    // A tenth is still too much; a shade under is not.
+    world.health.insert(
+        tower,
+        Health {
+            hp: Fixed { raw: max.raw / 10 },
+        },
+    );
+    assert!(
+        !world.may_attack_on_order(hero, tower),
+        "exactly a tenth is not below a tenth"
+    );
+    world.health.insert(
+        tower,
+        Health {
+            hp: Fixed {
+                raw: max.raw * 9 / 100,
+            },
+        },
+    );
+    assert!(
+        world.may_attack_on_order(hero, tower),
+        "worn past it, it may be put out"
+    );
+    let order = bota_proto::Order::AttackUnit {
+        target: crate::engine::wire_id(tower),
+    };
+    assert_eq!(world.validate_order(bota_proto::SlotId(0), &order), Ok(()));
+    world.advance(&[crate::sim::Command {
+        slot: bota_proto::SlotId(0),
+        order,
+    }]);
+    assert_eq!(world.target_of(hero), Some(tower));
+}
+
+#[test]
+fn your_own_hero_is_never_struck_however_worn_down() {
+    let mut world = World::new();
+    let mine = world.spawn_hero(
+        Team::Radiant,
+        bota_proto::Vec2::from_ints(5000, 5000),
+        bota_proto::SlotId(0),
+        bota_proto::HeroId(0),
+    );
+    let theirs = world.spawn_hero(
+        Team::Radiant,
+        bota_proto::Vec2::from_ints(5100, 5000),
+        bota_proto::SlotId(1),
+        bota_proto::HeroId(0),
+    );
+    world.settle();
+    world.health.insert(theirs, Health { hp: Fixed::ONE });
+    assert!(
+        !world.may_attack_on_order(mine, theirs),
+        "one of your own heroes is nobody to strike, worn down or not"
+    );
 }

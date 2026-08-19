@@ -1,10 +1,13 @@
+mod attacking;
 mod cast;
 mod econ;
 mod fight;
 mod gear;
 mod ground;
+mod hitting;
 mod jungle;
 mod lane_ai;
+mod missile;
 mod regen;
 mod spawn;
 mod stats;
@@ -13,8 +16,10 @@ mod visibility;
 mod walk;
 mod wave;
 
-pub use fight::*;
+pub use attacking::*;
 pub use gear::*;
+pub use hitting::*;
+pub use missile::*;
 pub use regen::*;
 pub use stats::*;
 pub use target::*;

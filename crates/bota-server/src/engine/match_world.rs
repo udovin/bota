@@ -59,13 +59,13 @@ impl World {
         let wanted = match cmd.order {
             Order::Move { pos } => UnitOrder::Move { pos },
             Order::AttackMove { pos } => UnitOrder::AttackMove { pos },
-            Order::Stop => UnitOrder::Idle,
+            Order::Stop => UnitOrder::Stand,
             Order::HoldPosition => UnitOrder::Hold,
             Order::AttackUnit { target } => {
                 let Some(mark) = self.of_wire(target) else {
                     return;
                 };
-                self.engage.insert(unit, mark);
+                self.set_target(unit, mark);
                 self.rouse_creeps(unit, mark);
                 let at = self
                     .transform
@@ -158,6 +158,11 @@ impl World {
                 };
                 if !self.can_see(seat.team, entity) {
                     return Err(RejectReason::UnknownTarget);
+                }
+                // One of your own is struck only as a deny, and only once it
+                // is worn down far enough.
+                if !self.may_attack_on_order(unit, entity) {
+                    return Err(RejectReason::WrongTargetKind);
                 }
                 Ok(())
             }

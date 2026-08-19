@@ -8,18 +8,43 @@ use crate::sim::{facing_gap, facing_towards, find_path, grid_los, per_tick, rule
 impl World {
     /// Turns and steps everything that has somewhere to be.
     ///
+    /// What an entity is set on decides first: with its target in reach it
+    /// stands still and comes round to it, out of reach it walks at it. Only
+    /// with nothing to fight does it walk where it was told.
+    ///
     /// Turning comes first and costs the tick: an entity more than
     /// [`rules::TURN_TOLERANCE_BRADS`] off the way it wants to face stands
     /// still until it has come round. A creep marches round what is in its
     /// way; anything a player drives slides along it.
     pub fn walk_bodies(&mut self) {
         for entity in self.entities.iter().collect::<Vec<_>>() {
-            let Some(dest) = self
-                .orders
-                .get(entity)
-                .and_then(|o| destination(&o.current))
-            else {
-                continue;
+            // What it is set on comes before where it was told to go: in
+            // reach it stands and comes round, out of reach it closes.
+            let on_target = self
+                .target_of(entity)
+                .filter(|on| self.alive(*on))
+                .and_then(|on| {
+                    let at = self.transform.get(on)?.pos;
+                    Some((at, self.in_reach(entity, on)))
+                });
+            let holding = matches!(
+                self.orders.get(entity).map(|o| o.current),
+                Some(UnitOrder::Hold)
+            );
+            let (dest, facing_only) = match on_target {
+                // Holding, it comes round to what it is set on but never
+                // leaves the spot it was left on.
+                Some((at, in_reach)) => (at, in_reach || holding),
+                None => {
+                    let Some(dest) = self
+                        .orders
+                        .get(entity)
+                        .and_then(|o| destination(&o.current))
+                    else {
+                        continue;
+                    };
+                    (dest, false)
+                }
             };
             let (Some(from), Some(stats)) = (
                 self.transform.get(entity).map(|t| t.pos),
@@ -28,6 +53,15 @@ impl World {
                 continue;
             };
             if from == dest {
+                continue;
+            }
+            if facing_only {
+                let wanted = facing_towards(from, dest);
+                if let Some(stats) = self.stats.get(entity).copied()
+                    && let Some(transform) = self.transform.get_mut(entity)
+                {
+                    transform.facing = turn_towards(transform.facing, wanted, stats.turn_rate);
+                }
                 continue;
             }
             let waypoint = self.next_corner(entity, from, dest);
@@ -111,6 +145,6 @@ impl World {
 fn destination(order: &UnitOrder) -> Option<Vec2> {
     match order {
         UnitOrder::Move { pos } | UnitOrder::AttackMove { pos } => Some(*pos),
-        UnitOrder::Idle | UnitOrder::Hold | UnitOrder::Attack { .. } => None,
+        UnitOrder::Idle | UnitOrder::Stand | UnitOrder::Hold | UnitOrder::Attack { .. } => None,
     }
 }

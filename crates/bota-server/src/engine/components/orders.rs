@@ -9,6 +9,11 @@ use crate::engine::Entity;
 pub enum UnitOrder {
     /// Stand still. Takes on enemies that come near of its own accord.
     Idle,
+    /// Stand still and take on nothing at all.
+    ///
+    /// What a stop order leaves behind: the entity keeps the ground it is on
+    /// and pays no attention to whoever walks past.
+    Stand,
     /// Stand still, attack what comes into range, never move.
     Hold,
     /// Walk to a position, ignoring enemies.

@@ -114,7 +114,7 @@ impl World {
                         },
                     );
                 } else {
-                    self.engage.remove(entity);
+                    self.target.remove(entity);
                     self.orders.insert(
                         entity,
                         Orders {
@@ -134,11 +134,11 @@ impl World {
                     ai.going_home = true;
                     ai.reaggro_block = rules::NEUTRAL_REAGGRO_BLOCK;
                     ai.next_window = rules::NEUTRAL_SHORT_WINDOW;
-                    self.engage.remove(entity);
+                    self.target.remove(entity);
                 }
             }
             if !ai.going_home
-                && let Some(target) = self.engage.get(entity).copied()
+                && let Some(target) = self.target_of(entity)
                 && self.alive(target)
             {
                 let Some(their_at) = self.transform.get(target).map(|t| t.pos) else {

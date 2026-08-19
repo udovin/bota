@@ -77,9 +77,7 @@ impl World {
                 continue;
             };
             let chasing = self
-                .engage
-                .get(entity)
-                .copied()
+                .target_of(entity)
                 .filter(|target| self.alive(*target))
                 .and_then(|target| self.transform.get(target).map(|t| t.pos));
             let ai = self.lane_ai.get(entity).copied();

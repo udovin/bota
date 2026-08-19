@@ -21,7 +21,7 @@ impl World {
                 continue;
             };
             ai.provoked = ai.provoked.saturating_sub(1);
-            let held = self.engage.get(entity).copied().filter(|t| self.alive(*t));
+            let held = self.target_of(entity).filter(|t| self.alive(*t));
             let reach = self
                 .stats
                 .get(entity)
@@ -37,10 +37,10 @@ impl World {
                     ai.last_seen = Some(at);
                 }
                 if ai.chase_left == 0 && ai.provoked == 0 {
-                    self.engage.remove(entity);
+                    self.target.remove(entity);
                 }
             }
-            let looking = self.engage.get(entity).copied();
+            let looking = self.target_of(entity);
             let outranked = looking.is_some_and(|t| self.outranked(entity, t, reach));
             if (looking.is_none() || (ai.provoked == 0 && !in_reach) || outranked)
                 && let Some(found) = self.acquire(
@@ -51,13 +51,13 @@ impl World {
                     self.priority_of(entity),
                 )
             {
-                if self.engage.get(entity).copied() != Some(found) && ai.anchor.is_none() {
+                if self.target_of(entity) != Some(found) && ai.anchor.is_none() {
                     ai.anchor = self.transform.get(entity).map(|t| t.pos);
                 }
-                self.engage.insert(entity, found);
+                self.set_target(entity, found);
                 ai.chase_left = rules::CREEP_CHASE_TICKS;
             }
-            if self.engage.get(entity).is_none() {
+            if self.target.get(entity).is_none() {
                 self.clear_reached(entity, &mut ai);
             }
             self.lane_ai.insert(entity, ai);
@@ -111,7 +111,7 @@ impl World {
         };
         match taken {
             Some(target) => {
-                self.engage.insert(creep, target);
+                self.set_target(creep, target);
                 ai.chase_left = rules::CREEP_CHASE_TICKS;
                 ai.provoked = if target == orderer && !at_own {
                     rules::ORDER_AGGRO_HOLD_TICKS
@@ -120,7 +120,7 @@ impl World {
                 };
             }
             None => {
-                self.engage.remove(creep);
+                self.target.remove(creep);
             }
         }
         self.lane_ai.insert(creep, ai);
