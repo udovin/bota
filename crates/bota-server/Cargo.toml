@@ -8,5 +8,10 @@ bota-proto = { workspace = true }
 rand_chacha = "0.10"
 clap = { version = "4", features = ["derive"] }
 
+[features]
+# Runs the match on the engine world instead of the simulation. What has been
+# carried over answers; everything else stands still.
+engine-world = []
+
 [lints]
 workspace = true

@@ -11,6 +11,8 @@ use bota_proto::{EntityId, Fixed, Team, Vec2};
 
 use crate::sim::{PassGrid, World, rules};
 
+pub static SCRATCH_CALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 impl World {
     /// Whether a team currently sees a point on the map.
     pub fn can_see_point(&self, team: Team, pos: Vec2) -> bool {

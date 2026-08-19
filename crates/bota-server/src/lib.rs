@@ -6,6 +6,7 @@
 //!
 //! See `DESIGN.md` for the architecture this follows from.
 
+pub mod engine;
 pub mod game_loop;
 pub mod lobby;
 pub mod net;

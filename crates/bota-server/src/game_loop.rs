@@ -14,7 +14,12 @@ use bota_proto::{
 use crate::lobby::Roster;
 use crate::net::{Connection, NetEvent, accept_loop};
 use crate::replay::ReplayWriter;
-use crate::sim::{Command, EventVisibility, MatchConfig, World};
+use crate::sim::{Command, EventVisibility, MatchConfig};
+
+#[cfg(feature = "engine-world")]
+use crate::engine::World;
+#[cfg(not(feature = "engine-world"))]
+use crate::sim::World;
 
 /// Everything the command line decides.
 #[derive(Clone, Debug)]
@@ -224,7 +229,7 @@ impl Server {
 
     /// Runs the match to its end.
     fn match_phase(&mut self, cfg: MatchConfig) {
-        let mut world = World::new(&cfg, cfg.rng());
+        let mut world = new_world(&cfg);
         let mut replay = match &self.opts.replay {
             None => ReplayWriter::disabled(),
             Some(path) => ReplayWriter::create(path).unwrap_or_else(|_| ReplayWriter::disabled()),
@@ -268,7 +273,7 @@ impl Server {
                 orders: cmds.iter().map(|c| (c.slot, c.order)).collect(),
             });
             pending.fill(None);
-            let events = world.step(&cmds);
+            let events = advance(&mut world, &cmds);
 
             let full = world.view_full();
             let full_frame = encode_frame_to_vec(&ServerMsg::Snapshot { view: full.clone() })
@@ -315,10 +320,10 @@ impl Server {
                 }));
             }
 
-            if let Some(winner) = world.winner() {
+            if let Some(winner) = victor(&world) {
                 let over = ServerMsg::MatchOver {
                     winner,
-                    stats: world.stats(),
+                    stats: match_stats(&world),
                 };
                 replay.record(&ReplayRecord::Msg(over.clone()));
                 self.broadcast(&over);
@@ -378,7 +383,7 @@ impl Server {
                         let Some(slot) = self.roster.seat_of(id).map(|s| s.slot) else {
                             continue;
                         };
-                        match world.validate(slot, &order) {
+                        match validate(world, slot, &order) {
                             Ok(()) => pending[usize::from(slot.0)] = Some((seq, order)),
                             Err(reason) => {
                                 if let Some(conn) = self.conn(id) {
@@ -407,4 +412,72 @@ impl Server {
             .filter(|s| s.player.is_some())
             .all(|s| acked[usize::from(s.slot.0)] >= tick)
     }
+}
+
+/// A world for a match, whichever one this build runs on.
+#[cfg(not(feature = "engine-world"))]
+fn new_world(cfg: &MatchConfig) -> World {
+    World::new(cfg, cfg.rng())
+}
+
+/// A world for a match, whichever one this build runs on.
+#[cfg(feature = "engine-world")]
+fn new_world(cfg: &MatchConfig) -> World {
+    World::for_match(cfg, cfg.rng())
+}
+
+/// One tick of the match.
+#[cfg(not(feature = "engine-world"))]
+fn advance(world: &mut World, cmds: &[Command]) -> Vec<crate::sim::Event> {
+    world.step(cmds)
+}
+
+/// One tick of the match.
+#[cfg(feature = "engine-world")]
+fn advance(world: &mut World, cmds: &[Command]) -> Vec<crate::sim::Event> {
+    world.advance(cmds)
+}
+
+/// The side that has won, if either has.
+#[cfg(not(feature = "engine-world"))]
+fn victor(world: &World) -> Option<bota_proto::Team> {
+    world.winner()
+}
+
+/// The side that has won, if either has.
+#[cfg(feature = "engine-world")]
+fn victor(world: &World) -> Option<bota_proto::Team> {
+    world.victor()
+}
+
+/// Final numbers for every seat.
+#[cfg(not(feature = "engine-world"))]
+fn match_stats(world: &World) -> bota_proto::MatchStats {
+    world.stats()
+}
+
+/// Final numbers for every seat.
+#[cfg(feature = "engine-world")]
+fn match_stats(world: &World) -> bota_proto::MatchStats {
+    world.match_stats()
+}
+
+/// Whether a seat may issue this order right now.
+#[cfg(not(feature = "engine-world"))]
+fn validate(
+    world: &World,
+    slot: bota_proto::SlotId,
+    order: &bota_proto::Order,
+) -> Result<(), bota_proto::RejectReason> {
+    world.validate(slot, order)
+}
+
+/// Whether a seat may issue this order right now.
+#[cfg(feature = "engine-world")]
+fn validate(
+    world: &World,
+    slot: bota_proto::SlotId,
+    order: &bota_proto::Order,
+) -> Result<(), bota_proto::RejectReason> {
+    world.validate_order(slot, order)
 }
