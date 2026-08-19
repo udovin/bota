@@ -6,7 +6,6 @@ use bota_proto::{
 
 use crate::sim::{
     Event, Unit, Windup, World, facing_gap, facing_towards, move_towards, per_tick, rules,
-    turn_towards,
 };
 
 /// An attack projectile in flight.
@@ -162,7 +161,6 @@ impl World {
                     }
                     let u = self.units.get_mut(id).expect("looked up above");
                     u.windup = None;
-                    u.facing = facing;
                     u.recovering = u.attack_backswing;
                 }
                 continue;
@@ -180,15 +178,9 @@ impl World {
             if target.hp <= 0 || !in_attack_range(unit, target, Fixed::ZERO) {
                 continue;
             }
+            // Coming round is movement's business; the swing only waits on it.
             let desired = facing_towards(unit.pos, target.pos);
-            let turned = if unit.is_structure() {
-                desired
-            } else {
-                turn_towards(unit.facing, desired, rules::TURN_RATE_BRADS)
-            };
-            if facing_gap(turned, desired) > rules::TURN_TOLERANCE_BRADS {
-                // Not facing the target yet: keep turning, swing later.
-                self.units.get_mut(id).expect("looked up above").facing = turned;
+            if facing_gap(unit.facing, desired) > rules::TURN_TOLERANCE_BRADS {
                 continue;
             }
             let (point, interval) = (unit.attack_point, unit.current_attack_interval());
@@ -198,9 +190,6 @@ impl World {
                 ticks_left: point,
             });
             u.attack_cooldown = interval;
-            u.facing = turned;
-            // Every swing at a hero keeps calling the victim's creeps.
-            self.provoke_creeps(id, target_id);
         }
     }
 
@@ -289,8 +278,18 @@ impl World {
             );
             let t = self.units.get_mut(inst.target).expect("looked up above");
             t.hp -= applied;
-            // A hit wakes a resting neutral onto its attacker.
-            if t.kind == UnitKind::CreepNeutral && t.engage.is_none() && !t.returning {
+            // A hit wakes a resting neutral onto its attacker, from as far as
+            // the damage aggro range and unless a leash break just blocked it.
+            if matches!(t.kind, UnitKind::CreepNeutral | UnitKind::Roshan)
+                && t.engage.is_none()
+                && let Some(crate::sim::CreepAi::Neutral(ai)) = t.ai.as_mut()
+                && ai.reaggro_block == 0
+            {
+                let window = ai.next_window;
+                let home = ai.home;
+                ai.going_home = false;
+                ai.leash_left = window;
+                let _ = home;
                 t.engage = inst.source;
             }
             let dead = t.hp <= 0;

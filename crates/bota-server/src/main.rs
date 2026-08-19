@@ -35,6 +35,9 @@ struct Args {
     /// Write a replay to this file.
     #[arg(long)]
     replay: Option<PathBuf>,
+    /// Which map to play: 0 is the Dota map, 1 the small test lane.
+    #[arg(long, default_value_t = 0)]
+    map: u16,
     /// Seed of the match randomness. A fresh one is drawn when absent.
     #[arg(long)]
     seed: Option<u64>,
@@ -64,6 +67,7 @@ fn main() -> std::io::Result<()> {
             players: args.players,
             replay: args.replay,
             seed,
+            map: bota_proto::MapId(args.map),
             ack_timeout_ticks: args.ack_timeout_ticks,
         },
     )

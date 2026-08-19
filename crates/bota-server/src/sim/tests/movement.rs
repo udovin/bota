@@ -115,16 +115,19 @@ fn turning_wraps_the_short_way_around() {
 
 #[test]
 fn lane_offset_grows_away_from_the_centerline() {
+    let map = crate::sim::tests::fixtures::dota_map();
     // A tower stands on its own lane's centerline by construction.
     assert_eq!(
-        crate::sim::lane_offset_squared(rules::LANE_MID, Vec2::from_ints(6026, 6290)),
+        crate::sim::lane_offset_squared(map, rules::LANE_MID, Vec2::from_ints(6026, 6290)),
         0
     );
-    let off = crate::sim::lane_offset_squared(rules::LANE_MID, Vec2::from_ints(6100, 9200));
-    let leash = i64::from(rules::units(rules::LANE_LEASH).raw);
-    assert!(off > leash * leash, "deep jungle is past the leash");
+    let off = crate::sim::lane_offset_squared(map, rules::LANE_MID, Vec2::from_ints(6100, 9200));
+    assert!(
+        off > rules::units(800).squared_raw(),
+        "deep jungle is well off the centerline"
+    );
     // A point on the west column is right at home for the top lane.
-    let top = crate::sim::lane_offset_squared(rules::LANE_TOP, Vec2::from_ints(2715, 8344));
+    let top = crate::sim::lane_offset_squared(map, rules::LANE_TOP, Vec2::from_ints(2715, 8344));
     assert!(top < rules::units(100).squared_raw());
 }
 
@@ -152,70 +155,119 @@ fn a_step_into_another_unit_is_refused_and_a_step_out_is_not() {
 }
 
 #[test]
-fn steering_aims_tangent_around_a_standing_body() {
+fn a_clear_step_goes_straight() {
     let mut units = Arena::new();
-    let stander = units.insert(Unit::melee_creep(Team::Dire, Vec2::from_ints(1000, 1000)));
     let walker = units.insert(Unit::melee_creep(Team::Radiant, Vec2::from_ints(500, 1000)));
-    let waypoint = Vec2::from_ints(1500, 1000);
-    let aim = crate::sim::steer_target(&units, walker, Vec2::from_ints(500, 1000), waypoint);
-    assert_ne!(aim, waypoint, "the direct line is refused");
-    let inflated = units.get(walker).unwrap().radius
-        + units.get(stander).unwrap().radius
-        + rules::units(rules::STEER_MARGIN);
-    let clear = i64::from(inflated.raw) - i64::from(Fixed::EPSILON.raw) * 4;
-    assert!(
-        crate::sim::segment_distance_squared(
-            Vec2::from_ints(1000, 1000),
-            Vec2::from_ints(500, 1000),
-            aim
-        ) >= clear * clear,
-        "the leg to the tangent grazes the circle, never cuts it: {aim:?}"
+    let aim = Vec2::from_ints(1500, 1000);
+    let step = rules::units(11);
+    assert_eq!(
+        crate::sim::walk_step(&units, &PassGrid::open(), walker, aim, step),
+        crate::sim::move_towards(Vec2::from_ints(500, 1000), aim, step),
+        "nothing in the way, nothing to work around"
     );
 }
 
 #[test]
-fn steering_ignores_walking_bodies_and_the_goal_sitter() {
-    let mut units = Arena::new();
-    let mover = units.insert(Unit::melee_creep(Team::Dire, Vec2::from_ints(1000, 1000)));
-    units.get_mut(mover).unwrap().moving = true;
-    let walker = units.insert(Unit::melee_creep(Team::Radiant, Vec2::from_ints(500, 1000)));
-    let waypoint = Vec2::from_ints(1500, 1000);
-    assert_eq!(
-        crate::sim::steer_target(&units, walker, Vec2::from_ints(500, 1000), waypoint),
-        waypoint,
-        "a walking body is not steered around"
-    );
-    units.get_mut(mover).unwrap().moving = false;
-    units.get_mut(mover).unwrap().pos = Vec2::from_ints(1500, 1000);
-    assert_eq!(
-        crate::sim::steer_target(&units, walker, Vec2::from_ints(500, 1000), waypoint),
-        waypoint,
-        "neither is whoever occupies the goal itself"
-    );
-}
-
-#[test]
-fn a_unit_slide_finds_a_free_sidestep() {
+fn a_step_square_into_a_body_loses_almost_all_its_pace() {
     let mut units = Arena::new();
     units.insert(Unit::melee_creep(Team::Dire, Vec2::from_ints(1000, 1000)));
-    let walker = units.insert(Unit::melee_creep(
-        Team::Radiant,
-        Vec2::from_ints(1020, 1000),
-    ));
-    let from = Vec2::from_ints(1020, 1000);
-    let slide = crate::sim::unit_slide(
+    let walker = units.insert(Unit::melee_creep(Team::Radiant, Vec2::from_ints(980, 1000)));
+    let from = Vec2::from_ints(980, 1000);
+    let step = rules::units(11);
+    let next = crate::sim::walk_step(
         &units,
         &PassGrid::open(),
         walker,
-        Vec2::from_ints(900, 1000),
-        rules::units(11),
-    )
-    .expect("the way around is open");
-    assert_ne!(slide, from, "it does go somewhere");
-    assert!(
-        !crate::sim::blocked_by_units(&units, walker, from, slide),
-        "and the sidestep itself is legal"
+        Vec2::from_ints(1500, 1000),
+        step,
     );
+    assert_ne!(next, from, "it works its way round rather than standing");
+    assert!(
+        !crate::sim::blocked_by_units(&units, walker, from, next),
+        "and the step it takes is legal"
+    );
+    let moved = crate::sim::isqrt64(from.distance_squared(next));
+    assert!(
+        moved <= i64::from(step.raw) / 2,
+        "walking straight into a body costs most of the step: {moved} of {}",
+        step.raw
+    );
+}
+
+#[test]
+fn a_step_grazing_a_body_keeps_nearly_all_of_it() {
+    let mut units = Arena::new();
+    // The body sits well off to the side of where the walker is headed.
+    units.insert(Unit::melee_creep(Team::Dire, Vec2::from_ints(1000, 1028)));
+    let walker = units.insert(Unit::melee_creep(Team::Radiant, Vec2::from_ints(980, 1000)));
+    let from = Vec2::from_ints(980, 1000);
+    let step = rules::units(11);
+    let next = crate::sim::walk_step(
+        &units,
+        &PassGrid::open(),
+        walker,
+        Vec2::from_ints(1500, 1000),
+        step,
+    );
+    let moved = crate::sim::isqrt64(from.distance_squared(next));
+    assert!(
+        moved > i64::from(step.raw) * 3 / 4,
+        "a graze is nearly free: {moved} of {}",
+        step.raw
+    );
+}
+
+#[test]
+fn a_body_in_the_way_is_never_pushed() {
+    let mut units = Arena::new();
+    let blocker = units.insert(Unit::melee_creep(Team::Dire, Vec2::from_ints(1000, 1000)));
+    let walker = units.insert(Unit::melee_creep(Team::Radiant, Vec2::from_ints(960, 1000)));
+    let was = units.get(blocker).unwrap().pos;
+    let step = rules::units(11);
+    let next = crate::sim::walk_step(
+        &units,
+        &PassGrid::open(),
+        walker,
+        Vec2::from_ints(1500, 1000),
+        step,
+    );
+    let min =
+        i64::from((units.get(walker).unwrap().radius + units.get(blocker).unwrap().radius).raw);
+    assert!(
+        next.distance_squared(was) >= min * min,
+        "the hulls never overlap: {next:?}"
+    );
+    assert_eq!(units.get(blocker).unwrap().pos, was, "and nobody moved it");
+}
+
+#[test]
+fn a_walker_boxed_in_on_every_side_simply_stays() {
+    let mut units = Arena::new();
+    let at = Vec2::from_ints(1000, 1000);
+    let walker = units.insert(Unit::melee_creep(Team::Radiant, at));
+    for (dx, dy) in [
+        (30, 0),
+        (-30, 0),
+        (0, 30),
+        (0, -30),
+        (22, 22),
+        (-22, -22),
+        (22, -22),
+        (-22, 22),
+    ] {
+        units.insert(Unit::melee_creep(
+            Team::Dire,
+            Vec2::from_ints(1000 + dx, 1000 + dy),
+        ));
+    }
+    let next = crate::sim::walk_step(
+        &units,
+        &PassGrid::open(),
+        walker,
+        Vec2::from_ints(2000, 1000),
+        rules::units(11),
+    );
+    assert_eq!(next, at, "wedged, it waits rather than shoving through");
 }
 
 #[test]

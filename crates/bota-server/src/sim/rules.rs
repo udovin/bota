@@ -109,64 +109,53 @@ pub const TREE_LANE_CLEAR: i32 = 450;
 /// base keeps its real trees.
 pub const TREE_BASE_CLEAR: i32 = 500;
 
-/// Every neutral camp on the map, both jungles: the map's own spawner
-/// positions.
-pub const NEUTRAL_CAMPS: [Vec2; 28] = [
-    Vec2::from_ints(8364, 14156),
-    Vec2::from_ints(12608, 7808),
-    Vec2::from_ints(13194, 4189),
-    Vec2::from_ints(17144, 9096),
-    Vec2::from_ints(4392, 13131),
-    Vec2::from_ints(13865, 5517),
-    Vec2::from_ints(7762, 5860),
-    Vec2::from_ints(9402, 4019),
-    Vec2::from_ints(4201, 9120),
-    Vec2::from_ints(13568, 9264),
-    Vec2::from_ints(7233, 4401),
-    Vec2::from_ints(10440, 13392),
-    Vec2::from_ints(5203, 10208),
-    Vec2::from_ints(8496, 1520),
-    Vec2::from_ints(9552, 16912),
-    Vec2::from_ints(10280, 11796),
-    Vec2::from_ints(17646, 10479),
-    Vec2::from_ints(903, 8663),
-    Vec2::from_ints(6336, 16592),
-    Vec2::from_ints(6620, 13066),
-    Vec2::from_ints(11984, 880),
-    Vec2::from_ints(11138, 5241),
-    Vec2::from_ints(5305, 14045),
-    Vec2::from_ints(1193, 7378),
-    Vec2::from_ints(11232, 17112),
-    Vec2::from_ints(6801, 814),
-    Vec2::from_ints(13632, 784),
-    Vec2::from_ints(5008, 17552),
-];
 /// Any unit inside this radius of a camp center blocks its spawn.
 pub const CAMP_BOX_RADIUS: i32 = 300;
-/// Neutrals aggro whoever comes this close to them.
-pub const NEUTRAL_AGGRO_RANGE: i32 = 400;
-/// A neutral dragged this far from its camp gives up and walks home.
-pub const NEUTRAL_LEASH: i32 = 700;
-/// Being this close to the camp again ends the walk home, at full health.
+/// A neutral wakes when a hostile unit comes this close to it.
+pub const NEUTRAL_AGGRO_RANGE: i32 = 240;
+/// A neutral wakes when damaged or targeted from this far away.
+pub const NEUTRAL_DAMAGE_AGGRO_RANGE: i32 = 1800;
+/// How far from its spawn spot a neutral may stand before its aggro window
+/// starts running down.
+pub const NEUTRAL_GUARD_DISTANCE: i32 = 400;
+/// Ticks a neutral stays awake beyond the guard distance.
+pub const NEUTRAL_AGGRO_WINDOW: u32 = 5 * TICKS_PER_SECOND;
+/// The shorter window a neutral gets when damage wakes it again soon after a
+/// leash break.
+pub const NEUTRAL_SHORT_WINDOW: u32 = 3 * TICKS_PER_SECOND;
+/// Ticks after a leash break in which damage cannot wake a neutral.
+pub const NEUTRAL_REAGGRO_BLOCK: u32 = 3 * TICKS_PER_SECOND;
+/// Being this close to its spawn spot ends a neutral's walk home.
 pub const NEUTRAL_RETURN: i32 = 100;
+/// Ticks between neutral upgrades; the same cadence as creep waves.
+pub const NEUTRAL_UPGRADE_PERIOD_TICKS: u32 = 450 * TICKS_PER_SECOND;
+/// Upgrades a neutral may carry at most.
+pub const NEUTRAL_UPGRADE_CAP: i32 = 30;
+/// Health one upgrade adds to a neutral.
+pub const NEUTRAL_UPGRADE_HP: i32 = 30;
+/// Half-points of armor one upgrade adds to a neutral.
+pub const NEUTRAL_UPGRADE_ARMOR_HALVES: i32 = 1;
+/// Attack damage one upgrade adds to a neutral.
+pub const NEUTRAL_UPGRADE_DAMAGE: i32 = 3;
+/// Gold bounty one upgrade adds to a neutral.
+pub const NEUTRAL_UPGRADE_GOLD: i32 = 1;
+/// Experience one upgrade adds to a neutral.
+pub const NEUTRAL_UPGRADE_XP: i32 = 5;
+/// How far along its route a wave looks to know which way it faces.
+pub const WAVE_FACING_LOOKAHEAD: i32 = 200;
+/// World units between neighbours in a camp when it spawns.
+pub const CAMP_SPAWN_SPACING: i32 = 64;
 /// Tick of the first neutral spawn, one minute past the horn.
 pub const FIRST_NEUTRAL_TICK: u32 = PREGAME_TICKS + 60 * TICKS_PER_SECOND;
 /// Ticks between neutral spawn checks.
 pub const NEUTRAL_SPAWN_PERIOD_TICKS: u32 = 60 * TICKS_PER_SECOND;
-/// Neutrals living in one camp.
-pub const NEUTRALS_PER_CAMP: u32 = 2;
-/// Neutral creep health.
-pub const NEUTRAL_HP: i32 = 550;
-/// Neutral creep attack damage.
-pub const NEUTRAL_ATTACK_DAMAGE: i32 = 30;
-/// Neutral creep armor.
-pub const NEUTRAL_ARMOR: i32 = 2;
-/// Neutral creep movement speed, world units per second.
-pub const NEUTRAL_MOVE_SPEED: i32 = 315;
-/// Neutral creep gold bounty.
-pub const NEUTRAL_BOUNTY: i32 = 40;
-/// Neutral creep experience.
-pub const NEUTRAL_XP: i32 = 60;
+/// Neutral creep collision radius. Neutrals name no hull and take the
+/// unit template's, which is the hero hull.
+pub const NEUTRAL_RADIUS: i32 = 24;
+/// Neutral creep fog light radius.
+pub const NEUTRAL_VISION: i32 = 800;
+/// How far a neutral creep looks for something to attack once awake.
+pub const NEUTRAL_ACQUISITION: i32 = 500;
 
 // Roshan. The map's own spawner point, in the south-east river pit; the
 // north-west pit stands empty until day and night exist.
@@ -189,8 +178,8 @@ pub const ROSHAN_ARMOR: i32 = 30;
 pub const ROSHAN_MAGIC_RESIST_PCT: i32 = 55;
 /// Roshan's movement speed, world units per second.
 pub const ROSHAN_MOVE_SPEED: i32 = 270;
-/// Roshan's collision radius.
-pub const ROSHAN_RADIUS: i32 = 60;
+/// Roshan's collision radius, the Dota hero hull.
+pub const ROSHAN_RADIUS: i32 = 24;
 /// Roshan's fog light radius.
 pub const ROSHAN_VISION: i32 = 1200;
 /// Gold to the killing seat.
@@ -213,18 +202,48 @@ pub const PREGAME_TICKS: u32 = 30 * TICKS_PER_SECOND;
 pub const FIRST_WAVE_TICK: u32 = PREGAME_TICKS;
 /// Ticks between creep waves.
 pub const WAVE_PERIOD_TICKS: u32 = 900;
-/// Every n-th wave brings a siege creep.
-pub const SIEGE_WAVE_PERIOD: u32 = 5;
-/// Melee creeps per wave.
+/// Melee creeps in a wave before the count grows.
 pub const MELEE_PER_WAVE: u32 = 3;
-/// Offsets of wave members around the spawn point, one per creep.
-pub const WAVE_SPAWN_OFFSETS: [Vec2; 5] = [
-    Vec2::from_ints(-48, 48),
-    Vec2::from_ints(0, 0),
-    Vec2::from_ints(48, -48),
-    Vec2::from_ints(-32, -32),
-    Vec2::from_ints(64, 64),
-];
+/// Ranged creeps in a wave before the count grows.
+pub const RANGED_PER_WAVE: u32 = 1;
+/// Waves from which the melee count takes each value.
+pub const MELEE_GROWTH: [(u32, u32); 3] = [(31, 4), (61, 5), (91, 6)];
+/// Wave from which a second ranged creep joins.
+pub const RANGED_GROWTH_WAVE: u32 = 81;
+/// First wave to bring a siege creep.
+pub const FIRST_SIEGE_WAVE: u32 = 11;
+/// Waves between siege creeps after the first.
+pub const SIEGE_WAVE_PERIOD: u32 = 10;
+/// Wave from which a second siege creep joins.
+pub const SIEGE_GROWTH_WAVE: u32 = 71;
+/// First wave to carry a flagbearer.
+pub const FIRST_FLAGBEARER_WAVE: u32 = 5;
+/// Waves between flagbearers after the first.
+pub const FLAGBEARER_WAVE_PERIOD: u32 = 2;
+/// Waves between creep upgrades; fifteen waves is seven and a half minutes.
+pub const WAVE_UPGRADE_PERIOD: u32 = 15;
+/// Upgrades a wave may carry at most.
+pub const WAVE_UPGRADE_CAP: u32 = 30;
+/// Health one upgrade adds to a melee creep.
+pub const MELEE_UPGRADE_HP: i32 = 12;
+/// Attack damage one upgrade adds to a melee creep.
+pub const MELEE_UPGRADE_DAMAGE: i32 = 1;
+/// Gold bounty one upgrade adds to a melee creep.
+pub const MELEE_UPGRADE_GOLD: i32 = 1;
+/// Health one upgrade adds to a ranged creep.
+pub const RANGED_UPGRADE_HP: i32 = 12;
+/// Attack damage one upgrade adds to a ranged creep.
+pub const RANGED_UPGRADE_DAMAGE: i32 = 2;
+/// Gold bounty one upgrade adds to a ranged creep.
+pub const RANGED_UPGRADE_GOLD: i32 = 6;
+/// Experience one upgrade adds to a ranged creep.
+pub const RANGED_UPGRADE_XP: i32 = 8;
+/// World units between neighbours in a wave's rank.
+pub const WAVE_SPAWN_SPACING: i32 = 48;
+/// World units the ranged rank trails the front one.
+pub const WAVE_SPAWN_RANK: i32 = 96;
+/// Flagbearer magic resistance, percent.
+pub const FLAGBEARER_MAGIC_RESIST_PCT: i32 = 40;
 
 // Generic hero stats. Per-hero data replaces these when heroes arrive.
 
@@ -249,7 +268,7 @@ pub const HERO_ARMOR: i32 = 3;
 /// Hero magic resistance, percent.
 pub const HERO_MAGIC_RESIST_PCT: i32 = 25;
 /// Hero collision radius, the Dota hero hull.
-pub const HERO_RADIUS: i32 = 27;
+pub const HERO_RADIUS: i32 = 24;
 /// Hero fog light radius.
 pub const HERO_VISION: i32 = 1800;
 /// Extra health per level past the first.
@@ -276,55 +295,73 @@ pub const RESPAWN_PER_LEVEL_TICKS: u32 = 120;
 
 /// Melee creep health.
 pub const MELEE_CREEP_HP: i32 = 550;
-/// Melee creep attack damage.
+/// Melee creep attack damage, the midpoint of 19 to 23.
 pub const MELEE_CREEP_ATTACK_DAMAGE: i32 = 21;
 /// Melee creep attack range.
 pub const MELEE_CREEP_ATTACK_RANGE: i32 = 100;
-/// Melee creep gold bounty.
+/// How far a melee creep looks for something to attack.
+pub const MELEE_CREEP_ACQUISITION: i32 = 500;
+/// Melee creep armor.
+pub const MELEE_CREEP_ARMOR: i32 = 2;
+/// Melee creep collision radius, the Dota regular hull.
+pub const MELEE_CREEP_RADIUS: i32 = 16;
+/// Ticks from a melee creep's attack start to the hit; 0.467 s.
+pub const MELEE_CREEP_ATTACK_POINT: u32 = 14;
+/// Melee creep gold bounty, the midpoint of 34 to 39.
 pub const MELEE_CREEP_BOUNTY: i32 = 36;
 /// Melee creep experience.
-pub const MELEE_CREEP_XP: i32 = 40;
+pub const MELEE_CREEP_XP: i32 = 57;
 
 /// Ranged creep health.
 pub const RANGED_CREEP_HP: i32 = 300;
-/// Ranged creep attack damage.
-pub const RANGED_CREEP_ATTACK_DAMAGE: i32 = 24;
+/// Ranged creep attack damage, the midpoint of 21 to 26.
+pub const RANGED_CREEP_ATTACK_DAMAGE: i32 = 23;
 /// Ranged creep attack range.
 pub const RANGED_CREEP_ATTACK_RANGE: i32 = 500;
-/// Ranged creep gold bounty.
-pub const RANGED_CREEP_BOUNTY: i32 = 51;
+/// How far a ranged creep looks for something to attack.
+pub const RANGED_CREEP_ACQUISITION: i32 = 600;
+/// Ranged creep collision radius, the Dota small hull.
+pub const RANGED_CREEP_RADIUS: i32 = 8;
+/// Ticks from a ranged creep's attack start to the projectile leaving; 0.5 s.
+pub const RANGED_CREEP_ATTACK_POINT: u32 = 15;
+/// Ranged creep attack projectile speed, world units per second.
+pub const RANGED_CREEP_PROJECTILE_SPEED: i32 = 900;
+/// Ranged creep gold bounty, the midpoint of 43 to 52.
+pub const RANGED_CREEP_BOUNTY: i32 = 47;
 /// Ranged creep experience.
-pub const RANGED_CREEP_XP: i32 = 66;
+pub const RANGED_CREEP_XP: i32 = 69;
 
 /// Siege creep health.
-pub const SIEGE_CREEP_HP: i32 = 875;
-/// Siege creep attack damage.
+pub const SIEGE_CREEP_HP: i32 = 935;
+/// Siege creep attack damage, the midpoint of 35 to 46.
 pub const SIEGE_CREEP_ATTACK_DAMAGE: i32 = 40;
 /// Siege creep attack range.
 pub const SIEGE_CREEP_ATTACK_RANGE: i32 = 690;
+/// How far a siege creep looks for something to attack.
+pub const SIEGE_CREEP_ACQUISITION: i32 = 800;
 /// Siege creep armor.
-pub const SIEGE_CREEP_ARMOR: i32 = 10;
-/// Siege creep gold bounty.
-pub const SIEGE_CREEP_BOUNTY: i32 = 74;
+pub const SIEGE_CREEP_ARMOR: i32 = 0;
+/// Siege creep magic resistance, percent.
+pub const SIEGE_CREEP_MAGIC_RESIST_PCT: i32 = 80;
+/// Siege creep collision radius, the Dota siege hull.
+pub const SIEGE_CREEP_RADIUS: i32 = 16;
+/// Ticks between siege creep attack starts; a base attack time of 3 s.
+pub const SIEGE_CREEP_ATTACK_INTERVAL: u32 = 90;
+/// Ticks from a siege creep's attack start to the projectile leaving; 0.7 s.
+pub const SIEGE_CREEP_ATTACK_POINT: u32 = 21;
+/// Siege creep attack projectile speed, world units per second.
+pub const SIEGE_CREEP_PROJECTILE_SPEED: i32 = 1100;
+/// Siege creep gold bounty, the midpoint of 59 to 72.
+pub const SIEGE_CREEP_BOUNTY: i32 = 65;
 /// Siege creep experience.
 pub const SIEGE_CREEP_XP: i32 = 88;
-/// Ticks between siege creep attack starts.
-pub const SIEGE_CREEP_ATTACK_INTERVAL: u32 = 80;
 
 /// Creep movement speed, world units per second.
 pub const CREEP_MOVE_SPEED: i32 = 325;
-/// Ticks between creep attack starts.
+/// Ticks between creep attack starts; a base attack time of 1 s.
 pub const CREEP_ATTACK_INTERVAL: u32 = 30;
-/// Ticks from creep attack start to the hit or the projectile leaving.
-pub const CREEP_ATTACK_POINT: u32 = 8;
-/// Melee creep armor.
-pub const MELEE_CREEP_ARMOR: i32 = 2;
-/// Lane creep collision radius, the Dota small hull.
-pub const CREEP_RADIUS: i32 = 8;
 /// Creep fog light radius.
-pub const CREEP_VISION: i32 = 850;
-/// Creep and siege attack projectile speed, world units per second.
-pub const CREEP_PROJECTILE_SPEED: i32 = 900;
+pub const CREEP_VISION: i32 = 750;
 
 // Buildings.
 
@@ -383,17 +420,22 @@ pub const FOUNTAIN_HEAL_RADIUS: i32 = 1000;
 pub const ATTACK_RANGE_LEEWAY: i32 = 100;
 /// How far an idle hero looks for something to attack.
 pub const ACQUISITION_RANGE: i32 = 600;
-/// How far a lane creep looks for something to attack.
-pub const CREEP_ACQUISITION_RANGE: i32 = 500;
-/// Radius around a hero within which its attacks against heroes call enemy
-/// creeps, and its orders at allies call them off.
-pub const AGGRO_CALL_RADIUS: i32 = 500;
-/// Ticks a hero holds a creep's attention, however it was gained.
-pub const CREEP_PROVOKE_TICKS: u32 = 70;
-/// Ticks before aggro can be called onto the same creep or tower again.
-pub const AGGRO_CALL_COOLDOWN_TICKS: u32 = 90;
-/// A creep drops a non-hero target that got this far away.
-pub const CREEP_CHASE_RANGE: i32 = 750;
+/// Candidates within this many world units of each other rank as equally
+/// close, and what a hero is doing breaks the tie.
+pub const AGGRO_TIE_RANGE: i32 = 100;
+/// Ticks before an attack order may re-aim the same creep or tower again.
+pub const ORDER_AGGRO_COOLDOWN_TICKS: u32 = 90;
+/// Ticks a creep handed a target by an attack order keeps it before the
+/// ordinary ranking may take it back.
+pub const ORDER_AGGRO_HOLD_TICKS: u32 = 90;
+/// Game tick from which player units may aggro lane creeps unconditionally.
+pub const FREE_AGGRO_TICK: u32 = FIRST_WAVE_TICK + 5 * 60 * TICKS_PER_SECOND;
+/// How close to its own tier-one tower a lane creep may be aggroed before
+/// [`FREE_AGGRO_TICK`].
+pub const EARLY_AGGRO_TOWER_RANGE: i32 = 1500;
+/// Ticks a lane creep chases a target that left its acquisition range,
+/// 2.3 seconds.
+pub const CREEP_CHASE_TICKS: u32 = 69;
 /// How close a hero follows an ally it was ordered to attack but may not.
 pub const FOLLOW_DISTANCE: i32 = 150;
 /// Extra clearance added around structures when blocking grid cells.
@@ -402,13 +444,19 @@ pub const STEER_MARGIN: i32 = 8;
 pub const WAYPOINT_RADIUS: i32 = 40;
 /// A stored path is recomputed once its goal drifted this far.
 pub const REPATH_DRIFT: i32 = 128;
-/// Ticks a walker presses into a walking blocker, fully stopped, before it
-/// starts sidestepping around.
-pub const BLOCK_WAIT_TICKS: u32 = 12;
-/// How far ahead a walker steers around standing bodies.
-pub const SHORT_PATH_RANGE: i32 = 600;
-/// Tangent detours resolved per tick when steering.
-pub const STEER_HOPS: u32 = 4;
+/// The smallest part of a step a slide keeps, as one over this. A walker
+/// square against a body still works its way round, slowly.
+pub const SLIDE_FLOOR_PART: i32 = 4;
+/// How far past a body a creep aims while tracing round it.
+/// Ticks a creep stands unable to move before it shoves through bodies.
+pub const MARCH_SHOVE_TICKS: u32 = 30;
+
+/// How far a body may be eased out of another one in a tick, in units.
+pub const SEPARATION_STEP: i32 = 4;
+
+pub const TRACE_CLEARANCE: i32 = 24;
+/// How many times a blocked step is halved looking for one that fits.
+pub const STEP_FIT_TRIES: u32 = 3;
 /// Ticks a hero recovers after a swing. Cancelled by any order.
 pub const HERO_ATTACK_BACKSWING: u32 = 12;
 /// Ticks a creep recovers after a swing.
@@ -417,13 +465,15 @@ pub const CREEP_ATTACK_BACKSWING: u32 = 15;
 pub const TOWER_ATTACK_BACKSWING: u32 = 4;
 /// Ticks the fountain recovers after a shot.
 pub const FOUNTAIN_ATTACK_BACKSWING: u32 = 2;
-/// How far from the mid lane a calm creep may stray before it turns back.
-pub const LANE_LEASH: i32 = 800;
-/// Being this close to the lane again ends a creep's walk back.
-pub const LANE_RETURN: i32 = 400;
-/// How fast a mobile unit turns, in brads per tick.
-pub const TURN_RATE_BRADS: u16 = 6000;
+/// How fast a unit turns, in brads per tick.
+///
+/// The shipped `MovementTurnRate` is radians per 0.03 seconds; a half, which
+/// every lane creep carries, is this many brads over a tick of a thirtieth.
+pub const TURN_RATE_BRADS: u16 = 5795;
 /// A unit walks or swings only when facing within this error, in brads.
+///
+/// An eighth of a right angle, which is what Dota allows a cast order before
+/// the unit has to come round first.
 pub const TURN_TOLERANCE_BRADS: u16 = 8192;
 
 // Abilities.

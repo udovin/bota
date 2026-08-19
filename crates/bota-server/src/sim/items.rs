@@ -78,7 +78,7 @@ impl World {
     pub fn at_shop(&self, unit_id: EntityId) -> bool {
         self.units.get(unit_id).is_some_and(|u| {
             u.pos.within(
-                crate::sim::fountain_pos(u.team),
+                crate::sim::fountain_pos(self.map, u.team),
                 rules::units(rules::SHOP_RANGE),
             )
         })

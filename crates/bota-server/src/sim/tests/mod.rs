@@ -1,5 +1,6 @@
 mod abilities;
 mod arena;
+mod creep;
 mod determinism;
 mod fixtures;
 mod flow;

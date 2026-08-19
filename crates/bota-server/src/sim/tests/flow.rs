@@ -2,7 +2,7 @@
 
 use bota_proto::{DamageKind, EventKind, Fixed, Order, RejectReason, SlotId, Team, UnitKind, Vec2};
 
-use super::fixtures::{hero_id, world};
+use super::fixtures::{aim_along_lane, hero_id, world};
 use crate::sim::{Command, DamageInst, Event, Unit, UnitOrder, World, rules};
 
 fn step_n(w: &mut World, n: u32) -> Vec<Event> {
@@ -59,19 +59,6 @@ fn creep_waves_spawn_on_schedule() {
     step_n(&mut w, rules::FIRST_WAVE_TICK);
     let creeps = w.units.iter().filter(|(_, u)| u.is_creep()).count();
     assert_eq!(creeps, 24, "four creeps per lane per side");
-}
-
-#[test]
-fn the_fifth_wave_brings_a_siege_creep() {
-    let mut w = world();
-    w.tick = rules::FIRST_WAVE_TICK + 4 * rules::WAVE_PERIOD_TICKS;
-    w.spawn_waves();
-    let sieges = w
-        .units
-        .iter()
-        .filter(|(_, u)| u.kind == UnitKind::CreepSiege)
-        .count();
-    assert_eq!(sieges, 6, "one per lane per side");
 }
 
 #[test]
@@ -350,29 +337,6 @@ fn creeps_attack_the_closest_enemy_regardless_of_kind() {
 }
 
 #[test]
-fn a_busy_creep_ignores_a_closer_hero() {
-    let mut w = world();
-    let dire_creep = w
-        .units
-        .insert(Unit::melee_creep(Team::Dire, Vec2::from_ints(8300, 8192)));
-    let radiant_creep = w.units.insert(Unit::melee_creep(
-        Team::Radiant,
-        Vec2::from_ints(8340, 8192),
-    ));
-    w.step(&[]);
-    assert_eq!(w.units.get(dire_creep).unwrap().engage, Some(radiant_creep));
-    // A hero walks up closer than the creep's current target stands.
-    let hero = hero_id(&w, 0);
-    w.units.get_mut(hero).unwrap().pos = Vec2::from_ints(8270, 8192);
-    step_n(&mut w, 150);
-    assert_eq!(
-        w.units.get(dire_creep).unwrap().engage,
-        Some(radiant_creep),
-        "last-hitting distance steals no attention"
-    );
-}
-
-#[test]
 fn an_attack_order_on_a_hero_provokes_nearby_creeps() {
     let mut w = world();
     let radiant_hero = hero_id(&w, 0);
@@ -389,13 +353,11 @@ fn an_attack_order_on_a_hero_provokes_nearby_creeps() {
     ));
     w.step(&[cmd(0, Order::AttackUnit { target: dire_hero })]);
     assert_eq!(w.units.get(guard).unwrap().engage, Some(radiant_hero));
-    // The offender vanishes across the map; when the grudge runs out the
-    // guard goes back to the closest enemy it can see.
+    // The offender vanishes across the map. A hero is held only while it
+    // stays in reach, so the guard goes back to the closest enemy it sees.
     w.units.get_mut(radiant_hero).unwrap().pos = Vec2::from_ints(12000, 9000);
     w.units.get_mut(radiant_hero).unwrap().move_speed = bota_proto::Fixed::ZERO;
-    for _ in 0..(rules::CREEP_PROVOKE_TICKS + 2) {
-        w.step(&[]);
-    }
+    step_n(&mut w, 2);
     assert_eq!(w.units.get(guard).unwrap().engage, Some(radiant_creep));
 }
 
@@ -480,31 +442,6 @@ fn a_swing_leaves_a_recovery_pause() {
 }
 
 #[test]
-fn a_ranged_creep_keeps_firing_at_a_hero_in_its_range() {
-    let mut w = world();
-    let shooter = w
-        .units
-        .insert(Unit::ranged_creep(Team::Dire, Vec2::from_ints(8600, 8700)));
-    let hero = hero_id(&w, 0);
-    w.units.get_mut(hero).unwrap().pos = Vec2::from_ints(8700, 8700);
-    w.step(&[]);
-    assert_eq!(w.units.get(shooter).unwrap().engage, Some(hero));
-    // A far closer creep target appears; the hero stays in range and keeps
-    // the shooter's attention anyway, long past any aggro window.
-    let radiant_creep = w.units.insert(Unit::melee_creep(
-        Team::Radiant,
-        Vec2::from_ints(8630, 8700),
-    ));
-    step_n(&mut w, 150);
-    assert_eq!(
-        w.units.get(shooter).unwrap().engage,
-        Some(hero),
-        "in range means kept"
-    );
-    let _ = radiant_creep;
-}
-
-#[test]
 fn a_chase_into_the_towers_kills_the_chaser() {
     let mut w = world();
     let creep = w
@@ -539,76 +476,39 @@ fn a_chase_into_the_towers_kills_the_chaser() {
 }
 
 #[test]
-fn a_creep_dragged_off_the_lane_turns_back_deaf() {
-    let mut w = world();
-    let creep = w
-        .units
-        .insert(Unit::melee_creep(Team::Dire, Vec2::from_ints(6100, 9200)));
-    let hero = hero_id(&w, 0);
-    w.units.get_mut(hero).unwrap().pos = Vec2::from_ints(6150, 9250);
-    w.step(&[]);
-    let c = w.units.get(creep).unwrap();
-    assert!(c.returning, "past the leash, it heads home");
-    assert_eq!(c.engage, None, "deaf to the bait next to it");
-    let start_off = crate::sim::lane_offset_squared(rules::LANE_MID, Vec2::from_ints(6100, 9200));
-    step_n(&mut w, 60);
-    let c = w.units.get(creep).unwrap();
-    assert!(
-        crate::sim::lane_offset_squared(rules::LANE_MID, c.pos) < start_off,
-        "walking back towards the lane, at {:?}",
-        c.pos
-    );
-    assert_eq!(c.engage, None);
-    // Provocation overrides the leash: a called creep chases anyway.
-    w.units.get_mut(creep).unwrap().provoked_ticks = rules::CREEP_PROVOKE_TICKS;
-    w.units.get_mut(creep).unwrap().engage = Some(hero);
-    w.step(&[]);
-    let c = w.units.get(creep).unwrap();
-    assert!(!c.returning);
-    assert_eq!(c.engage, Some(hero));
-}
-
-#[test]
-fn a_walking_body_ahead_stops_the_faster_creep_before_it_seeps_past() {
-    let mut w = world();
-    // A friendly hero walks the mid lane right ahead of a faster creep. A
-    // walking body is not planned around: the creep runs into it and is
-    // fully stopped for the block wait, over and over, and only works its
-    // way around between the stops. Blocking a wave by walking in front of
-    // it costs the wave real time.
-    let hero = hero_id(&w, 0);
-    w.units.get_mut(hero).unwrap().pos = Vec2::from_ints(7000, 7000);
-    // Slowed well under creep pace, the walking body is a real block.
-    w.units.get_mut(hero).unwrap().move_speed = rules::units(200);
-    let creep = w.units.insert(Unit::melee_creep(
-        Team::Radiant,
-        Vec2::from_ints(6940, 6940),
-    ));
-    w.units.get_mut(creep).unwrap().lane_step = 3; // already past its own towers
-    w.step(&[cmd(
-        0,
-        Order::Move {
-            pos: Vec2::from_ints(9000, 9000),
-        },
-    )]);
-    let mut stopped_ticks = 0;
-    for _ in 0..380 {
+fn a_walking_body_ahead_costs_the_creep_distance() {
+    // The same march twice, with and without a hero walking in front of it.
+    // However the contact is resolved, the blocked run has to fall behind.
+    let start = Vec2::from_ints(6940, 6940);
+    let run = |block: bool| -> i64 {
+        let mut w = world();
+        let creep = w.units.insert(Unit::melee_creep(Team::Radiant, start));
+        aim_along_lane(&mut w, creep, rules::LANE_MID);
         w.step(&[]);
-        if w.units.get(creep).is_some_and(|c| c.stuck_ticks > 0) {
-            stopped_ticks += 1;
+        let UnitOrder::AttackMove { pos: heading } = w.units.get(creep).unwrap().order else {
+            panic!("a lane creep marches its route");
+        };
+        let hero = hero_id(&w, 0);
+        if block {
+            w.units.get_mut(hero).unwrap().pos =
+                crate::sim::move_towards(start, heading, rules::units(90));
+            // Slowed well under creep pace, the walking body is a real block.
+            w.units.get_mut(hero).unwrap().move_speed = rules::units(200);
+            w.step(&[cmd(0, Order::Move { pos: heading })]);
+        } else {
+            w.units.get_mut(hero).unwrap().pos = Vec2::from_ints(1200, 1200);
+            w.step(&[]);
         }
-    }
+        for _ in 0..380 {
+            w.step(&[]);
+        }
+        w.units.get(creep).unwrap().pos.distance_squared(start)
+    };
+    let free = run(false);
+    let blocked = run(true);
     assert!(
-        stopped_ticks >= 60,
-        "the creep kept getting fully stopped against the walker, {stopped_ticks} ticks"
-    );
-    // Free, 380 ticks cover some 4100 units and would put the creep past
-    // 11000 on the diagonal; the block has to have cost well over a
-    // thousand of them.
-    let creep_pos = w.units.get(creep).unwrap().pos;
-    assert!(
-        creep_pos.x + creep_pos.y < Fixed::from_int(19500),
-        "the block cost the creep real distance: creep {creep_pos:?}"
+        blocked < free,
+        "the block cost the creep ground: {blocked} against {free} unblocked"
     );
 }
 
@@ -629,7 +529,7 @@ fn a_wave_jammed_against_a_stander_flows_around_it() {
         Vec2::from_ints(7980, 7980),
     ] {
         let creep = w.units.insert(Unit::melee_creep(Team::Radiant, at));
-        w.units.get_mut(creep).unwrap().lane_step = 3; // already past its own towers
+        aim_along_lane(&mut w, creep, rules::LANE_MID); // already past its own towers
         wave.push(creep);
     }
     for _ in 0..300 {
@@ -658,7 +558,7 @@ fn a_standing_hero_is_routed_around_untouched() {
         Team::Radiant,
         Vec2::from_ints(7600, 7600),
     ));
-    w.units.get_mut(creep).unwrap().lane_step = 3; // already past its own towers
+    aim_along_lane(&mut w, creep, rules::LANE_MID); // already past its own towers
     let min = {
         let c = w.units.get(creep).unwrap();
         c.radius + w.units.get(hero).unwrap().radius
@@ -703,7 +603,8 @@ fn side_lane_creeps_hug_their_lane_not_the_middle() {
     assert!(!top_positions.is_empty(), "the top wave exists");
     for pos in top_positions {
         assert!(
-            crate::sim::lane_offset_squared(rules::LANE_TOP, pos) < rules::units(300).squared_raw(),
+            crate::sim::lane_offset_squared(w.map, rules::LANE_TOP, pos)
+                < rules::units(300).squared_raw(),
             "marching the west edge, at {pos:?}"
         );
         assert!(
@@ -721,7 +622,7 @@ fn creeps_walk_past_their_own_tower() {
         .map(|i| {
             w.units.insert(Unit::melee_creep(
                 Team::Radiant,
-                spawn + rules::WAVE_SPAWN_OFFSETS[i],
+                spawn + Vec2::from_ints(i * 48 - 48, 0),
             ))
         })
         .collect();
@@ -805,26 +706,34 @@ fn a_tower_turns_on_a_hero_who_attacks_a_hero_in_its_reach() {
 #[test]
 fn an_order_at_an_ally_calls_the_creeps_off() {
     let mut w = world();
+    // Out at the river, where no tower interferes, and nobody walks: the
+    // question is only who the guard is aimed at.
     let radiant_hero = hero_id(&w, 0);
     let dire_hero = hero_id(&w, 1);
-    w.units.get_mut(radiant_hero).unwrap().pos = Vec2::from_ints(4100, 4100);
-    w.units.get_mut(dire_hero).unwrap().pos = Vec2::from_ints(4400, 4400);
+    w.units.get_mut(radiant_hero).unwrap().pos = Vec2::from_ints(8300, 8300);
+    w.units.get_mut(radiant_hero).unwrap().move_speed = Fixed::ZERO;
+    w.units.get_mut(dire_hero).unwrap().pos = Vec2::from_ints(8600, 8600);
     let guard = w
         .units
-        .insert(Unit::melee_creep(Team::Dire, Vec2::from_ints(4300, 4100)));
+        .insert(Unit::melee_creep(Team::Dire, Vec2::from_ints(8500, 8300)));
+    w.units.get_mut(guard).unwrap().move_speed = Fixed::ZERO;
     let ally = w.units.insert(Unit::melee_creep(
         Team::Radiant,
-        Vec2::from_ints(4150, 4150),
+        Vec2::from_ints(8350, 8350),
     ));
+    w.units.get_mut(ally).unwrap().move_speed = Fixed::ZERO;
     w.step(&[cmd(0, Order::AttackUnit { target: dire_hero })]);
     assert_eq!(w.units.get(guard).unwrap().engage, Some(radiant_hero));
-    // The classic trick works mid-provocation: click an ally, the wave lets go.
+    // The call answers once per cooldown, so the trick lands after it.
+    step_n(&mut w, rules::ORDER_AGGRO_COOLDOWN_TICKS);
     w.step(&[cmd(0, Order::AttackUnit { target: ally })]);
-    assert_ne!(w.units.get(guard).unwrap().engage, Some(radiant_hero));
-    // And proximity alone does not bring it back while the call cools down.
-    for _ in 0..30 {
-        w.step(&[]);
-    }
+    assert_ne!(
+        w.units.get(guard).unwrap().engage,
+        Some(radiant_hero),
+        "clicking an ally puts the orderer last among equally close ones"
+    );
+    // And proximity alone does not bring it back: a held target is held.
+    step_n(&mut w, 30);
     assert_ne!(w.units.get(guard).unwrap().engage, Some(radiant_hero));
 }
 

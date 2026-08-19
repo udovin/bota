@@ -27,17 +27,23 @@ fn step_to_first_camps(w: &mut World) {
     }
 }
 
+/// How many creeps the camp at this index spawns, whichever roster it drew.
+fn camp_size(w: &World, index: usize) -> usize {
+    let last = w.camp_last[index];
+    crate::sim::ROSTERS[usize::from(last)].creeps.len()
+}
+
 fn neutrals_of(w: &World, camp: Vec2) -> usize {
     w.units
         .iter()
-        .filter(|(_, u)| u.kind == UnitKind::CreepNeutral && u.camp == camp)
+        .filter(|(_, u)| u.kind == UnitKind::CreepNeutral && u.pos.within(camp, rules::units(300)))
         .count()
 }
 
 #[test]
 fn trees_block_the_ground_they_stand_on() {
     let w = world();
-    let trees = crate::sim::tree_positions();
+    let trees = crate::sim::tree_positions(w.map);
     assert!(trees.len() > 400, "the forest is a forest: {}", trees.len());
     let tree = trees[0];
     assert!(!w.grid.walkable(tree), "a tree trunk closes its cell");
@@ -49,7 +55,7 @@ fn a_walk_ordered_into_a_tree_stops_at_the_trunk() {
     // The trunk nearest the mid lane road, so the hero can reach its edge.
     let hero = hero_id(&w, 0);
     w.units.get_mut(hero).unwrap().pos = Vec2::from_ints(5856, 5856);
-    let target = crate::sim::tree_positions()
+    let target = crate::sim::tree_positions(w.map)
         .into_iter()
         .min_by_key(|t| t.distance_squared(Vec2::from_ints(5856, 5856)))
         .expect("the forest exists");
@@ -80,7 +86,8 @@ fn the_lanes_and_camps_stay_clear_of_the_forest() {
     }
     // The real spawner point can touch its clearing's treeline, so open
     // ground within a step of the camp center is enough.
-    for camp in rules::NEUTRAL_CAMPS {
+    for def in w.map.camps {
+        let camp = def.pos;
         let near = [
             camp,
             camp + Vec2::from_ints(150, 0),
@@ -98,81 +105,113 @@ fn the_lanes_and_camps_stay_clear_of_the_forest() {
 #[test]
 fn camps_fill_on_the_minute_and_stay_full() {
     let mut w = world();
-    let camp = rules::NEUTRAL_CAMPS[0];
+    let camp = w.map.camps[0].pos;
     step_to_first_camps(&mut w);
     assert_eq!(
         neutrals_of(&w, camp),
-        rules::NEUTRALS_PER_CAMP as usize,
-        "the first minute stocks the camp"
+        camp_size(&w, 0),
+        "the first minute stocks the camp with a whole roster"
     );
     assert_eq!(
-        neutrals_of(&w, rules::NEUTRAL_CAMPS[2]),
-        rules::NEUTRALS_PER_CAMP as usize,
+        neutrals_of(&w, w.map.camps[2].pos),
+        camp_size(&w, 2),
         "the far-side camp too"
     );
+    let drawn = w.camp_last[0];
     step_n(&mut w, rules::NEUTRAL_SPAWN_PERIOD_TICKS);
     assert_eq!(
         neutrals_of(&w, camp),
-        rules::NEUTRALS_PER_CAMP as usize,
+        camp_size(&w, 0),
         "a full camp never double-stocks"
     );
+    assert_eq!(w.camp_last[0], drawn, "and it did not draw again");
+}
+
+#[test]
+fn a_camp_never_draws_the_same_roster_twice_running() {
+    let mut w = world();
+    step_to_first_camps(&mut w);
+    let mut seen = w.camp_last[0];
+    for _ in 0..6 {
+        // Clear the camp so the next minute mark refills it.
+        let camp = w.map.camps[0].pos;
+        for id in w.units.ids() {
+            if w.units.get(id).is_some_and(|u| {
+                u.kind == UnitKind::CreepNeutral && u.pos.within(camp, rules::units(400))
+            }) {
+                w.units.remove(id);
+            }
+        }
+        step_n(&mut w, rules::NEUTRAL_SPAWN_PERIOD_TICKS);
+        let now = w.camp_last[0];
+        assert_ne!(now, seen, "a fresh roster every time");
+        seen = now;
+    }
 }
 
 #[test]
 fn a_body_in_the_box_blocks_the_camp_spawn() {
     let mut w = world();
-    let camp = rules::NEUTRAL_CAMPS[0];
+    let camp = w.map.camps[0].pos;
     let hero = hero_id(&w, 0);
     w.units.get_mut(hero).unwrap().pos = camp;
     step_to_first_camps(&mut w);
     assert_eq!(neutrals_of(&w, camp), 0, "the stander blocked the spawn");
     // Everywhere else spawned fine.
-    assert_eq!(
-        neutrals_of(&w, rules::NEUTRAL_CAMPS[1]),
-        rules::NEUTRALS_PER_CAMP as usize
-    );
+    assert_eq!(neutrals_of(&w, w.map.camps[1].pos), camp_size(&w, 1));
 }
 
 #[test]
-fn neutrals_fight_back_leash_home_and_heal() {
+fn a_dragged_neutral_gives_up_walks_home_and_keeps_its_wounds() {
     let mut w = world();
-    let camp = rules::NEUTRAL_CAMPS[0];
+    let camp = w.map.camps[0].pos;
     step_to_first_camps(&mut w);
     let neutral = w
         .units
         .iter()
-        .find(|(_, u)| u.kind == UnitKind::CreepNeutral && u.camp == camp)
+        .find(|(_, u)| u.kind == UnitKind::CreepNeutral && u.pos.within(camp, rules::units(300)))
         .map(|(id, _)| id)
         .expect("the camp is stocked");
+    let home = w.units.get(neutral).unwrap().pos;
     // A hero walks in and attacks: the neutral answers.
     let hero = hero_id(&w, 0);
     w.units.get_mut(hero).unwrap().pos = camp + Vec2::from_ints(200, 0);
+    w.units.get_mut(hero).unwrap().hp = 1_000_000;
+    w.units.get_mut(hero).unwrap().max_hp = 1_000_000;
     w.step(&[cmd(0, Order::AttackUnit { target: neutral })]);
     let mut answered = false;
     for _ in 0..90 {
         w.step(&[]);
-        if w.units.get(neutral).is_some_and(|n| n.engage == Some(hero)) {
+        if w.units.get(neutral).is_some_and(|n| n.engage.is_some()) {
             answered = true;
             break;
         }
     }
     assert!(answered, "the neutral turned on its attacker");
-    // Kiting it beyond the leash sends it home, deaf, to a full heal.
-    w.units.get_mut(hero).unwrap().pos = camp + Vec2::from_ints(rules::NEUTRAL_LEASH + 400, 0);
-    let mut went_home = false;
-    for _ in 0..600 {
+    let hurt = w.units.get(neutral).unwrap().hp;
+    assert!(hurt < w.units.get(neutral).unwrap().max_hp, "and took hits");
+    // Kited well past the guard distance, its window runs out and it gives up.
+    w.units.get_mut(hero).unwrap().pos =
+        camp + Vec2::from_ints(rules::NEUTRAL_GUARD_DISTANCE + 3000, 0);
+    let mut home_again = false;
+    for _ in 0..900 {
         w.step(&[]);
         let Some(n) = w.units.get(neutral) else {
             break;
         };
-        if !n.returning && n.engage.is_none() && n.pos.within(camp, rules::units(200)) {
-            went_home = n.hp == n.max_hp;
-            if went_home {
-                break;
-            }
+        if n.engage.is_none() && n.pos.within(home, rules::units(rules::NEUTRAL_RETURN)) {
+            home_again = true;
+            break;
         }
     }
-    assert!(went_home, "leashed back to the camp at full health");
+    assert!(home_again, "it walked back to the spot it spawned on");
+    let n = w.units.get(neutral).unwrap();
+    assert!(
+        n.hp <= hurt,
+        "and got no free heal for the trip: {} of {}",
+        n.hp,
+        n.max_hp
+    );
 }
 
 #[test]
@@ -245,14 +284,15 @@ fn killing_roshan_pays_the_team_and_starts_the_grave_clock() {
 #[test]
 fn a_neutral_kill_pays_the_killer_and_feeds_xp() {
     let mut w = world();
-    let camp = rules::NEUTRAL_CAMPS[0];
+    let camp = w.map.camps[0].pos;
     step_to_first_camps(&mut w);
     let neutral = w
         .units
         .iter()
-        .find(|(_, u)| u.kind == UnitKind::CreepNeutral && u.camp == camp)
+        .find(|(_, u)| u.kind == UnitKind::CreepNeutral && u.pos.within(camp, rules::units(300)))
         .map(|(id, _)| id)
         .expect("the camp is stocked");
+    let bounty = w.units.get(neutral).unwrap().bounty;
     w.units.get_mut(neutral).unwrap().hp = 20;
     let hero = hero_id(&w, 0);
     w.units.get_mut(hero).unwrap().pos = camp + Vec2::from_ints(250, 0);
@@ -270,9 +310,6 @@ fn a_neutral_kill_pays_the_killer_and_feeds_xp() {
     assert!(!w.units.contains(neutral), "the neutral dies");
     step_n(&mut w, 2);
     let seat = w.seat(SlotId(0)).unwrap();
-    assert!(
-        seat.gold >= gold_before + rules::NEUTRAL_BOUNTY,
-        "the bounty arrived"
-    );
+    assert!(seat.gold >= gold_before + bounty, "the bounty arrived");
     assert!(seat.xp > xp_before, "and the experience");
 }

@@ -87,6 +87,7 @@ fn a_realtime_match_reaches_two_clients() {
         players: 2,
         replay: Some(replay_path.clone()),
         seed: 7,
+        map: bota_proto::MapId(0),
         ack_timeout_ticks: 150,
     });
 
@@ -165,6 +166,7 @@ fn lockstep_advances_as_fast_as_the_acks_come() {
         players: 2,
         replay: None,
         seed: 8,
+        map: bota_proto::MapId(0),
         ack_timeout_ticks: 600, // ten seconds: only acks can move this match
     });
 

@@ -31,6 +31,7 @@ impl World {
 
     /// Passive regeneration and the fountain area.
     pub fn regen(&mut self) {
+        let map = self.map;
         let hp_tick = self.tick.is_multiple_of(rules::HERO_HP_REGEN_PERIOD);
         let mana_tick = self.tick.is_multiple_of(rules::HERO_MANA_REGEN_PERIOD);
         let heal_radius = rules::units(rules::FOUNTAIN_HEAL_RADIUS);
@@ -44,7 +45,7 @@ impl World {
             if mana_tick {
                 unit.mana = (unit.mana + 1).min(unit.max_mana);
             }
-            if unit.pos.within(fountain_pos(unit.team), heal_radius) {
+            if unit.pos.within(fountain_pos(map, unit.team), heal_radius) {
                 unit.hp = (unit.hp + rules::FOUNTAIN_HEAL_HP_PER_TICK).min(unit.max_hp);
                 unit.mana = (unit.mana + rules::FOUNTAIN_HEAL_MANA_PER_TICK).min(unit.max_mana);
             }
@@ -53,33 +54,40 @@ impl World {
 
     /// Spawns the creep wave due this tick, if one is.
     pub fn spawn_waves(&mut self) {
-        if self.tick < rules::FIRST_WAVE_TICK
-            || !(self.tick - rules::FIRST_WAVE_TICK).is_multiple_of(rules::WAVE_PERIOD_TICKS)
-        {
+        let Some(wave) = crate::sim::wave_at(self.tick) else {
             return;
-        }
-        let wave = (self.tick - rules::FIRST_WAVE_TICK) / rules::WAVE_PERIOD_TICKS + 1;
-        let with_siege = wave.is_multiple_of(rules::SIEGE_WAVE_PERIOD);
+        };
+        let plan = crate::sim::wave_plan(wave);
+        let mut flag = self.rng.global(crate::sim::Purpose::Wave);
         for team in [Team::Radiant, Team::Dire] {
-            for lane in [rules::LANE_MID, rules::LANE_TOP, rules::LANE_BOT] {
-                let spawn = crate::sim::creep_spawn_pos(team, lane);
-                let mut recruit = |unit: Unit, offset: usize| {
-                    let pos = spawn + rules::WAVE_SPAWN_OFFSETS[offset];
-                    let id = self.units.insert(Unit { pos, lane, ..unit });
-                    let _ = id;
+            for lane in self.map.lanes() {
+                let spawn = crate::sim::creep_spawn_pos(self.map, team, lane);
+                let route = &crate::sim::lane_routes(self.map)[crate::sim::team_index(team)]
+                    [usize::from(lane)];
+                // The first waypoint can sit a few dozen units away, so the
+                // march direction comes from the first one that is properly
+                // ahead.
+                let forward = route
+                    .iter()
+                    .find(|w| !w.within(spawn, rules::units(rules::WAVE_FACING_LOOKAHEAD)))
+                    .map_or(Vec2::ZERO, |w| *w - spawn);
+                let offsets = crate::sim::spawn_offsets(&plan, forward);
+                // Which melee creep carries the flag is drawn per wave, per
+                // side and per lane, so the three lanes differ.
+                let slot = if plan.flagbearer {
+                    flag.below(plan.melee)
+                } else {
+                    0
                 };
-                for i in 0..rules::MELEE_PER_WAVE {
-                    recruit(Unit::melee_creep(team, spawn), i as usize);
-                }
-                recruit(
-                    Unit::ranged_creep(team, spawn),
-                    rules::MELEE_PER_WAVE as usize,
-                );
-                if with_siege {
-                    recruit(
-                        Unit::siege_creep(team, spawn),
-                        rules::MELEE_PER_WAVE as usize + 1,
-                    );
+                for (unit, offset) in crate::sim::wave_units(team, &plan, spawn, slot)
+                    .into_iter()
+                    .zip(offsets)
+                {
+                    self.units.insert(Unit {
+                        pos: spawn + offset,
+                        lane,
+                        ..unit
+                    });
                 }
             }
         }
@@ -97,19 +105,45 @@ impl World {
             return;
         }
         let box_radius = rules::units(rules::CAMP_BOX_RADIUS);
-        for camp in rules::NEUTRAL_CAMPS {
+        let upgrades = self.neutral_upgrades();
+        let mut draw = self.rng.global(crate::sim::Purpose::NeutralSpawn);
+        for (index, def) in self.map.camps.iter().enumerate() {
             let blocked = self
                 .units
                 .iter()
-                .any(|(_, u)| !u.is_structure() && u.pos.within(camp, box_radius));
+                .any(|(_, u)| !u.is_structure() && u.pos.within(def.pos, box_radius));
             if blocked {
                 continue;
             }
-            for i in 0..rules::NEUTRALS_PER_CAMP {
-                let offset = Vec2::from_ints(60 * i as i32 - 30, 30 - 60 * i as i32);
-                self.units.insert(Unit::neutral_creep(camp + offset, camp));
+            // A camp never fills with the same roster twice running.
+            let choices: Vec<(u8, &crate::sim::Roster)> =
+                crate::sim::rosters_of(def.kind).collect();
+            let last = self.camp_last[index];
+            let fresh: Vec<&(u8, &crate::sim::Roster)> =
+                choices.iter().filter(|(id, _)| *id != last).collect();
+            let pick = fresh[draw.below(fresh.len() as u32) as usize];
+            self.camp_last[index] = pick.0;
+            for (i, &kind) in pick.1.creeps.iter().enumerate() {
+                let spread = rules::CAMP_SPAWN_SPACING;
+                let n = pick.1.creeps.len() as i32;
+                let offset = Vec2::from_ints((i as i32 - (n - 1) / 2) * spread, 0);
+                self.units.insert(Unit::neutral_creep(
+                    kind,
+                    def.pos + offset,
+                    index as u8,
+                    upgrades,
+                ));
             }
         }
+    }
+
+    /// Upgrades the jungle carries by now, capped.
+    pub fn neutral_upgrades(&self) -> i32 {
+        if self.tick < rules::FIRST_WAVE_TICK {
+            return 0;
+        }
+        (((self.tick - rules::FIRST_WAVE_TICK) / rules::NEUTRAL_UPGRADE_PERIOD_TICKS) as i32)
+            .min(rules::NEUTRAL_UPGRADE_CAP)
     }
 
     /// Counts down Roshan's grave and puts him back in his pit.

@@ -43,6 +43,14 @@ fn heuristic(a: (usize, usize), b: (usize, usize)) -> u32 {
     STRAIGHT * dx.max(dy) + (DIAGONAL - STRAIGHT) * dx.min(dy)
 }
 
+/// The nearest spot a unit may actually stand on, for a point that may sit
+/// inside a building's footprint.
+pub fn nearest_open(grid: &PassGrid, at: Vec2) -> Vec2 {
+    PassGrid::cell_of(at)
+        .and_then(|cell| routable_cell(grid, cell))
+        .map_or(at, PassGrid::cell_center)
+}
+
 /// The open cell to route to for a goal, stepping to a neighbour when the
 /// goal cell itself is blocked.
 fn routable_cell(grid: &PassGrid, cell: (usize, usize)) -> Option<(usize, usize)> {

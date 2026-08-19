@@ -29,6 +29,8 @@ pub struct ServerOpts {
     pub replay: Option<PathBuf>,
     /// Seed of the match randomness and the match id.
     pub seed: u64,
+    /// Which map to play.
+    pub map: MapId,
     /// Lockstep: how many tick-lengths to wait for a straggler.
     pub ack_timeout_ticks: u32,
 }
@@ -213,7 +215,7 @@ impl Server {
             match_id: self.opts.seed,
             master_key,
             picks: self.roster.picks(),
-            map: MapId(0),
+            map: self.opts.map,
             tick_rate: self.opts.tick_rate,
             mode: self.opts.mode,
             ack_timeout_ticks: self.opts.ack_timeout_ticks,

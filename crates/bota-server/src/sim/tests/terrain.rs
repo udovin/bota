@@ -154,7 +154,7 @@ fn a_tree_shades_what_hides_behind_it() {
     let dire = hero_id(&w, 1);
     // A tree with open, level ground on both sides, out of everyone's way.
     let mut found = None;
-    'trees: for tree in crate::sim::tree_positions() {
+    'trees: for tree in crate::sim::tree_positions(w.map) {
         let front = tree + Vec2::from_ints(220, 0);
         let behind = tree - Vec2::from_ints(220, 0);
         if !w.grid.walkable(front) || !w.grid.walkable(behind) {

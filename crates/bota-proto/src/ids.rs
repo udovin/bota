@@ -83,6 +83,9 @@ pub enum UnitKind {
     Hero,
     /// A melee lane creep.
     CreepMelee,
+    /// A melee lane creep carrying the flag: tougher against magic, and its
+    /// death pays every enemy hero nearby.
+    CreepFlagbearer,
     /// A ranged lane creep.
     CreepRanged,
     /// A siege creep, spawned with every fifth wave.

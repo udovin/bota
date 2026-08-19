@@ -37,6 +37,10 @@ pub struct World {
     pub rng: MatchRng,
     /// Which side has won. The world stops stepping once set.
     pub winner: Option<Team>,
+    /// The map being played.
+    pub map: &'static crate::sim::MapDef,
+    /// The roster each camp filled with last, so it never repeats one.
+    pub camp_last: Vec<u8>,
 }
 
 impl World {
@@ -45,6 +49,7 @@ impl World {
     /// `rng` is initial hidden state, not configuration; deriving it is the
     /// server's business.
     pub fn new(cfg: &MatchConfig, rng: MatchRng) -> World {
+        let map = crate::sim::map_of(cfg.map);
         let uphill = Chance::new(rng.global(crate::sim::Purpose::Evasion), rules::UPHILL_MISS);
         let roshan_rng = rng.global(crate::sim::Purpose::Roshan);
         let mut world = World {
@@ -53,13 +58,15 @@ impl World {
             projectiles: Arena::new(),
             seats: Vec::new(),
             grid: PassGrid::open(),
-            ground: Ground::decode(),
-            tree_cover: crate::sim::build_sight_block(),
+            ground: Ground::of(map),
+            tree_cover: crate::sim::build_sight_block(map),
             uphill,
             roshan_respawn: 0,
             roshan_rng,
             rng,
             winner: None,
+            map,
+            camp_last: vec![u8::MAX; map.camps.len()],
         };
         // The terrain closes its own ground: cliffs, pits, the map edge.
         for cy in 0..rules::GRID_CELLS {
@@ -70,15 +77,19 @@ impl World {
             }
         }
         for team in [Team::Radiant, Team::Dire] {
-            world.units.insert(Unit::fountain(team, fountain_pos(team)));
-            world.units.insert(Unit::ancient(team, ancient_pos(team)));
+            world
+                .units
+                .insert(Unit::fountain(team, map.fountains[team_index(team)]));
+            world
+                .units
+                .insert(Unit::ancient(team, map.ancients[team_index(team)]));
         }
-        for &(lane, tier, pos) in rules::RADIANT_TOWERS.iter() {
+        for &(lane, tier, pos) in map.radiant_towers {
             world
                 .units
                 .insert(Unit::tower(Team::Radiant, pos, lane, tier));
         }
-        for &(lane, tier, pos) in rules::DIRE_TOWERS.iter() {
+        for &(lane, tier, pos) in map.dire_towers {
             world.units.insert(Unit::tower(Team::Dire, pos, lane, tier));
         }
         let footprints: Vec<(Vec2, bota_proto::Fixed)> = world
@@ -92,7 +103,7 @@ impl World {
                 .grid
                 .block_circle(pos, crate::sim::structure_clearance(radius));
         }
-        for pos in tree_positions() {
+        for pos in tree_positions(map) {
             world.grid.block_circle(
                 pos,
                 crate::sim::structure_clearance(rules::units(rules::TREE_RADIUS)),
@@ -136,7 +147,7 @@ impl World {
             seat.slot,
             seat.hero,
             seat.level,
-            hero_spawn_pos(seat.team),
+            hero_spawn_pos(self.map, seat.team),
         );
         let id = self.units.insert(unit);
         // The crit stream is keyed by the arena slot, so a respawned hero
@@ -270,29 +281,29 @@ impl World {
 
 /// The fountain position of a team. The jungle's is the map center: it has
 /// no fountain, and nothing ever stands there.
-pub fn fountain_pos(team: Team) -> Vec2 {
+pub fn fountain_pos(map: &crate::sim::MapDef, team: Team) -> Vec2 {
     match team {
-        Team::Radiant => rules::RADIANT_FOUNTAIN_POS,
-        Team::Dire => rules::DIRE_FOUNTAIN_POS,
+        Team::Radiant => map.fountains[0],
+        Team::Dire => map.fountains[1],
         Team::Neutral => Vec2::from_ints(rules::MAP_SIZE / 2, rules::MAP_SIZE / 2),
     }
 }
 
 /// Where a team's hero appears, beside the fountain rather than inside it.
-pub fn hero_spawn_pos(team: Team) -> Vec2 {
+pub fn hero_spawn_pos(map: &crate::sim::MapDef, team: Team) -> Vec2 {
     let offset = match team {
         Team::Radiant => Vec2::from_ints(rules::HERO_SPAWN_OFFSET, rules::HERO_SPAWN_OFFSET),
         Team::Dire => Vec2::from_ints(-rules::HERO_SPAWN_OFFSET, -rules::HERO_SPAWN_OFFSET),
         Team::Neutral => Vec2::ZERO,
     };
-    fountain_pos(team) + offset
+    fountain_pos(map, team) + offset
 }
 
 /// The Ancient position of a team.
-pub fn ancient_pos(team: Team) -> Vec2 {
+pub fn ancient_pos(map: &crate::sim::MapDef, team: Team) -> Vec2 {
     match team {
-        Team::Radiant => rules::RADIANT_ANCIENT_POS,
-        Team::Dire => rules::DIRE_ANCIENT_POS,
+        Team::Radiant => map.ancients[0],
+        Team::Dire => map.ancients[1],
         Team::Neutral => Vec2::from_ints(rules::MAP_SIZE / 2, rules::MAP_SIZE / 2),
     }
 }
@@ -304,7 +315,10 @@ pub fn mirror(pos: Vec2) -> Vec2 {
 
 /// Every tree on the map: the real Dota forest, with this map's own lane
 /// corridors and bases kept clear so the straightened lanes stay walkable.
-pub fn tree_positions() -> Vec<Vec2> {
+pub fn tree_positions(map: &crate::sim::MapDef) -> Vec<Vec2> {
+    if !map.trees {
+        return Vec::new();
+    }
     let lane_clear = {
         let r = i64::from(rules::units(rules::TREE_LANE_CLEAR).raw);
         r * r
@@ -314,12 +328,12 @@ pub fn tree_positions() -> Vec<Vec2> {
         .iter()
         .map(|&(x, y)| Vec2::from_ints(i32::from(x), i32::from(y)))
         .filter(|&pos| {
-            for lane in [rules::LANE_MID, rules::LANE_TOP, rules::LANE_BOT] {
-                if lane_offset_squared(lane, pos) < lane_clear {
+            for lane in map.lanes() {
+                if lane_offset_squared(map, lane, pos) < lane_clear {
                     return false;
                 }
             }
-            !pos.within(rules::RADIANT_FOUNTAIN_POS, base_clear)
+            !pos.within(map.fountains[0], base_clear)
                 && !pos.within(rules::DIRE_FOUNTAIN_POS, base_clear)
         })
         .collect()
@@ -338,36 +352,34 @@ pub fn mirrored_lane(lane: u8) -> u8 {
 ///
 /// The line runs through every tower of the lane, so a wave walks from tower
 /// to tower and cannot wander past one out of its own acquisition range.
-pub fn lane_polyline(lane: u8) -> Vec<Vec2> {
-    let tower_of = |table: &[(u8, u8, Vec2); 11], tier: u8| {
+pub fn lane_polyline(map: &crate::sim::MapDef, lane: u8) -> Vec<Vec2> {
+    let tower_of = |table: &[(u8, u8, Vec2)], tier: u8| {
         table
             .iter()
             .find(|&&(tl, tt, _)| tl == lane && tt == tier)
             .map(|&(_, _, pos)| pos)
     };
-    let mut line = vec![rules::RADIANT_ANCIENT_POS];
+    let mut line = vec![map.ancients[0]];
     for tier in [3u8, 2, 1] {
-        if let Some(pos) = tower_of(&rules::RADIANT_TOWERS, tier) {
+        if let Some(pos) = tower_of(map.radiant_towers, tier) {
             line.push(pos);
         }
     }
-    match lane {
-        rules::LANE_TOP => line.push(rules::TOP_CORNER),
-        rules::LANE_BOT => line.push(rules::BOT_CORNER),
-        _ => {}
+    if let Some(corners) = map.lane_corners.get(usize::from(lane)) {
+        line.extend_from_slice(corners);
     }
     for tier in [1u8, 2, 3] {
-        if let Some(pos) = tower_of(&rules::DIRE_TOWERS, tier) {
+        if let Some(pos) = tower_of(map.dire_towers, tier) {
             line.push(pos);
         }
     }
-    line.push(rules::DIRE_ANCIENT_POS);
+    line.push(map.ancients[1]);
     line
 }
 
 /// The waypoints a team's creeps push through on a lane, enemy Ancient last.
-pub fn lane_route(team: Team, lane: u8) -> Vec<Vec2> {
-    let mut line = lane_polyline(lane);
+pub fn lane_route(map: &crate::sim::MapDef, team: Team, lane: u8) -> Vec<Vec2> {
+    let mut line = lane_polyline(map, lane);
     if team == Team::Dire {
         line.reverse();
     }
@@ -375,9 +387,85 @@ pub fn lane_route(team: Team, lane: u8) -> Vec<Vec2> {
     line
 }
 
+/// The passability grid of a map: its terrain, its buildings and its forest.
+///
+/// Built from the map alone, so the routes found on it never depend on which
+/// world asked first.
+pub fn build_grid(map: &crate::sim::MapDef) -> PassGrid {
+    let ground = Ground::of(map);
+    let mut grid = PassGrid::open();
+    for cy in 0..rules::GRID_CELLS {
+        for cx in 0..rules::GRID_CELLS {
+            if !ground.cell_walkable(cx, cy) {
+                grid.close_cell(cx, cy);
+            }
+        }
+    }
+    let mut block = |pos: Vec2, radius: bota_proto::Fixed| {
+        grid.block_circle(pos, crate::sim::structure_clearance(radius));
+    };
+    for at in map.fountains {
+        block(at, rules::units(rules::FOUNTAIN_RADIUS));
+    }
+    for at in map.ancients {
+        block(at, rules::units(rules::ANCIENT_RADIUS));
+    }
+    for &(_, _, at) in map.radiant_towers.iter().chain(map.dire_towers) {
+        block(at, rules::units(rules::TOWER_RADIUS));
+    }
+    for at in tree_positions(map) {
+        block(at, rules::units(rules::TREE_RADIUS));
+    }
+    grid
+}
+
+/// The landmarks a team's creeps march through on a lane, spawner first.
+fn lane_landmarks(map: &crate::sim::MapDef, team: Team, lane: u8) -> Vec<Vec2> {
+    let mut line = vec![creep_spawn_pos(map, team, lane)];
+    line.extend(lane_route(map, team, lane));
+    line
+}
+
+/// The walked route of every lane, both sides, indexed by team then lane.
+///
+/// Every match runs the same map, so the routes are found once and shared.
+pub fn lane_routes(map: &'static crate::sim::MapDef) -> &'static [[Vec<Vec2>; 3]; 2] {
+    static ROUTES: std::sync::OnceLock<Vec<[[Vec<Vec2>; 3]; 2]>> = std::sync::OnceLock::new();
+    &ROUTES.get_or_init(|| {
+        crate::sim::MAPS
+            .iter()
+            .map(|m| {
+                let grid = build_grid(m);
+                let build = |team: Team| {
+                    [
+                        walk_lane(m, &grid, team, rules::LANE_MID),
+                        walk_lane(m, &grid, team, rules::LANE_TOP),
+                        walk_lane(m, &grid, team, rules::LANE_BOT),
+                    ]
+                };
+                [build(Team::Radiant), build(Team::Dire)]
+            })
+            .collect()
+    })[map.index()]
+}
+
+/// One lane's walked route: the landmarks, with a found path laid between
+/// each pair so the march goes around what stands in the way.
+fn walk_lane(map: &crate::sim::MapDef, grid: &PassGrid, team: Team, lane: u8) -> Vec<Vec2> {
+    let marks = lane_landmarks(map, team, lane);
+    let mut out = Vec::new();
+    for leg in marks.windows(2) {
+        out.extend(crate::sim::find_path(grid, leg[0], leg[1]));
+        // Landmarks are tower positions, and a tower closes the ground it
+        // stands on: the march aims beside it, not at it.
+        out.push(crate::sim::nearest_open(grid, leg[1]));
+    }
+    out
+}
+
 /// Squared distance from a lane's centerline.
-pub fn lane_offset_squared(lane: u8, pos: Vec2) -> i64 {
-    let line = lane_polyline(lane);
+pub fn lane_offset_squared(map: &crate::sim::MapDef, lane: u8, pos: Vec2) -> i64 {
+    let line = lane_polyline(map, lane);
     line.windows(2)
         .map(|s| crate::sim::segment_distance_squared(pos, s[0], s[1]))
         .min()
@@ -385,8 +473,8 @@ pub fn lane_offset_squared(lane: u8, pos: Vec2) -> i64 {
 }
 
 /// The nearest point of a lane's centerline.
-pub fn lane_return_point(lane: u8, pos: Vec2) -> Vec2 {
-    let line = lane_polyline(lane);
+pub fn lane_return_point(map: &crate::sim::MapDef, lane: u8, pos: Vec2) -> Vec2 {
+    let line = lane_polyline(map, lane);
     line.windows(2)
         .map(|s| crate::sim::segment_nearest(pos, s[0], s[1]))
         .min_by_key(|p| pos.distance_squared(*p))
@@ -394,11 +482,20 @@ pub fn lane_return_point(lane: u8, pos: Vec2) -> Vec2 {
 }
 
 /// The creep spawn position of a team on a lane. The jungle runs no lanes.
-pub fn creep_spawn_pos(team: Team, lane: u8) -> Vec2 {
+pub fn creep_spawn_pos(map: &crate::sim::MapDef, team: Team, lane: u8) -> Vec2 {
     match team {
-        Team::Radiant => rules::RADIANT_CREEP_SPAWNS[usize::from(lane)],
-        Team::Dire => rules::DIRE_CREEP_SPAWNS[usize::from(lane)],
+        Team::Radiant => map.creep_spawns[0][usize::from(lane)],
+        Team::Dire => map.creep_spawns[1][usize::from(lane)],
         Team::Neutral => Vec2::from_ints(rules::MAP_SIZE / 2, rules::MAP_SIZE / 2),
+    }
+}
+
+/// Where a team sits in the per-team route tables. The jungle marches
+/// nowhere and answers zero.
+pub fn team_index(team: Team) -> usize {
+    match team {
+        Team::Radiant | Team::Neutral => 0,
+        Team::Dire => 1,
     }
 }
 
@@ -487,6 +584,7 @@ fn hash_unit(f: &mut Fnv, unit: &Unit) {
     f.i32(unit.move_speed.raw);
     f.i32(unit.attack_damage);
     f.i32(unit.attack_range.raw);
+    f.i32(unit.acquisition_range.raw);
     f.u32(unit.attack_interval);
     f.u32(unit.attack_point);
     match unit.projectile_speed {
@@ -520,8 +618,6 @@ fn hash_unit(f: &mut Fnv, unit: &Unit) {
     f.u32(unit.attack_cooldown);
     f.u32(unit.attack_backswing);
     f.u32(unit.recovering);
-    f.u8(u8::from(unit.moving));
-    f.u32(unit.stuck_ticks);
     f.u32(unit.frenzy_ticks);
     f.i32(unit.frenzy_pct);
     f.u32(unit.salve_ticks);
@@ -536,15 +632,7 @@ fn hash_unit(f: &mut Fnv, unit: &Unit) {
     for w in &unit.path {
         hash_vec2(f, *w);
     }
-    f.u32(unit.provoked_ticks);
-    f.u32(unit.aggro_cooldown);
-    match unit.shunned {
-        None => f.u8(0),
-        Some(id) => {
-            f.u8(1);
-            hash_entity(f, id);
-        }
-    }
+    f.u32(unit.order_cooldown);
     f.u8(u8::from(unit.returning));
     hash_vec2(f, unit.camp);
     match unit.owner {
@@ -563,7 +651,38 @@ fn hash_unit(f: &mut Fnv, unit: &Unit) {
     }
     f.u8(unit.level);
     f.u8(unit.lane);
-    f.u8(unit.lane_step);
+    match &unit.ai {
+        None => f.u8(0),
+        Some(crate::sim::CreepAi::Neutral(ai)) => {
+            f.u8(2);
+            f.u8(ai.camp);
+            hash_vec2(f, ai.home);
+            f.u32(ai.leash_left);
+            f.u32(ai.reaggro_block);
+            f.u32(ai.next_window);
+            f.u8(u8::from(ai.going_home));
+        }
+        Some(crate::sim::CreepAi::Lane(ai)) => {
+            f.u8(1);
+            f.u32(u32::from(ai.step));
+            f.u32(ai.chase_left);
+            f.u32(ai.provoked);
+            match ai.anchor {
+                None => f.u8(0),
+                Some(p) => {
+                    f.u8(1);
+                    hash_vec2(f, p);
+                }
+            }
+            match ai.last_seen {
+                None => f.u8(0),
+                Some(p) => {
+                    f.u8(1);
+                    hash_vec2(f, p);
+                }
+            }
+        }
+    }
     f.u8(unit.tier);
     f.i32(unit.bounty);
     f.i32(unit.xp_reward);
@@ -601,5 +720,6 @@ fn kind_code(kind: UnitKind) -> u8 {
         UnitKind::Fountain => 7,
         UnitKind::Ward => 8,
         UnitKind::Roshan => 9,
+        UnitKind::CreepFlagbearer => 10,
     }
 }

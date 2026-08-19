@@ -795,6 +795,7 @@ fn kind_name(kind: UnitKind) -> &'static str {
     match kind {
         UnitKind::Hero => "Hero",
         UnitKind::CreepMelee => "Melee Creep",
+        UnitKind::CreepFlagbearer => "Flagbearer Creep",
         UnitKind::CreepRanged => "Ranged Creep",
         UnitKind::CreepSiege => "Siege Creep",
         UnitKind::CreepNeutral => "Neutral Creep",

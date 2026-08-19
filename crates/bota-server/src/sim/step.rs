@@ -3,9 +3,8 @@
 use bota_proto::{EntityId, EventKind, Fixed, Order, RejectReason, SlotId, Team, UnitKind, Vec2};
 
 use crate::sim::{
-    UnitOrder, World, blocked_by_stander, blocked_by_units, clamp_to_map, facing_gap,
-    facing_towards, find_path, grid_los, in_attack_range, move_towards, per_tick, rules,
-    steer_target, turn_towards, unit_slide,
+    UnitOrder, World, clamp_to_map, facing_gap, facing_towards, find_path, grid_los,
+    in_attack_range, per_tick, rules, turn_towards, walk_step,
 };
 
 /// One accepted order, translated to a seat.
@@ -104,6 +103,7 @@ impl World {
         self.tick_items(); //                                   4. statuses
         self.aggro(); //                                        5. target choice
         self.execute_movement(); //                             6. movement
+        crate::sim::push_apart(&mut self.units, &self.grid); // 6. bodies apart
         let mut dmg = Vec::new();
         self.run_attacks(&mut dmg); //                          7. attacks
         self.move_projectiles(&mut dmg); //                     7. projectiles
@@ -179,11 +179,9 @@ impl World {
                             // following and denying, every tick anew.
                             unit.engage = if friendly { None } else { Some(target) };
                         }
-                        if friendly {
-                            self.deaggro_call(unit_id);
-                        } else {
-                            self.provoke_creeps(unit_id, target);
-                        }
+                        // The order itself is the aggro check; whether it
+                        // calls or calls off is read off the target there.
+                        self.order_aggro(unit_id, target);
                     }
                 }
                 Order::CastAbility { slot, target } => {
@@ -230,8 +228,13 @@ impl World {
                 // A hero's fight rolls onto the closest enemy in acquisition
                 // range: the switch happens only mid-attack, never from rest.
                 let next = if unit.kind == UnitKind::Hero {
-                    self.pick_target(id, Some(rules::units(rules::ACQUISITION_RANGE)))
-                        .and_then(|n| self.units.get(n).map(|t| (n, t.pos)))
+                    crate::sim::acquire(
+                        self,
+                        id,
+                        rules::units(rules::ACQUISITION_RANGE),
+                        crate::sim::PriorityOrder::Normal,
+                    )
+                    .and_then(|n| self.units.get(n).map(|t| (n, t.pos)))
                 } else {
                     None
                 };
@@ -272,65 +275,21 @@ impl World {
         for (_, unit) in self.units.iter_mut() {
             unit.attack_cooldown = unit.attack_cooldown.saturating_sub(1);
             unit.recovering = unit.recovering.saturating_sub(1);
-            unit.provoked_ticks = unit.provoked_ticks.saturating_sub(1);
-            unit.aggro_cooldown = unit.aggro_cooldown.saturating_sub(1);
+            unit.order_cooldown = unit.order_cooldown.saturating_sub(1);
         }
         self.tick_ability_cooldowns();
     }
 
-    /// A hero's attack aimed at an enemy hero calls the victim's creeps near
-    /// the attacker, and the victim's towers the attacker stands in reach of,
-    /// onto the attacker. Fired by both the order and every swing; each creep
-    /// or tower answers at most once per call cooldown.
-    pub(crate) fn provoke_creeps(&mut self, attacker: EntityId, target: EntityId) {
-        let call = {
-            let attacker_unit = self.units.get(attacker);
-            let victim = self.units.get(target);
-            match (attacker_unit, victim) {
-                (Some(a), Some(v))
-                    if a.kind == UnitKind::Hero && v.kind == UnitKind::Hero && v.team != a.team =>
-                {
-                    Some((a.pos, a.radius, v.team))
-                }
-                _ => None,
-            }
-        };
-        let Some((around, attacker_radius, team)) = call else {
-            return;
-        };
-        let radius = rules::units(rules::AGGRO_CALL_RADIUS);
-        for id in self.units.ids() {
-            let Some(u) = self.units.get(id) else {
-                continue;
-            };
-            if u.team != team || u.aggro_cooldown > 0 {
-                continue;
-            }
-            let called = if u.is_creep() {
-                u.pos.within(around, radius)
-            } else if u.kind == UnitKind::Tower {
-                u.pos
-                    .within(around, u.attack_range + u.radius + attacker_radius)
-            } else {
-                false
-            };
-            if called {
-                let u = self.units.get_mut(id).expect("iterating live ids");
-                u.engage = Some(attacker);
-                u.provoked_ticks = rules::CREEP_PROVOKE_TICKS;
-                u.aggro_cooldown = rules::AGGRO_CALL_COOLDOWN_TICKS;
-                u.shunned = None;
-                u.returning = false;
-            }
-        }
-    }
-
-    /// An order aimed at an ally calls enemy creeps and towers off the
-    /// orderer. The call works at any time — the call cooldown only limits
-    /// calls onto a unit — and the called-off unit refuses to re-acquire the
-    /// orderer by proximity until that cooldown runs out, or standing among
-    /// the chasers would undo the call on the next tick.
-    fn deaggro_call(&mut self, orderer: EntityId) {
+    /// An attack order by a hero makes the other side's creeps and towers
+    /// look again.
+    ///
+    /// The order alone does it, whether the attack happens or not. Only an
+    /// order at an enemy hero calls, and only an order at an ally calls off;
+    /// an order at an enemy creep is a last hit and moves nobody. A creep
+    /// ranks its candidates the usual way, so the ordering hero wins among
+    /// equally close ones. A tower switches outright. Each unit answers at
+    /// most once per [`rules::ORDER_AGGRO_COOLDOWN_TICKS`].
+    pub(crate) fn order_aggro(&mut self, orderer: EntityId, target: EntityId) {
         let Some(o) = self.units.get(orderer) else {
             return;
         };
@@ -338,33 +297,104 @@ impl World {
             return;
         }
         let (around, orderer_radius, team) = (o.pos, o.radius, o.team);
-        let radius = rules::units(rules::AGGRO_CALL_RADIUS);
+        let Some(t) = self.units.get(target) else {
+            return;
+        };
+        let calls_on = t.team != team && t.kind == UnitKind::Hero;
+        let calls_off = t.team == team;
+        if !calls_on && !calls_off {
+            return;
+        }
         for id in self.units.ids() {
             let Some(u) = self.units.get(id) else {
                 continue;
             };
-            if u.team == team || u.engage != Some(orderer) {
+            if u.team == team || !u.can_attack() {
                 continue;
             }
-            // A creep hears the call within the aggro radius; a tower within
-            // its own reach, the same way it was called on.
-            let heard = if u.is_creep() {
-                u.pos.within(around, radius)
+            if u.is_creep() {
+                if u.order_cooldown > 0 || !u.pos.within(around, u.acquisition_range) {
+                    continue;
+                }
+                // The five minute rule is about being called on. Letting go
+                // is never restricted.
+                if calls_on && !self.aggroable_yet(id) {
+                    continue;
+                }
+                let range = u.acquisition_range;
+                let priority = crate::sim::priority_of(u);
+                // Both directions work over the ranking, not through it.
+                // Called on, the creep takes the offender however close the
+                // bystanders are. Called off, that hero goes last however
+                // close it is: anyone else is taken first, and it is taken
+                // again only when there is nobody else.
+                let pick = if calls_on {
+                    Some(orderer)
+                } else {
+                    crate::sim::acquire_demoting(self, id, range, priority, Some(orderer))
+                };
+                let u = self.units.get_mut(id).expect("iterating live ids");
+                u.engage = pick;
+                u.order_cooldown = rules::ORDER_AGGRO_COOLDOWN_TICKS;
+                u.returning = false;
+                if let Some(crate::sim::CreepAi::Lane(ai)) = u.ai.as_mut() {
+                    ai.chase_left = rules::CREEP_CHASE_TICKS;
+                    ai.provoked = if calls_on {
+                        rules::ORDER_AGGRO_HOLD_TICKS
+                    } else {
+                        0
+                    };
+                }
             } else if u.kind == UnitKind::Tower {
-                u.pos
+                // A tower does not weigh the offender against anything: a
+                // dive draws it outright, and a click at an ally lets go.
+                // Letting go answers at once, however recently it was drawn.
+                if !u
+                    .pos
                     .within(around, u.attack_range + u.radius + orderer_radius)
-            } else {
-                false
-            };
-            if !heard {
-                continue;
+                {
+                    continue;
+                }
+                if calls_on && u.order_cooldown > 0 {
+                    continue;
+                }
+                if calls_off && u.engage != Some(orderer) {
+                    continue;
+                }
+                let u = self.units.get_mut(id).expect("iterating live ids");
+                u.engage = if calls_on { Some(orderer) } else { None };
+                u.order_cooldown = rules::ORDER_AGGRO_COOLDOWN_TICKS;
             }
-            let u = self.units.get_mut(id).expect("iterating live ids");
-            u.engage = None;
-            u.provoked_ticks = 0;
-            u.aggro_cooldown = rules::AGGRO_CALL_COOLDOWN_TICKS;
-            u.shunned = Some(orderer);
         }
+    }
+
+    /// Whether a lane creep may be aimed by an attack order at all yet.
+    ///
+    /// Free from [`rules::FREE_AGGRO_TICK`]. Before it, only a creep that
+    /// already has an enemy lane creep or a neutral in acquisition range, or
+    /// that stands near its own tier-one tower.
+    fn aggroable_yet(&self, id: EntityId) -> bool {
+        if self.tick >= rules::FREE_AGGRO_TICK {
+            return true;
+        }
+        let Some(u) = self.units.get(id) else {
+            return false;
+        };
+        let busy = self.units.iter().any(|(_, o)| {
+            (o.is_creep() && o.team != u.team || o.team == Team::Neutral)
+                && o.hp > 0
+                && u.pos.within(o.pos, u.acquisition_range)
+        });
+        if busy {
+            return true;
+        }
+        let near_home = rules::units(rules::EARLY_AGGRO_TOWER_RANGE);
+        self.units.iter().any(|(_, o)| {
+            o.kind == UnitKind::Tower
+                && o.tier == 1
+                && o.team == u.team
+                && u.pos.within(o.pos, near_home)
+        })
     }
 
     /// Towers, creeps and idle heroes choose what to attack.
@@ -391,125 +421,215 @@ impl World {
                     // A building keeps its target while it stays in reach,
                     // whether it took it as the closest or was called onto it.
                     if unit.engage.is_none() || !self.engagement_in_range(id) {
-                        let pick = self.pick_target(id, None);
+                        let pick = crate::sim::acquire(
+                            self,
+                            id,
+                            unit.attack_range,
+                            crate::sim::PriorityOrder::Normal,
+                        );
                         self.units.get_mut(id).expect("iterating live ids").engage = pick;
                     }
                 }
                 UnitKind::CreepNeutral | UnitKind::Roshan => {
-                    let camp = unit.camp;
-                    if unit.returning {
-                        // Deaf on the way home; arriving heals in full.
-                        if unit.pos.within(camp, rules::units(rules::NEUTRAL_RETURN)) {
-                            let u = self.units.get_mut(id).expect("iterating live ids");
-                            u.returning = false;
-                            u.order = UnitOrder::Idle;
-                            u.hp = u.max_hp;
-                        }
+                    let Some(crate::sim::CreepAi::Neutral(mut ai)) = unit.ai.clone() else {
                         continue;
-                    }
-                    let leash = rules::units(rules::NEUTRAL_LEASH);
-                    let target = unit.engage.and_then(|t| self.units.get(t));
-                    if let Some(t) = target {
-                        if !t.pos.within(camp, leash) || !unit.pos.within(camp, leash) {
-                            // Dragged too far: give up and walk home.
-                            let u = self.units.get_mut(id).expect("iterating live ids");
-                            u.engage = None;
-                            u.returning = true;
-                            u.order = UnitOrder::Move { pos: camp };
-                        }
-                    } else {
-                        let pick =
-                            self.pick_target(id, Some(rules::units(rules::NEUTRAL_AGGRO_RANGE)));
-                        self.units.get_mut(id).expect("iterating live ids").engage = pick;
-                    }
-                }
-                UnitKind::CreepMelee | UnitKind::CreepRanged | UnitKind::CreepSiege => {
-                    // A non-hero target is held until it dies or the chase
-                    // breaks: standing closer steals no attention. A hero
-                    // holds attention only for the aggro window, however it
-                    // was gained. Past the leash a calm creep goes deaf and
-                    // walks home; an open window overrides the leash.
+                    };
+                    ai.reaggro_block = ai.reaggro_block.saturating_sub(1);
                     let mut engage = unit.engage;
-                    let mut returning = unit.returning;
-                    let mut window = unit.provoked_ticks;
-                    if window > 0 {
-                        returning = false;
-                        if engage.is_none() {
-                            engage = self.pick_target(
-                                id,
-                                Some(rules::units(rules::CREEP_ACQUISITION_RANGE)),
-                            );
+                    if engage.and_then(|t| self.units.get(t)).is_none() {
+                        engage = None;
+                    }
+                    let guard = rules::units(rules::NEUTRAL_GUARD_DISTANCE);
+                    if unit.pos.within(ai.home, guard) {
+                        // Home ground: the window is whole again, and getting
+                        // all the way back ends the walk and restores the long
+                        // window for next time.
+                        ai.leash_left = ai.next_window;
+                        if ai.going_home
+                            && unit
+                                .pos
+                                .within(ai.home, rules::units(rules::NEUTRAL_RETURN))
+                        {
+                            ai.going_home = false;
+                            ai.next_window = rules::NEUTRAL_AGGRO_WINDOW;
                         }
+                    } else if ai.leash_left == 0 {
+                        // Dragged out and the window is spent: let go, walk
+                        // back, and stay deaf to a body standing close until
+                        // home, and to damage for a moment.
+                        engage = None;
+                        ai.going_home = true;
+                        ai.reaggro_block = rules::NEUTRAL_REAGGRO_BLOCK;
+                        ai.next_window = rules::NEUTRAL_SHORT_WINDOW;
                     } else {
-                        let off = crate::sim::lane_offset_squared(unit.lane, unit.pos);
-                        let leash = i64::from(rules::units(rules::LANE_LEASH).raw);
-                        let home = i64::from(rules::units(rules::LANE_RETURN).raw);
-                        if returning {
-                            if off <= home * home {
-                                returning = false;
-                            }
-                        } else if off > leash * leash {
-                            returning = true;
+                        ai.leash_left -= 1;
+                    }
+                    if engage.is_none() && !ai.going_home {
+                        // Proximity is what wakes it: something hostile inside
+                        // the aggro radius. What it then swings at is the
+                        // ordinary ranking over its own acquisition range.
+                        let woken = self.units.iter().any(|(other, o)| {
+                            other != id
+                                && crate::sim::hostile(unit, o)
+                                && unit
+                                    .pos
+                                    .within(o.pos, rules::units(rules::NEUTRAL_AGGRO_RANGE))
+                        });
+                        if woken {
+                            engage = crate::sim::acquire(
+                                self,
+                                id,
+                                unit.acquisition_range,
+                                crate::sim::PriorityOrder::Normal,
+                            );
+                            ai.leash_left = ai.next_window;
                         }
-                        if returning {
-                            engage = None;
-                        } else {
-                            // A target inside the creep's own attack range is
-                            // kept, hero or not: a ranged creep keeps firing
-                            // at a hero who stays in its range. Chasing a
-                            // hero is what the window limits, and the window
-                            // is over here.
-                            let keep = engage.is_some_and(|t| {
-                                self.units.get(t).is_some_and(|tu| {
-                                    if tu.kind != UnitKind::Hero {
-                                        unit.pos
-                                            .within(tu.pos, rules::units(rules::CREEP_CHASE_RANGE))
-                                    } else {
-                                        in_attack_range(unit, tu, Fixed::ZERO)
-                                    }
-                                })
-                            });
-                            if !keep {
-                                // A hero's window ended: re-assess from
-                                // scratch. An adjacent hero is simply the
-                                // closest again; a kited chase loses to
-                                // whatever got closer on the way.
-                                engage = self.pick_target(
-                                    id,
-                                    Some(rules::units(rules::CREEP_ACQUISITION_RANGE)),
-                                );
-                                // A freshly acquired hero opens an aggro window.
-                                if engage
-                                    .and_then(|t| self.units.get(t))
-                                    .is_some_and(|tu| tu.kind == UnitKind::Hero)
-                                {
-                                    window = rules::CREEP_PROVOKE_TICKS;
-                                }
-                            }
+                    } else if engage.is_some() {
+                        // Awake, and still choosing by the ordinary rules.
+                        let pick = crate::sim::acquire(
+                            self,
+                            id,
+                            unit.acquisition_range,
+                            crate::sim::PriorityOrder::Normal,
+                        );
+                        if let Some(t) = pick {
+                            engage = Some(t);
                         }
                     }
                     let unit = self.units.get_mut(id).expect("iterating live ids");
                     unit.engage = engage;
-                    unit.returning = returning;
-                    unit.provoked_ticks = window;
+                    unit.ai = Some(crate::sim::CreepAi::Neutral(ai));
                     if engage.is_none() {
-                        // Home is the nearest point of its own lane; duty is
-                        // marching that lane's waypoints to the enemy Ancient.
-                        let push_to = if returning {
-                            crate::sim::lane_return_point(unit.lane, unit.pos)
+                        unit.order = if unit
+                            .pos
+                            .within(ai.home, rules::units(rules::NEUTRAL_RETURN))
+                        {
+                            UnitOrder::Idle
                         } else {
-                            let route = crate::sim::lane_route(unit.team, unit.lane);
-                            let mut at = usize::from(unit.lane_step).min(route.len() - 1);
-                            if at + 1 < route.len()
-                                && unit
-                                    .pos
-                                    .within(route[at], rules::units(rules::LANE_WAYPOINT_RADIUS))
-                            {
-                                at += 1;
-                            }
-                            unit.lane_step = at as u8;
-                            route[at]
+                            UnitOrder::Move { pos: ai.home }
                         };
+                    }
+                }
+                UnitKind::CreepMelee
+                | UnitKind::CreepFlagbearer
+                | UnitKind::CreepRanged
+                | UnitKind::CreepSiege => {
+                    let Some(crate::sim::CreepAi::Lane(mut ai)) = unit.ai.clone() else {
+                        continue;
+                    };
+                    ai.provoked = ai.provoked.saturating_sub(1);
+                    let mut engage = unit.engage;
+                    // The ranking runs every tick. Anything it returns is by
+                    // definition inside acquisition range and at least as
+                    // good as what is held, so this is both the first choice
+                    // and every switch after it: off a building onto an
+                    // arriving creep, off a far target onto a nearer one.
+                    let priority = crate::sim::priority_of(unit);
+                    let held = engage.and_then(|t| self.units.get(t));
+                    let held_alive = held.is_some();
+                    // A creep does not abandon what it is hitting: whatever it
+                    // holds, in reach or not yet lost, is kept, so walking a
+                    // hero past a busy creep steals nothing. It weighs its
+                    // options again when the target leaves its reach, when a
+                    // better class comes into reach, or when the target is
+                    // gone. A pull silences all of that for its three seconds.
+                    let in_reach = held.is_some_and(|t| in_attack_range(unit, t, Fixed::ZERO));
+                    let look_again = !held_alive
+                        || (ai.provoked == 0 && !in_reach)
+                        || engage.is_some_and(|t| {
+                            crate::sim::outranked(self, id, t, unit.attack_range, priority)
+                        });
+                    let pick = if look_again {
+                        crate::sim::acquire(self, id, unit.acquisition_range, priority)
+                    } else {
+                        None
+                    };
+                    // An attack order handed it this target; the ranking waits
+                    // its turn, but the chase below still runs down.
+                    let held = ai.provoked > 0 && held_alive;
+                    let took = match pick {
+                        Some(t) if !held => {
+                            if engage != Some(t) {
+                                ai.chase_left = rules::CREEP_CHASE_TICKS;
+                            }
+                            engage = Some(t);
+                            ai.last_seen = self.units.get(t).map(|tu| tu.pos);
+                            if ai.anchor.is_none() {
+                                ai.anchor = Some(unit.pos);
+                            }
+                            true
+                        }
+                        _ => false,
+                    };
+                    if let Some(t) = engage
+                        && !took
+                    {
+                        match self.units.get(t) {
+                            None => {
+                                engage = None;
+                                ai.last_seen = None;
+                            }
+                            Some(tu) => {
+                                if !self.can_see_point(unit.team, tu.pos) {
+                                    // The fog took it. The last sighting is
+                                    // where the creep walks.
+                                    engage = None;
+                                } else {
+                                    ai.last_seen = Some(tu.pos);
+                                    let reach = unit.acquisition_range + unit.radius + tu.radius;
+                                    if unit.pos.within(tu.pos, reach) {
+                                        // Still in reach: the chase is whole
+                                        // again. Only leaving the range spends
+                                        // it.
+                                        ai.chase_left = rules::CREEP_CHASE_TICKS;
+                                    } else if ai.chase_left == 0 {
+                                        engage = None;
+                                        ai.last_seen = None;
+                                    } else {
+                                        ai.chase_left -= 1;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    let route = &crate::sim::lane_routes(self.map)
+                        [crate::sim::team_index(unit.team)][usize::from(unit.lane)];
+                    let waypoint_radius = rules::units(rules::LANE_WAYPOINT_RADIUS);
+                    let on_lane = crate::sim::lane_offset_squared(self.map, unit.lane, unit.pos)
+                        <= waypoint_radius.squared_raw();
+                    let push_to = if engage.is_some() {
+                        None
+                    } else if let Some(spot) = ai.last_seen {
+                        if unit.pos.within(spot, waypoint_radius) {
+                            ai.last_seen = None;
+                            None
+                        } else {
+                            Some(spot)
+                        }
+                    } else if let Some(anchor) = ai.anchor {
+                        // Back on the lane, or back at the spot it left:
+                        // either way there is nothing to walk back to.
+                        if on_lane || unit.pos.within(anchor, waypoint_radius) {
+                            ai.anchor = None;
+                            None
+                        } else {
+                            Some(anchor)
+                        }
+                    } else {
+                        None
+                    };
+                    let push_to = push_to.unwrap_or_else(|| {
+                        // Every waypoint already inside the radius is
+                        // cleared at once, not one a tick.
+                        let at =
+                            crate::sim::advance_waypoint(route, usize::from(ai.step), unit.pos);
+                        ai.step = at as u16;
+                        route[at]
+                    });
+                    let unit = self.units.get_mut(id).expect("iterating live ids");
+                    unit.engage = engage;
+                    unit.ai = Some(crate::sim::CreepAi::Lane(ai));
+                    if engage.is_none() {
                         unit.order = UnitOrder::AttackMove { pos: push_to };
                     }
                 }
@@ -528,13 +648,23 @@ impl World {
                     }
                     UnitOrder::Hold => {
                         if unit.engage.is_none() {
-                            let pick = self.pick_target(id, None);
+                            let pick = crate::sim::acquire(
+                                self,
+                                id,
+                                unit.attack_range,
+                                crate::sim::PriorityOrder::Normal,
+                            );
                             self.units.get_mut(id).expect("iterating live ids").engage = pick;
                         }
                     }
                     UnitOrder::AttackMove { .. } => {
                         if unit.engage.is_none() {
-                            let pick = self.pick_target(id, Some(acquisition));
+                            let pick = crate::sim::acquire(
+                                self,
+                                id,
+                                acquisition,
+                                crate::sim::PriorityOrder::Normal,
+                            );
                             self.units.get_mut(id).expect("iterating live ids").engage = pick;
                         }
                     }
@@ -559,43 +689,6 @@ impl World {
         in_attack_range(unit, target, Fixed::ZERO)
     }
 
-    /// The nearest attackable enemy, by a fixed priority.
-    ///
-    /// `range` limits the search; absent means the unit's own attack range.
-    /// Buildings prefer creeps over heroes, which is what `creeps_first` says.
-    /// The closest attackable enemy within reach.
-    ///
-    /// `range` limits the search; absent means the unit's own attack range.
-    /// Distance is the whole priority. A shunned unit is taken only when
-    /// nobody else is in reach: a call-off redirects if possible.
-    fn pick_target(&self, id: EntityId, range: Option<Fixed>) -> Option<EntityId> {
-        let unit = self.units.get(id)?;
-        let mut best: Option<(i64, EntityId)> = None;
-        let mut best_shunned: Option<(i64, EntityId)> = None;
-        for (other_id, other) in self.units.iter() {
-            if other.team == unit.team || other.invulnerable || other.hp <= 0 {
-                continue;
-            }
-            let reach = match range {
-                Some(r) => r + unit.radius + other.radius,
-                None => unit.attack_range + unit.radius + other.radius,
-            };
-            if !unit.pos.within(other.pos, reach) {
-                continue;
-            }
-            let key = (unit.pos.distance_squared(other.pos), other_id);
-            let slot = if unit.aggro_cooldown > 0 && unit.shunned == Some(other_id) {
-                &mut best_shunned
-            } else {
-                &mut best
-            };
-            if slot.is_none_or(|b| key < b) {
-                *slot = Some(key);
-            }
-        }
-        best.or(best_shunned).map(|(_, id)| id)
-    }
-
     /// Turns a unit and, when `walk`, takes one step along its route.
     ///
     /// Routes are planned against structures only; other units are met at
@@ -614,11 +707,10 @@ impl World {
             let facing = if unit.is_structure() {
                 desired
             } else {
-                turn_towards(unit.facing, desired, rules::TURN_RATE_BRADS)
+                turn_towards(unit.facing, desired, unit.turn_rate)
             };
             let u = self.units.get_mut(id).expect("looked up above");
             u.facing = facing;
-            u.stuck_ticks = 0;
             return;
         }
         // A route in hand is walked out; otherwise the unit goes straight or
@@ -646,44 +738,46 @@ impl World {
             }
         }
         let waypoint = path.first().copied().unwrap_or(dest);
-        // The short path: aim past standing bodies instead of at them.
-        let aim = steer_target(&self.units, id, pos, waypoint);
         let step = per_tick(unit.move_speed);
+        // A creep marches; anything a player drives walks a short path of its
+        // own. The two never share a step.
+        let held = match &unit.ai {
+            Some(crate::sim::CreepAi::Lane(ai)) => ai.trace,
+            _ => None,
+        };
+        let shoving = unit.shove >= rules::MARCH_SHOVE_TICKS;
+        let (aim, trace) = if unit.is_creep() || unit.team == Team::Neutral {
+            crate::sim::march_aim(&self.units, &self.grid, id, waypoint, step, held, shoving)
+        } else {
+            (waypoint, None)
+        };
         let desired = facing_towards(pos, aim);
-        let facing = turn_towards(unit.facing, desired, rules::TURN_RATE_BRADS);
+        let facing = turn_towards(unit.facing, desired, unit.turn_rate);
         let mut next = pos;
-        let mut stuck = unit.stuck_ticks;
+        // Turning comes first and costs the tick: a creep that has to swing
+        // round a body stands still until it faces the way out.
         if facing_gap(facing, desired) <= rules::TURN_TOLERANCE_BRADS {
-            let ahead = clamp_to_map(move_towards(pos, aim, step));
-            // The static grid is a hard wall: a step into a closed cell is
-            // refused outright, though a step out of one is always allowed.
-            let grid_ok = self.grid.walkable(ahead) || !self.grid.walkable(pos);
-            if !grid_ok {
-                // Wedged against a tree or a building: the walk ends here.
-            } else if !blocked_by_units(&self.units, id, pos, ahead) {
-                next = ahead;
-                stuck = 0;
-            } else if blocked_by_stander(&self.units, id, pos, ahead) {
-                // Right against a standing body: trace along its circle.
-                if let Some(slide) = unit_slide(&self.units, &self.grid, id, aim, step) {
-                    next = slide;
-                }
-            } else if stuck >= rules::BLOCK_WAIT_TICKS {
-                // Pressed into a walking body long enough: seep around it.
-                if let Some(slide) = unit_slide(&self.units, &self.grid, id, aim, step) {
-                    next = slide;
-                }
+            next = if unit.is_creep() || unit.team == Team::Neutral {
+                crate::sim::march_step(&self.units, &self.grid, id, aim, step, shoving)
             } else {
-                // A walking body ahead: try to walk through it and stop.
-                stuck += 1;
-            }
+                walk_step(&self.units, &self.grid, id, aim, step)
+            };
         }
         let u = self.units.get_mut(id).expect("looked up above");
         u.facing = facing;
+        // The count falls back a tick at a time rather than clearing, so a
+        // creep jittering in place still reaches the point of shoving.
+        u.shove = if next == pos {
+            u.shove.saturating_add(1)
+        } else {
+            u.shove.saturating_sub(1)
+        };
         u.pos = next;
-        u.stuck_ticks = stuck;
         u.path = path;
         u.path_goal = dest;
+        if let Some(crate::sim::CreepAi::Lane(ai)) = u.ai.as_mut() {
+            ai.trace = trace;
+        }
     }
 
     /// Everything that walks turns and takes its step. Whoever intends to
@@ -700,56 +794,61 @@ impl World {
         }
         let mut acts: Vec<(EntityId, Act)> = Vec::new();
         for (id, unit) in self.units.iter() {
-            let act =
-                if unit.move_speed == Fixed::ZERO || unit.windup.is_some() || unit.recovering > 0 {
-                    Act::Stand
-                } else if let Some(target_id) = unit.engage {
-                    match self.units.get(target_id) {
-                        None => Act::Stand,
-                        Some(target) if in_attack_range(unit, target, Fixed::ZERO) => {
-                            Act::Face(target.pos)
-                        }
-                        Some(_) if unit.order == UnitOrder::Hold => Act::Stand,
-                        Some(target) => Act::Walk(target.pos),
+            // Mid-swing and recovering, a unit does not walk but still comes
+            // round to what it is hitting.
+            let act = if let Some(w) = unit.windup {
+                self.units
+                    .get(w.target)
+                    .map_or(Act::Stand, |t| Act::Face(t.pos))
+            } else if unit.recovering > 0 {
+                unit.engage
+                    .and_then(|t| self.units.get(t))
+                    .map_or(Act::Stand, |t| Act::Face(t.pos))
+            } else if let Some(target_id) = unit.engage {
+                match self.units.get(target_id) {
+                    None => Act::Stand,
+                    // A tower cannot walk but still comes round to its
+                    // target, so facing is decided before speed is.
+                    Some(target) if in_attack_range(unit, target, Fixed::ZERO) => {
+                        Act::Face(target.pos)
                     }
-                } else {
-                    match unit.order {
-                        UnitOrder::Move { pos } | UnitOrder::AttackMove { pos } => {
-                            if unit.pos == pos {
-                                Act::Stand
-                            } else {
-                                Act::Walk(pos)
-                            }
-                        }
-                        // An attack order without an engagement is an ally being
-                        // followed: walk up and wait for something to deny.
-                        UnitOrder::Attack { last_seen, .. } => {
-                            if unit
-                                .pos
-                                .within(last_seen, rules::units(rules::FOLLOW_DISTANCE))
-                            {
-                                Act::Stand
-                            } else {
-                                Act::Walk(last_seen)
-                            }
-                        }
-                        UnitOrder::Idle | UnitOrder::Hold => Act::Stand,
+                    Some(_) if unit.move_speed == Fixed::ZERO || unit.order == UnitOrder::Hold => {
+                        Act::Stand
                     }
-                };
+                    Some(target) => Act::Walk(target.pos),
+                }
+            } else if unit.move_speed == Fixed::ZERO {
+                Act::Stand
+            } else {
+                match unit.order {
+                    UnitOrder::Move { pos } | UnitOrder::AttackMove { pos } => {
+                        if unit.pos == pos {
+                            Act::Stand
+                        } else {
+                            Act::Walk(pos)
+                        }
+                    }
+                    // An attack order without an engagement is an ally being
+                    // followed: walk up and wait for something to deny.
+                    UnitOrder::Attack { last_seen, .. } => {
+                        if unit
+                            .pos
+                            .within(last_seen, rules::units(rules::FOLLOW_DISTANCE))
+                        {
+                            Act::Stand
+                        } else {
+                            Act::Walk(last_seen)
+                        }
+                    }
+                    UnitOrder::Idle | UnitOrder::Hold => Act::Stand,
+                }
+            };
             acts.push((id, act));
-        }
-        for (id, act) in &acts {
-            let walks = matches!(act, Act::Walk(_));
-            self.units
-                .get_mut(*id)
-                .expect("collected from live ids")
-                .moving = walks;
         }
         for (id, act) in acts {
             match act {
                 Act::Stand => {
                     let u = self.units.get_mut(id).expect("collected from live ids");
-                    u.stuck_ticks = 0;
                     if let UnitOrder::Move { pos } | UnitOrder::AttackMove { pos } = u.order
                         && u.pos == pos
                     {

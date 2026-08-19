@@ -272,67 +272,123 @@ pub fn blocked_by_units(units: &Arena<Unit>, mover: EntityId, from: Vec2, next: 
     false
 }
 
-/// Whether stepping from `from` to `next` runs the mover deeper into a unit
-/// standing this tick.
-pub fn blocked_by_stander(units: &Arena<Unit>, mover: EntityId, from: Vec2, next: Vec2) -> bool {
-    let Some(u) = units.get(mover) else {
-        return false;
-    };
-    for (id, other) in units.iter() {
-        if id == mover || other.moving {
-            continue;
-        }
-        let min = i64::from((u.radius + other.radius).raw);
-        let next_d2 = next.distance_squared(other.pos);
-        if next_d2 < min * min && next_d2 < from.distance_squared(other.pos) {
-            return true;
-        }
-    }
-    false
-}
-
-/// A sidestep around whatever blocks the straight step towards `target`:
-/// the least turned of four step rotations that is not blocked by a unit or
-/// by the static grid, or nothing when every one is. Nobody is ever pushed.
-pub fn unit_slide(
+/// Whether a spot is one the mover may occupy this tick.
+///
+/// The static grid is a hard wall, except that a unit already standing in a
+/// closed cell may always leave it. Bodies are solid, except that a step out
+/// of an overlap is always allowed, so nothing can wedge for good.
+fn step_is_free(
     units: &Arena<Unit>,
     grid: &PassGrid,
     mover: EntityId,
-    target: Vec2,
-    step: Fixed,
-) -> Option<Vec2> {
-    let u = units.get(mover)?;
-    let pos = u.pos;
-    let dx = i64::from(target.x.raw) - i64::from(pos.x.raw);
-    let dy = i64::from(target.y.raw) - i64::from(pos.y.raw);
-    let dist = isqrt64(dx * dx + dy * dy);
-    if dist == 0 {
-        return None;
+    from: Vec2,
+    next: Vec2,
+) -> bool {
+    if !grid.walkable(next) && grid.walkable(from) {
+        return false;
     }
-    let sx = dx * i64::from(step.raw) / dist;
-    let sy = dy * i64::from(step.raw) / dist;
-    // The step rotated 45 and 90 degrees to either side, forward-most
-    // first; 181/256 approximates the diagonal cosine.
-    let diag = |v: i64| v * 181 / 256;
-    let turns = [
-        (diag(sx + sy), diag(sy - sx)),
-        (diag(sx - sy), diag(sy + sx)),
-        (sy, -sx),
-        (-sy, sx),
-    ];
-    for (tx, ty) in turns {
-        let next = clamp_to_map(Vec2 {
-            x: Fixed {
-                raw: pos.x.raw.saturating_add(tx as i32),
-            },
-            y: Fixed {
-                raw: pos.y.raw.saturating_add(ty as i32),
-            },
-        });
-        let grid_ok = grid.walkable(next) || !grid.walkable(pos);
-        if next != pos && grid_ok && !blocked_by_units(units, mover, pos, next) {
-            return Some(next);
+    !blocked_by_units(units, mover, from, next)
+}
+
+/// The part of a step that survives sliding along the body in the way.
+///
+/// The step keeps only what it had across the line to the blocker: walking
+/// straight into a body leaves nothing, grazing one leaves nearly everything.
+/// `side` picks which way round when the two are equal.
+fn tangent_step(pos: Vec2, blocker: Vec2, aim: Vec2, step: Fixed, side: i64) -> Vec2 {
+    let nx = i64::from(blocker.x.raw) - i64::from(pos.x.raw);
+    let ny = i64::from(blocker.y.raw) - i64::from(pos.y.raw);
+    let n_len = isqrt64(nx * nx + ny * ny);
+    let dx = i64::from(aim.x.raw) - i64::from(pos.x.raw);
+    let dy = i64::from(aim.y.raw) - i64::from(pos.y.raw);
+    let d_len = isqrt64(dx * dx + dy * dy);
+    if n_len == 0 || d_len == 0 {
+        return pos;
+    }
+    // The tangent runs across the line to the blocker; how much of the step
+    // survives is how much of the wanted direction lay along it. The division
+    // comes last, or the cosine rounds to nothing and the slide vanishes.
+    let (tx, ty) = (-ny * side, nx * side);
+    let dot = dx * tx + dy * ty;
+    if dot < 0 {
+        // This way round is backwards; the other side is the way.
+        return pos;
+    }
+    let projected = (i128::from(step.raw) * i128::from(dot) / i128::from(n_len * d_len)) as i64;
+    // Square into a body the projection is nothing, and a walker would stand
+    // there for good. It grinds sideways instead: a block is strong, not
+    // permanent.
+    let kept = projected.max(i64::from(step.raw) / i64::from(rules::SLIDE_FLOOR_PART));
+    let sx = tx * kept / n_len;
+    let sy = ty * kept / n_len;
+    clamp_to_map(Vec2 {
+        x: Fixed {
+            raw: pos.x.raw.saturating_add(sx as i32),
+        },
+        y: Fixed {
+            raw: pos.y.raw.saturating_add(sy as i32),
+        },
+    })
+}
+
+/// One tick of walking towards `aim`, around whatever stands in the way.
+///
+/// Straight when the way is clear. Otherwise the step is taken along the
+/// tangent of the nearest body in the way, whichever side leaves the mover
+/// closer to `aim`, and only as far as the wanted direction ran along that
+/// tangent. When neither side is free the step shortens until it fits, which
+/// may be to nothing. Nobody is ever pushed and nothing waits on a timer: a
+/// body square in the way costs a walker its whole step, one it merely grazes
+/// costs it almost nothing, and that is the whole of blocking.
+pub fn walk_step(
+    units: &Arena<Unit>,
+    grid: &PassGrid,
+    mover: EntityId,
+    aim: Vec2,
+    step: Fixed,
+) -> Vec2 {
+    let Some(unit) = units.get(mover) else {
+        return aim;
+    };
+    let pos = unit.pos;
+    let straight = clamp_to_map(move_towards(pos, aim, step));
+    if step_is_free(units, grid, mover, pos, straight) {
+        return straight;
+    }
+    // The nearest body whose hull the straight step would enter.
+    let blocker = units
+        .iter()
+        .filter(|(id, other)| {
+            *id != mover && {
+                let min = i64::from((unit.radius + other.radius).raw);
+                straight.distance_squared(other.pos) < min * min
+            }
+        })
+        .min_by_key(|(id, other)| (pos.distance_squared(other.pos), *id))
+        .map(|(_, other)| other.pos);
+    if let Some(blocker) = blocker {
+        let mut sides = [
+            tangent_step(pos, blocker, aim, step, 1),
+            tangent_step(pos, blocker, aim, step, -1),
+        ];
+        // The side that gets on with the journey goes first; ties go left.
+        if sides[1].distance_squared(aim) < sides[0].distance_squared(aim) {
+            sides.swap(0, 1);
+        }
+        for side in sides {
+            if side != pos && step_is_free(units, grid, mover, pos, side) {
+                return side;
+            }
         }
     }
-    None
+    // Boxed in: take whatever fraction of the straight step still fits.
+    let mut part = step;
+    for _ in 0..rules::STEP_FIT_TRIES {
+        part = Fixed { raw: part.raw / 2 };
+        let shorter = clamp_to_map(move_towards(pos, aim, part));
+        if shorter != pos && step_is_free(units, grid, mover, pos, shorter) {
+            return shorter;
+        }
+    }
+    pos
 }

@@ -26,6 +26,8 @@ pub enum Purpose {
     NeutralSpawn = 4,
     /// Roshan's respawn wait.
     Roshan = 5,
+    /// Which melee creep of a wave carries the flag.
+    Wave = 6,
 }
 
 /// The root of all hidden randomness in one match.

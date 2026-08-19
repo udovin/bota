@@ -45,14 +45,18 @@ impl World {
 /// The cells that block sight lines: every standing tree and the map's own
 /// fog blocker walls, which is what seals the Roshan pit against looks
 /// through its entrance.
-pub fn build_sight_block() -> PassGrid {
+pub fn build_sight_block(map: &crate::sim::MapDef) -> PassGrid {
     let mut grid = PassGrid::open();
-    for pos in crate::sim::tree_positions() {
+    for pos in crate::sim::tree_positions(map) {
         if let Some((cx, cy)) = PassGrid::cell_of(pos) {
             grid.close_cell(cx, cy);
         }
     }
-    for wall in crate::sim::FOW_BLOCKERS {
+    for wall in if map.trees {
+        crate::sim::FOW_BLOCKERS
+    } else {
+        &[] as &[&[(i16, i16)]]
+    } {
         for seg in wall.windows(2) {
             let a = Vec2::from_ints(i32::from(seg[0].0), i32::from(seg[0].1));
             let b = Vec2::from_ints(i32::from(seg[1].0), i32::from(seg[1].1));
@@ -67,8 +71,8 @@ pub fn build_sight_block() -> PassGrid {
 }
 
 /// Every closed cell of the sight blocker grid, for the wire.
-pub fn sight_block_cells() -> Vec<(u16, u16)> {
-    let grid = build_sight_block();
+pub fn sight_block_cells(map: &crate::sim::MapDef) -> Vec<(u16, u16)> {
+    let grid = build_sight_block(map);
     let mut out = Vec::new();
     for cy in 0..rules::GRID_CELLS {
         for cx in 0..rules::GRID_CELLS {

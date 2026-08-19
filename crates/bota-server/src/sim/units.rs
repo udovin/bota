@@ -68,10 +68,16 @@ pub struct Unit {
     pub max_mana: i32,
     /// Movement speed in world units per second. Zero for buildings.
     pub move_speed: Fixed,
+    /// How fast it turns, in brads per tick. Zero for buildings, which face
+    /// whatever they shoot at once.
+    pub turn_rate: u16,
     /// Attack damage per hit, before the target's armor.
     pub attack_damage: i32,
     /// Attack range. Zero for units that cannot attack.
     pub attack_range: Fixed,
+    /// How far the unit looks for a target of its own accord. Zero for units
+    /// that only ever attack what they are told to.
+    pub acquisition_range: Fixed,
     /// Ticks between attack starts.
     pub attack_interval: u32,
     /// Ticks from attack start to the hit or the projectile leaving.
@@ -101,27 +107,20 @@ pub struct Unit {
     pub attack_backswing: u32,
     /// Ticks left standing through the current recovery.
     pub recovering: u32,
-    /// Whether the unit intends to walk this tick, blocked or not. A walker
-    /// traces around a standing unit at contact without stopping; a walker
-    /// running into a walking unit stops against it.
-    pub moving: bool,
-    /// Consecutive ticks a walk step was refused by a walking unit. At the
-    /// block wait the unit starts sidestepping around; zero when free.
-    pub stuck_ticks: u32,
     /// Corner waypoints of the current route, nearest first.
     pub path: Vec<Vec2>,
     /// Where the current route leads.
     pub path_goal: Vec2,
-    /// Ticks left of the aggro window against a hero, however gained.
-    /// Zero when calm.
-    pub provoked_ticks: u32,
-    /// Ticks before aggro can be called onto this unit again.
-    pub aggro_cooldown: u32,
-    /// Who the last call-off forbade re-acquiring, honoured while
-    /// [`aggro_cooldown`](Unit::aggro_cooldown) runs.
-    pub shunned: Option<EntityId>,
-    /// Walking back to the lane, deaf to targets until it gets there.
+    /// Ticks before an attack order may re-aim this unit again. Zero when
+    /// it will answer the next one.
+    pub order_cooldown: u32,
+    /// Ticks running that this unit wanted to move and could not. At
+    /// [`rules::MARCH_SHOVE_TICKS`] a creep starts shoving through bodies.
+    pub shove: u32,
+    /// Walking back to its camp, for a neutral.
     pub returning: bool,
+    /// Autonomous behaviour. Absent for heroes and buildings.
+    pub ai: Option<crate::sim::CreepAi>,
     /// Which seat controls it, for heroes.
     pub owner: Option<SlotId>,
     /// Which hero it is, for heroes.
@@ -132,8 +131,6 @@ pub struct Unit {
     pub camp: Vec2,
     /// The lane a creep marches, or a tower guards.
     pub lane: u8,
-    /// How many waypoints of its lane a creep has passed.
-    pub lane_step: u8,
     /// Tower tier, one through four. Zero for everything else.
     pub tier: u8,
     /// Gold for killing it. Zero where a kill pays nothing.
@@ -174,7 +171,10 @@ impl Unit {
     pub fn is_creep(&self) -> bool {
         matches!(
             self.kind,
-            UnitKind::CreepMelee | UnitKind::CreepRanged | UnitKind::CreepSiege
+            UnitKind::CreepMelee
+                | UnitKind::CreepFlagbearer
+                | UnitKind::CreepRanged
+                | UnitKind::CreepSiege
         )
     }
 
@@ -201,8 +201,10 @@ impl Unit {
             mana: rules::HERO_MANA + rules::HERO_MANA_PER_LEVEL * above,
             max_mana: rules::HERO_MANA + rules::HERO_MANA_PER_LEVEL * above,
             move_speed: rules::units(rules::HERO_MOVE_SPEED),
+            turn_rate: rules::TURN_RATE_BRADS,
             attack_damage: rules::HERO_ATTACK_DAMAGE + rules::HERO_ATTACK_DAMAGE_PER_LEVEL * above,
             attack_range: rules::units(rules::HERO_ATTACK_RANGE),
+            acquisition_range: rules::units(rules::ACQUISITION_RANGE),
             attack_interval: rules::HERO_ATTACK_INTERVAL,
             attack_point: rules::HERO_ATTACK_POINT,
             attack_backswing: rules::HERO_ATTACK_BACKSWING,
@@ -216,13 +218,11 @@ impl Unit {
             engage: None,
             windup: None,
             attack_cooldown: 0,
-            provoked_ticks: 0,
-            aggro_cooldown: 0,
-            shunned: None,
+            order_cooldown: 0,
+            shove: 0,
             returning: false,
+            ai: None,
             recovering: 0,
-            moving: false,
-            stuck_ticks: 0,
             path: Vec::new(),
             path_goal: Vec2::ZERO,
             owner: Some(owner),
@@ -230,7 +230,6 @@ impl Unit {
             level,
             camp: Vec2::ZERO,
             lane: rules::LANE_MID,
-            lane_step: 0,
             tier: 0,
             bounty: 0,
             xp_reward: 0,
@@ -256,28 +255,28 @@ impl Unit {
             mana: 0,
             max_mana: 0,
             move_speed: rules::units(rules::CREEP_MOVE_SPEED),
+            turn_rate: rules::TURN_RATE_BRADS,
             attack_damage: rules::MELEE_CREEP_ATTACK_DAMAGE,
             attack_range: rules::units(rules::MELEE_CREEP_ATTACK_RANGE),
+            acquisition_range: rules::units(rules::MELEE_CREEP_ACQUISITION),
             attack_interval: rules::CREEP_ATTACK_INTERVAL,
-            attack_point: rules::CREEP_ATTACK_POINT,
+            attack_point: rules::MELEE_CREEP_ATTACK_POINT,
             attack_backswing: rules::CREEP_ATTACK_BACKSWING,
             projectile_speed: None,
             armor: rules::MELEE_CREEP_ARMOR,
             magic_resist_pct: 0,
-            radius: rules::units(rules::CREEP_RADIUS),
+            radius: rules::units(rules::MELEE_CREEP_RADIUS),
             vision_radius: rules::units(rules::CREEP_VISION),
             invulnerable: false,
             order: UnitOrder::Idle,
             engage: None,
             windup: None,
             attack_cooldown: 0,
-            provoked_ticks: 0,
-            aggro_cooldown: 0,
-            shunned: None,
+            order_cooldown: 0,
+            shove: 0,
             returning: false,
+            ai: Some(crate::sim::CreepAi::Lane(crate::sim::LaneCreepAi::new())),
             recovering: 0,
-            moving: false,
-            stuck_ticks: 0,
             path: Vec::new(),
             path_goal: Vec2::ZERO,
             owner: None,
@@ -285,7 +284,6 @@ impl Unit {
             level: 0,
             camp: Vec2::ZERO,
             lane: rules::LANE_MID,
-            lane_step: 0,
             tier: 0,
             bounty: rules::MELEE_CREEP_BOUNTY,
             xp_reward: rules::MELEE_CREEP_XP,
@@ -299,6 +297,15 @@ impl Unit {
         }
     }
 
+    /// A melee lane creep carrying the flag.
+    pub fn flagbearer_creep(team: Team, pos: Vec2) -> Unit {
+        Unit {
+            kind: UnitKind::CreepFlagbearer,
+            magic_resist_pct: rules::FLAGBEARER_MAGIC_RESIST_PCT,
+            ..Unit::melee_creep(team, pos)
+        }
+    }
+
     /// A ranged lane creep.
     pub fn ranged_creep(team: Team, pos: Vec2) -> Unit {
         Unit {
@@ -307,8 +314,11 @@ impl Unit {
             max_hp: rules::RANGED_CREEP_HP,
             attack_damage: rules::RANGED_CREEP_ATTACK_DAMAGE,
             attack_range: rules::units(rules::RANGED_CREEP_ATTACK_RANGE),
-            projectile_speed: Some(rules::units(rules::CREEP_PROJECTILE_SPEED)),
+            acquisition_range: rules::units(rules::RANGED_CREEP_ACQUISITION),
+            attack_point: rules::RANGED_CREEP_ATTACK_POINT,
+            projectile_speed: Some(rules::units(rules::RANGED_CREEP_PROJECTILE_SPEED)),
             armor: 0,
+            radius: rules::units(rules::RANGED_CREEP_RADIUS),
             bounty: rules::RANGED_CREEP_BOUNTY,
             xp_reward: rules::RANGED_CREEP_XP,
             ..Unit::melee_creep(team, pos)
@@ -323,29 +333,53 @@ impl Unit {
             max_hp: rules::SIEGE_CREEP_HP,
             attack_damage: rules::SIEGE_CREEP_ATTACK_DAMAGE,
             attack_range: rules::units(rules::SIEGE_CREEP_ATTACK_RANGE),
+            acquisition_range: rules::units(rules::SIEGE_CREEP_ACQUISITION),
             attack_interval: rules::SIEGE_CREEP_ATTACK_INTERVAL,
-            projectile_speed: Some(rules::units(rules::CREEP_PROJECTILE_SPEED)),
+            attack_point: rules::SIEGE_CREEP_ATTACK_POINT,
+            projectile_speed: Some(rules::units(rules::SIEGE_CREEP_PROJECTILE_SPEED)),
             armor: rules::SIEGE_CREEP_ARMOR,
-            radius: rules::units(rules::CREEP_RADIUS + 8),
+            magic_resist_pct: rules::SIEGE_CREEP_MAGIC_RESIST_PCT,
+            radius: rules::units(rules::SIEGE_CREEP_RADIUS),
             bounty: rules::SIEGE_CREEP_BOUNTY,
             xp_reward: rules::SIEGE_CREEP_XP,
             ..Unit::melee_creep(team, pos)
         }
     }
 
-    /// A neutral creep of a jungle camp.
-    pub fn neutral_creep(pos: Vec2, camp: Vec2) -> Unit {
+    /// A neutral creep of a jungle camp, with its camp's upgrades applied.
+    pub fn neutral_creep(
+        kind: crate::sim::NeutralKind,
+        pos: Vec2,
+        camp: u8,
+        upgrades: i32,
+    ) -> Unit {
+        let def = crate::sim::upgraded(kind.def(), upgrades);
         Unit {
             kind: UnitKind::CreepNeutral,
             team: Team::Neutral,
-            hp: rules::NEUTRAL_HP,
-            max_hp: rules::NEUTRAL_HP,
-            attack_damage: rules::NEUTRAL_ATTACK_DAMAGE,
-            armor: rules::NEUTRAL_ARMOR,
-            move_speed: rules::units(rules::NEUTRAL_MOVE_SPEED),
-            bounty: rules::NEUTRAL_BOUNTY,
-            xp_reward: rules::NEUTRAL_XP,
-            camp,
+            hp: def.hp,
+            max_hp: def.hp,
+            attack_damage: def.damage,
+            attack_range: rules::units(def.attack_range),
+            acquisition_range: rules::units(def.acquisition),
+            attack_interval: def.attack_interval,
+            attack_point: def.attack_point,
+            projectile_speed: (def.projectile_speed > 0)
+                .then(|| rules::units(def.projectile_speed)),
+            armor: def.armor,
+            magic_resist_pct: def.magic_resist_pct,
+            move_speed: rules::units(def.move_speed),
+            turn_rate: def.turn_rate,
+            radius: rules::units(rules::NEUTRAL_RADIUS),
+            vision_radius: rules::units(rules::NEUTRAL_VISION),
+            bounty: def.bounty,
+            xp_reward: def.xp,
+            camp: pos,
+            ai: Some(crate::sim::CreepAi::Neutral(crate::sim::NeutralAi::new(
+                camp,
+                pos,
+                rules::NEUTRAL_AGGRO_WINDOW,
+            ))),
             ..Unit::melee_creep(Team::Neutral, pos)
         }
     }
@@ -368,7 +402,14 @@ impl Unit {
             bounty: rules::ROSHAN_BOUNTY,
             xp_reward: rules::ROSHAN_XP,
             camp: rules::ROSHAN_PIT,
-            ..Unit::neutral_creep(rules::ROSHAN_PIT, rules::ROSHAN_PIT)
+            team: Team::Neutral,
+            acquisition_range: rules::units(rules::ROSHAN_ATTACK_RANGE),
+            ai: Some(crate::sim::CreepAi::Neutral(crate::sim::NeutralAi::new(
+                u8::MAX,
+                rules::ROSHAN_PIT,
+                rules::NEUTRAL_AGGRO_WINDOW,
+            ))),
+            ..Unit::melee_creep(Team::Neutral, rules::ROSHAN_PIT)
         }
     }
 
@@ -385,8 +426,10 @@ impl Unit {
             mana: 0,
             max_mana: 0,
             move_speed: Fixed::ZERO,
+            turn_rate: rules::TURN_RATE_BRADS,
             attack_damage: rules::TOWER_TIER_DAMAGE[t],
             attack_range: rules::units(rules::TOWER_ATTACK_RANGE),
+            acquisition_range: rules::units(rules::TOWER_ATTACK_RANGE),
             attack_interval: rules::TOWER_ATTACK_INTERVAL,
             attack_point: rules::TOWER_ATTACK_POINT,
             attack_backswing: rules::TOWER_ATTACK_BACKSWING,
@@ -400,13 +443,11 @@ impl Unit {
             engage: None,
             windup: None,
             attack_cooldown: 0,
-            provoked_ticks: 0,
-            aggro_cooldown: 0,
-            shunned: None,
+            order_cooldown: 0,
+            shove: 0,
             returning: false,
+            ai: None,
             recovering: 0,
-            moving: false,
-            stuck_ticks: 0,
             path: Vec::new(),
             path_goal: Vec2::ZERO,
             owner: None,
@@ -414,7 +455,6 @@ impl Unit {
             level: 0,
             camp: Vec2::ZERO,
             lane,
-            lane_step: 0,
             tier: tier.clamp(1, 4),
             bounty: rules::TOWER_TIER_BOUNTY[t],
             xp_reward: 0,
@@ -437,6 +477,7 @@ impl Unit {
             max_hp: rules::ANCIENT_HP,
             attack_damage: 0,
             attack_range: Fixed::ZERO,
+            acquisition_range: Fixed::ZERO,
             projectile_speed: None,
             armor: rules::ANCIENT_ARMOR,
             radius: rules::units(rules::ANCIENT_RADIUS),
@@ -456,6 +497,7 @@ impl Unit {
             max_hp: 1,
             attack_damage: rules::FOUNTAIN_ATTACK_DAMAGE,
             attack_range: rules::units(rules::FOUNTAIN_ATTACK_RANGE),
+            acquisition_range: rules::units(rules::FOUNTAIN_ATTACK_RANGE),
             attack_interval: rules::FOUNTAIN_ATTACK_INTERVAL,
             attack_point: rules::FOUNTAIN_ATTACK_POINT,
             attack_backswing: rules::FOUNTAIN_ATTACK_BACKSWING,
