@@ -73,9 +73,16 @@ The membership criterion for `bota-proto` is the single rule deciding where code
 
 > If it does not cross the wire and is not needed to read the wire — it is not in `proto`.
 
-That is why `World`, `MatchRng`, `Chance`, the balance constants and the ability
-implementations live in `bota-server/src/sim/` and are unreachable from the client in
+That is why `World`, `MatchRng`, the balance constants and the ability
+implementations live in `bota-server/src/game/` and are unreachable from the client in
 principle.
+
+`bota-server` is split in two. `engine/` is how state is kept and walked — entity
+handles, component tables, the fingerprint hasher — and knows nothing of Dota.
+`game/` is the game: `world.rs` and the tick order, `systems/`, `components/`, and
+`config/` for everything the game is made of — the map, the terrain, the forest, the
+units, the items, the camps and the balance constants. `game` names what it takes from
+`engine` in one place, `game/mod.rs`.
 
 ### bota-proto and bota-server
 
@@ -84,8 +91,8 @@ principle.
   (rendering) and in `bota-bot` (what gets recorded are the bot's orders, not its
   reasoning).
 - No `HashMap`/`HashSet` in the simulation: iteration order is not guaranteed.
-- No `std::time` in `sim/`: time exists only as ticks.
-- `sim/` knows nothing about sockets or `PlayerId` — only `SlotId`.
+- No `std::time` in `game/`: time exists only as ticks.
+- `game/` knows nothing about sockets or `PlayerId` — only `SlotId`.
 
 ### Dependencies
 

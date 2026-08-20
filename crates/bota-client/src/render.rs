@@ -58,6 +58,16 @@ fn draw_lobby(app: &App) {
     };
     draw_text(hint, x, y, 24.0, GRAY);
     y += 40.0;
+    if app.my_slot.is_some() {
+        let roster = HERO_NAMES
+            .iter()
+            .enumerate()
+            .map(|(id, name)| format!("{}: {name}", id + 1))
+            .collect::<Vec<_>>()
+            .join("   ");
+        draw_text(format!("pick a hero   {roster}"), x, y, 22.0, GOLD);
+        y += 36.0;
+    }
     for slot in &app.lobby {
         let holder = if slot.name.is_empty() {
             "open".to_string()
@@ -65,7 +75,11 @@ fn draw_lobby(app: &App) {
             let ready = if slot.ready { " [ready]" } else { "" };
             format!("{}{ready}", slot.name)
         };
-        let line = format!("{:?} seat {}: {holder}", slot.team, slot.slot.0);
+        let hero = slot
+            .hero
+            .and_then(|hero| HERO_NAMES.get(usize::from(hero.0)))
+            .map_or(String::new(), |name| format!(" as {name}"));
+        let line = format!("{:?} seat {}: {holder}{hero}", slot.team, slot.slot.0);
         let mine = app.my_slot == Some(slot.slot);
         let color = if mine { WHITE } else { team_color(slot.team) };
         draw_text(&line, x, y, 26.0, color);
@@ -345,14 +359,24 @@ fn draw_world(app: &App, view: &WorldView) {
         }
     }
     draw_rectangle_lines(x0, y0, x1 - x0, y1 - y0, 2.0, GRAY);
-    for &(wx, wy) in &app.trees {
+    for (index, &(wx, wy)) in app.trees.iter().enumerate() {
+        if view.felled_trees.contains(&(index as u32)) {
+            continue;
+        }
         let (x, y) = to_screen(wx, wy);
         draw_circle(x, y, (48.0 * app.camera.zoom).max(2.0), TREE);
+    }
+    for at in &view.planted_trees {
+        let (x, y) = to_screen(at.x.to_f32(), at.y.to_f32());
+        let r = (48.0 * app.camera.zoom).max(2.0);
+        draw_circle(x, y, r, TREE);
+        draw_circle_lines(x, y, r, 1.0, Color::new(0.6, 0.9, 0.5, 0.7));
     }
 
     draw_world_fog(app, view, sw, sh);
 
     draw_teleport_spots(app, view, to_screen);
+    draw_tree_pick(app, view, to_screen);
 
     let me = app.my_hero();
     for u in &view.units {
@@ -401,6 +425,47 @@ fn draw_teleport_spots(app: &App, view: &WorldView, to_screen: impl Fn(f32, f32)
         let (x, y) = to_screen(u.pos.x.to_f32(), u.pos.y.to_f32());
         draw_circle(x, y, radius, Color::new(0.35, 0.75, 1.0, 0.12));
         draw_circle_lines(x, y, radius, 2.0, Color::new(0.45, 0.85, 1.0, 0.8));
+    }
+}
+
+/// The tree a held item is pointed at right now, ringed so it is plain which
+/// one would go.
+fn draw_tree_pick(app: &App, view: &WorldView, to_screen: impl Fn(f32, f32) -> (f32, f32)) {
+    let Some(slot) = app.pending_item else {
+        return;
+    };
+    let Some(id) = app.item_id_at(slot) else {
+        return;
+    };
+    if !AIMED_AT_A_TREE.contains(&id.0) {
+        return;
+    }
+    let (mx, my) = mouse_position();
+    let (wx, wy) = app
+        .camera
+        .screen_to_world(mx, my, screen_width(), screen_height());
+    let standing = app
+        .trees
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| !view.felled_trees.contains(&(*index as u32)))
+        .map(|(_, at)| *at)
+        .chain(
+            view.planted_trees
+                .iter()
+                .map(|at| (at.x.to_f32(), at.y.to_f32())),
+        );
+    let mut best: Option<(f32, (f32, f32))> = None;
+    for (tx, ty) in standing {
+        let far = (tx - wx) * (tx - wx) + (ty - wy) * (ty - wy);
+        if far <= TREE_RADIUS * TREE_RADIUS && best.is_none_or(|(b, _)| far < b) {
+            best = Some((far, (tx, ty)));
+        }
+    }
+    if let Some((_, (tx, ty))) = best {
+        let (x, y) = to_screen(tx, ty);
+        let r = (TREE_RADIUS * app.camera.zoom).max(4.0);
+        draw_circle_lines(x, y, r, 2.0, Color::new(1.0, 0.85, 0.35, 0.9));
     }
 }
 
@@ -782,8 +847,15 @@ fn draw_minimap(app: &App, view: &WorldView) {
             draw_line(ax, ay, bx, by, 2.0, LANE);
         }
     }
-    for &(wx, wy) in &app.trees {
+    for (index, &(wx, wy)) in app.trees.iter().enumerate() {
+        if view.felled_trees.contains(&(index as u32)) {
+            continue;
+        }
         let (x, y) = at(wx, wy);
+        draw_circle(x, y, 1.0, TREE);
+    }
+    for spot in &view.planted_trees {
+        let (x, y) = at(spot.x.to_f32(), spot.y.to_f32());
         draw_circle(x, y, 1.0, TREE);
     }
     draw_minimap_fog(app, view, &r);
@@ -909,17 +981,44 @@ fn draw_vitals(u: &UnitView, rect: &crate::hud::UiRect, rate: u32) {
 /// Hotkey letters of the four ability slots.
 const ABILITY_KEYS: [&str; 4] = ["Q", "W", "E", "R"];
 /// Display names of the Sylla kit, by ability id.
-const ABILITY_NAMES: [&str; 4] = ["Crit", "Frenzy", "Bounce", "Volley"];
-/// Level cap per slot: three basics and the ultimate.
-const ABILITY_CAPS: [u8; 4] = [4, 4, 4, 3];
+const ABILITY_NAMES: [&str; 8] = [
+    "Crit", "Frenzy", "Bounce", "Volley", "Hook", "Rot", "Heap", "Dismem",
+];
+/// How far each ability may be levelled, by ability id.
+const ABILITY_CAPS: [u8; 8] = [4, 4, 4, 3, 4, 4, 4, 3];
+/// Which abilities are ultimates, which wait on higher hero levels.
+const ABILITY_ULTS: [bool; 8] = [false, false, false, true, false, false, false, true];
+/// Display names of the heroes, by hero id.
+pub const HERO_NAMES: [&str; 2] = ["Sylla", "Pudge"];
 
-/// Whether a slot could take a skill point at this hero level.
-fn learnable(slot: usize, level: u8, hero_level: u8) -> bool {
-    if level >= ABILITY_CAPS[slot] {
+/// How each ability is aimed, by ability id.
+pub const ABILITY_AIM: [Aim; 8] = [
+    Aim::Own,
+    Aim::Own,
+    Aim::Unit,
+    Aim::Own,
+    Aim::Point,
+    Aim::Own,
+    Aim::Own,
+    Aim::Unit,
+];
+
+/// How far an ability may be levelled, whatever slot it sits in.
+pub fn ability_cap(id: u16) -> u8 {
+    ABILITY_CAPS.get(usize::from(id)).copied().unwrap_or(0)
+}
+
+/// Whether an ability could take a skill point at this hero level.
+fn learnable(id: u16, level: u8, hero_level: u8) -> bool {
+    if level >= ability_cap(id) {
         return false;
     }
-    let floor = if slot == 3 {
-        [6, 8, 10][usize::from(level)]
+    let ultimate = ABILITY_ULTS.get(usize::from(id)).copied().unwrap_or(false);
+    let floor = if ultimate {
+        [6, 8, 10]
+            .get(usize::from(level))
+            .copied()
+            .unwrap_or(u8::MAX)
     } else {
         2 * (level + 1) - 1
     };
@@ -964,7 +1063,7 @@ fn draw_slot_boxes(
                         SKYBLUE,
                     );
                 }
-                for pip in 0..usize::from(ABILITY_CAPS[i]) {
+                for pip in 0..usize::from(ability_cap(a.id.0)) {
                     let lit = pip < usize::from(a.level);
                     let color = if lit { GOLD } else { DARKGRAY };
                     draw_rectangle(cx + 4.0 + pip as f32 * 8.0, cy + ch - 7.0, 6.0, 4.0, color);
@@ -977,7 +1076,7 @@ fn draw_slot_boxes(
                     let secs = a.cooldown_left / rate + 1;
                     draw_text(format!("{secs}"), cx + 13.0, cy + 25.0, 18.0, WHITE);
                 }
-                if own && points > 0 && learnable(i, a.level, hero_level) {
+                if own && points > 0 && learnable(a.id.0, a.level, hero_level) {
                     draw_text("+", cx + cw - 12.0, cy + ch - 4.0, 16.0, GOLD);
                 }
             }
@@ -1175,11 +1274,11 @@ pub const ITEM_AIM: [Aim; 9] = [
     Aim::Own,
     Aim::Unit,
     Aim::Unit,
-    Aim::Own,
     Aim::Point,
     Aim::Point,
     Aim::Point,
-    Aim::Unit,
+    Aim::Point,
+    Aim::Point,
     Aim::Point,
 ];
 
@@ -1189,12 +1288,18 @@ pub const TELEPORT_RANGE: f32 = 600.0;
 /// Item id of the Town Portal Scroll.
 pub const ITEM_TOWN_PORTAL_SCROLL: u16 = 8;
 
+/// Item ids of what is aimed at a tree rather than at open ground.
+pub const AIMED_AT_A_TREE: [u16; 2] = [5, 7];
+
+/// The circle a tree stands in, in world units.
+pub const TREE_RADIUS: f32 = 48.0;
+
 /// Display names of the catalog, by item id.
 pub const ITEM_NAMES: [&str; 9] = [
     "Boots", "Clarity", "Salve", "Branch", "Obs", "Quell", "Sentry", "Tango", "TP",
 ];
 /// Prices of the catalog, by item id.
-pub const ITEM_COSTS: [i32; 9] = [500, 50, 110, 50, 100, 900, 50, 90, 100];
+pub const ITEM_COSTS: [i32; 9] = [500, 50, 110, 50, 100, 225, 50, 90, 100];
 /// One-line stats of the catalog, by item id.
 pub const ITEM_STATS: [&str; 9] = [
     "+45 MS",
@@ -1214,20 +1319,24 @@ const ITEM_TIPS: [&str; 9] = [
     "Consumable. Restores 400 health over 10 s. Any hero's hit breaks it.",
     "+30 maximum health, +15 maximum mana, +1 attack damage.",
     "Consumable. Stands a ward that sees 1600 and that the enemy cannot see.",
-    "+18 attack damage against anything that is not a hero. Fells a tree.",
+    "+18 attack damage against creeps. Fells the tree you point at.",
     "Consumable. Stands a ward that gives true sight, revealing enemy wards.",
     "Three charges. Eats a tree to restore 115 health over 16 s.",
     "Consumable. Channels, then carries you to an allied building.",
 ];
 /// Names of the timed effects, by effect id.
-const EFFECT_NAMES: [&str; 5] = ["Frenzy", "Salve", "Clarity", "Fountain", "Fountain"];
+const EFFECT_NAMES: [&str; 7] = [
+    "Frenzy", "Mending", "Clarity", "Fountain", "Held", "Slowed", "Burning",
+];
 /// What each timed effect does, for the hover popup.
-const EFFECT_TIPS: [&str; 5] = [
+const EFFECT_TIPS: [&str; 7] = [
     "Attack speed increased.",
-    "Regenerating health. Any hero's hit breaks it.",
-    "Regenerating mana. Any hero's hit breaks it.",
-    "Regenerating health for standing in the fountain.",
-    "Regenerating mana for standing in the fountain.",
+    "Regenerating health.",
+    "Regenerating mana.",
+    "Regenerating health and mana for standing in the fountain.",
+    "Cannot move, attack or cast.",
+    "Movement speed reduced.",
+    "Losing health over time.",
 ];
 /// What each ability does, for the hover popup.
 const ABILITY_TIPS: [&str; 4] = [

@@ -213,6 +213,26 @@ fn selection_clicks(app: &mut App) {
 }
 
 fn lobby_controls(app: &mut App) {
+    let picks = [
+        KeyCode::Key1,
+        KeyCode::Key2,
+        KeyCode::Key3,
+        KeyCode::Key4,
+        KeyCode::Key5,
+    ];
+    if app.my_slot.is_some() {
+        for (id, key) in picks
+            .into_iter()
+            .enumerate()
+            .take(crate::render::HERO_NAMES.len())
+        {
+            if is_key_pressed(key) {
+                app.source.send(&ClientMsg::PickHero {
+                    hero: bota_proto::HeroId(id as u16),
+                });
+            }
+        }
+    }
     if app.my_slot.is_some() && is_key_pressed(KeyCode::R) {
         app.ready = !app.ready;
         let ready = app.ready;
@@ -319,20 +339,26 @@ fn order_controls(app: &mut App) {
         }
         return;
     }
-    // An armed unit-target ability spends the next left click.
+    // An armed ability spends the next left click, on the ground or on a unit.
     if let Some(slot) = app.pending_ability
         && is_mouse_button_pressed(MouseButton::Left)
     {
         app.pending_ability = None;
-        let me = app.my_hero();
-        let target = app
-            .view
-            .as_ref()
-            .and_then(|view| unit_under_cursor(view, wx, wy, me, true));
+        let target = match app.ability_aim_of(slot) {
+            crate::render::Aim::Point => Some(OrderTarget::Point { pos: ground }),
+            crate::render::Aim::Unit => {
+                let me = app.my_hero();
+                app.view
+                    .as_ref()
+                    .and_then(|view| unit_under_cursor(view, wx, wy, me, true))
+                    .map(|target| OrderTarget::Unit { target })
+            }
+            crate::render::Aim::Own => Some(OrderTarget::None),
+        };
         if let Some(target) = target {
             app.send_order(Order::CastAbility {
                 slot: AbilitySlot(slot),
-                target: OrderTarget::Unit { target },
+                target,
             });
         }
         return;
@@ -415,7 +441,7 @@ fn use_or_aim(app: &mut App, slot: u8) {
 }
 
 /// Q, W, E and R cast the four slots; with Control held they spend a skill
-/// point instead. The unit-target slot arms and waits for a click.
+/// point instead. One that is aimed arms and waits for a click.
 fn ability_keys(app: &mut App) {
     let keys = [
         (KeyCode::Q, 0u8),
@@ -433,13 +459,16 @@ fn ability_keys(app: &mut App) {
                 slot: AbilitySlot(slot),
             });
         } else {
-            match slot {
-                2 => app.pending_ability = Some(slot),
-                1 | 3 => app.send_order(Order::CastAbility {
+            match app.ability_aim_of(slot) {
+                crate::render::Aim::Own => app.send_order(Order::CastAbility {
                     slot: AbilitySlot(slot),
                     target: OrderTarget::None,
                 }),
-                _ => {}
+                crate::render::Aim::Point | crate::render::Aim::Unit => {
+                    app.attack_move_armed = false;
+                    app.pending_item = None;
+                    app.pending_ability = Some(slot);
+                }
             }
         }
     }

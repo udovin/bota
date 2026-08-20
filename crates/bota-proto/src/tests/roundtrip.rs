@@ -101,6 +101,8 @@ fn empty_collections_survive() {
         units: Vec::new(),
         projectiles: Vec::new(),
         players: Vec::new(),
+        felled_trees: Vec::new(),
+        planted_trees: Vec::new(),
     };
     assert_eq!(roundtrip(&view), view);
 }

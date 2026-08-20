@@ -64,6 +64,8 @@ fn an_empty_view_costs_almost_nothing() {
             units: Vec::new(),
             projectiles: Vec::new(),
             players: Vec::new(),
+            felled_trees: Vec::new(),
+            planted_trees: Vec::new(),
         },
     };
     let len = encoded_len(&msg);

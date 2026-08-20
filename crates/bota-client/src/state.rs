@@ -288,6 +288,21 @@ impl App {
         held.map(|item| item.id)
     }
 
+    /// Which ability sits in one of our four slots.
+    pub fn ability_id_at(&self, slot: u8) -> Option<bota_proto::AbilityId> {
+        let view = self.view.as_ref()?;
+        let me = self.my_hero()?;
+        let unit = view.units.iter().find(|u| u.id == me)?;
+        unit.abilities.get(usize::from(slot)).map(|a| a.id)
+    }
+
+    /// How the ability in one of our slots is aimed.
+    pub fn ability_aim_of(&self, slot: u8) -> crate::render::Aim {
+        self.ability_id_at(slot)
+            .and_then(|id| crate::render::ABILITY_AIM.get(usize::from(id.0)).copied())
+            .unwrap_or(crate::render::Aim::Own)
+    }
+
     /// How the item in one of our slots is aimed.
     pub fn aim_of(&self, slot: u8) -> crate::render::Aim {
         self.item_id_at(slot)

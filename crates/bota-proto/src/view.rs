@@ -210,4 +210,9 @@ pub struct WorldView {
     pub projectiles: Vec<ProjectileView>,
     /// The scoreboard, one entry per seat, sorted by [`SlotId`].
     pub players: Vec<PlayerView>,
+    /// Which of the map's own trees are down right now, by their place in the
+    /// list [`MatchInfo`](crate::MatchInfo) carried at the start.
+    pub felled_trees: Vec<u32>,
+    /// Where every tree put up during the match stands.
+    pub planted_trees: Vec<Vec2>,
 }

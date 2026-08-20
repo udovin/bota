@@ -11,15 +11,12 @@ use bota_proto::{
     encode_frame_to_vec,
 };
 
+use crate::game::{Command, EventVisibility, MatchConfig};
 use crate::lobby::Roster;
 use crate::net::{Connection, NetEvent, accept_loop};
 use crate::replay::ReplayWriter;
-use crate::sim::{Command, EventVisibility, MatchConfig};
 
-#[cfg(feature = "engine-world")]
-use crate::engine::World;
-#[cfg(not(feature = "engine-world"))]
-use crate::sim::World;
+use crate::game::World;
 
 /// Everything the command line decides.
 #[derive(Clone, Debug)]
@@ -183,7 +180,10 @@ impl Server {
                         }
                     }
                     ClientMsg::PickHero { hero } => {
-                        if let Some(seat) = self.roster.seat_of_mut(id) {
+                        // A pick of nobody leaves whatever was picked before.
+                        if crate::game::hero_def(hero).is_some()
+                            && let Some(seat) = self.roster.seat_of_mut(id)
+                        {
                             seat.hero = Some(hero);
                             self.broadcast_lobby();
                         }
@@ -414,66 +414,27 @@ impl Server {
     }
 }
 
-/// A world for a match, whichever one this build runs on.
-#[cfg(not(feature = "engine-world"))]
-fn new_world(cfg: &MatchConfig) -> World {
-    World::new(cfg, cfg.rng())
-}
-
-/// A world for a match, whichever one this build runs on.
-#[cfg(feature = "engine-world")]
+/// A world for a match.
 fn new_world(cfg: &MatchConfig) -> World {
     World::for_match(cfg, cfg.rng())
 }
 
 /// One tick of the match.
-#[cfg(not(feature = "engine-world"))]
-fn advance(world: &mut World, cmds: &[Command]) -> Vec<crate::sim::Event> {
-    world.step(cmds)
-}
-
-/// One tick of the match.
-#[cfg(feature = "engine-world")]
-fn advance(world: &mut World, cmds: &[Command]) -> Vec<crate::sim::Event> {
+fn advance(world: &mut World, cmds: &[Command]) -> Vec<crate::game::Event> {
     world.advance(cmds)
 }
 
 /// The side that has won, if either has.
-#[cfg(not(feature = "engine-world"))]
-fn victor(world: &World) -> Option<bota_proto::Team> {
-    world.winner()
-}
-
-/// The side that has won, if either has.
-#[cfg(feature = "engine-world")]
 fn victor(world: &World) -> Option<bota_proto::Team> {
     world.victor()
 }
 
 /// Final numbers for every seat.
-#[cfg(not(feature = "engine-world"))]
-fn match_stats(world: &World) -> bota_proto::MatchStats {
-    world.stats()
-}
-
-/// Final numbers for every seat.
-#[cfg(feature = "engine-world")]
 fn match_stats(world: &World) -> bota_proto::MatchStats {
     world.match_stats()
 }
 
 /// Whether a seat may issue this order right now.
-#[cfg(not(feature = "engine-world"))]
-fn validate(
-    world: &World,
-    slot: bota_proto::SlotId,
-    order: &bota_proto::Order,
-) -> Result<(), bota_proto::RejectReason> {
-    world.validate(slot, order)
-}
-
-/// Whether a seat may issue this order right now.
-#[cfg(feature = "engine-world")]
 fn validate(
     world: &World,
     slot: bota_proto::SlotId,

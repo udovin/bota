@@ -150,6 +150,8 @@ pub fn world_view(creeps: u32) -> WorldView {
             .collect(),
         projectiles: vec![projectile()],
         players: (0..2).map(player_view).collect(),
+        felled_trees: Vec::new(),
+        planted_trees: Vec::new(),
     }
 }
 
