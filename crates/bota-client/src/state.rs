@@ -90,6 +90,8 @@ pub struct App {
     pub pregame_ticks: u32,
     /// A unit-target ability armed and waiting for a click.
     pub pending_ability: Option<u8>,
+    /// The item slot waiting for a click to aim it, if one is.
+    pub pending_item: Option<u8>,
     /// An item slot picked up and waiting for the destination click.
     pub held_item: Option<u8>,
     /// Whether the shop panel is open. Toggled by key or button; buying
@@ -151,6 +153,7 @@ impl App {
             tick_rate: 30,
             pregame_ticks: 0,
             pending_ability: None,
+            pending_item: None,
             held_item: None,
             shop_open: false,
             trees: Vec::new(),
@@ -190,6 +193,13 @@ impl App {
         let slot = self.my_slot?;
         let view = self.view.as_ref()?;
         view.players.iter().find(|p| p.slot == slot)?.unit
+    }
+
+    /// Which side this player is on, once the match has told us.
+    pub fn my_team(&self) -> Option<bota_proto::Team> {
+        let slot = self.my_slot?;
+        let view = self.view.as_ref()?;
+        view.players.iter().find(|p| p.slot == slot).map(|p| p.team)
     }
 
     /// Whether the current selection is a unit this player commands.
@@ -257,6 +267,32 @@ impl App {
                 .and_then(|s| s.get(usize::from(slot - 9)).copied().flatten())
         };
         item.is_some_and(|i| i.charges > 0)
+    }
+
+    /// Which item sits in one of our slots, if one does.
+    pub fn item_id_at(&self, slot: u8) -> Option<bota_proto::ItemId> {
+        let view = self.view.as_ref()?;
+        let my = self.my_slot?;
+        let player = view.players.iter().find(|p| p.slot == my)?;
+        let held = if slot < 9 {
+            player
+                .unit
+                .and_then(|id| view.units.iter().find(|u| u.id == id))
+                .and_then(|u| u.items.get(usize::from(slot)).copied().flatten())
+        } else {
+            player
+                .stash
+                .as_ref()
+                .and_then(|s| s.get(usize::from(slot - 9)).copied().flatten())
+        };
+        held.map(|item| item.id)
+    }
+
+    /// How the item in one of our slots is aimed.
+    pub fn aim_of(&self, slot: u8) -> crate::render::Aim {
+        self.item_id_at(slot)
+            .and_then(|id| crate::render::ITEM_AIM.get(usize::from(id.0)).copied())
+            .unwrap_or(crate::render::Aim::Own)
     }
 
     /// Whether one of our fifteen item slots holds an item right now.

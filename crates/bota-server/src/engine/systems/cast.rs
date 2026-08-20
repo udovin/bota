@@ -43,12 +43,10 @@ impl World {
                 continue;
             }
             let level = usize::from(ability.level - 1);
-            let cost = match ability.id.0 {
-                1 => rules::SYLLA_FRENZY_MANA[level],
-                2 => rules::SYLLA_BOUNCE_MANA[level],
-                3 => rules::SYLLA_MULTI_MANA[level.min(2)],
-                _ => continue,
-            };
+            let cost = ability_mana_cost(ability.id, ability.level);
+            if cost == 0 {
+                continue;
+            }
             if self.mana.get(entity).map_or(0, |m| m.mana.to_int()) < cost {
                 continue;
             }
@@ -93,11 +91,11 @@ impl World {
     /// Puts haste on the caster for a while.
     fn cast_frenzy(&mut self, caster: Entity, level: usize) -> bool {
         let mut on_it = self.statuses.remove(caster).unwrap_or_default();
-        on_it.0.retain(|held| held.kind != StatusKind::Haste);
-        on_it.0.push(Status {
-            kind: StatusKind::Haste,
+        on_it.put(Status {
+            kind: StatusKind::Haste {
+                pct: rules::SYLLA_FRENZY_HASTE_PCT[level],
+            },
             ticks_left: rules::SYLLA_FRENZY_TICKS,
-            magnitude: rules::SYLLA_FRENZY_HASTE_PCT[level],
         });
         self.statuses.insert(caster, on_it);
         true
@@ -219,4 +217,21 @@ impl World {
     pub fn order_cast(&mut self, entity: Entity, cast: PendingCast) {
         self.casting.insert(entity, cast);
     }
+}
+
+/// What one cast of an ability costs at a level.
+///
+/// Zero for a slot that holds nothing castable.
+pub fn ability_mana_cost(id: bota_proto::AbilityId, level: u8) -> i32 {
+    let level = usize::from(level.max(1) - 1);
+    let table: &[i32] = match id.0 {
+        1 => &rules::SYLLA_FRENZY_MANA,
+        2 => &rules::SYLLA_BOUNCE_MANA,
+        3 => &rules::SYLLA_MULTI_MANA,
+        _ => return 0,
+    };
+    table
+        .get(level)
+        .copied()
+        .unwrap_or_else(|| table.last().copied().unwrap_or(0))
 }

@@ -11,6 +11,9 @@ pub struct ItemStack {
     pub charges: u8,
     /// Ticks until it may be used again.
     pub cooldown: u32,
+    /// Ticks it stays inert for having come out of the backpack: it carries
+    /// nothing and cannot be used until this runs out.
+    pub mute: u32,
     /// The tick it was bought, for the window in which it refunds in full.
     pub bought_tick: u32,
     /// Whether it has been used or moved since it was bought.
@@ -39,4 +42,22 @@ impl Inventory {
     pub fn held(&self) -> impl Iterator<Item = &ItemStack> {
         self.slots.iter().flatten()
     }
+}
+
+/// Slots a hero carries on itself: the inventory proper and the backpack.
+pub const BAG_SLOTS: usize = crate::sim::rules::INVENTORY_SLOTS + crate::sim::rules::BACKPACK_SLOTS;
+
+/// Whether a slot number is one of the inventory proper, where items work.
+pub fn in_inventory(slot: usize) -> bool {
+    slot < crate::sim::rules::INVENTORY_SLOTS
+}
+
+/// Whether a slot number is one of the backpack, where they are carried inert.
+pub fn in_backpack(slot: usize) -> bool {
+    (crate::sim::rules::INVENTORY_SLOTS..BAG_SLOTS).contains(&slot)
+}
+
+/// Whether a slot number is one of the stash at the shop.
+pub fn in_stash(slot: usize) -> bool {
+    slot >= BAG_SLOTS
 }

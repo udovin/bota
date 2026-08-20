@@ -3,7 +3,7 @@
 use bota_proto::{EventKind, Team, UnitKind, Vec2};
 
 use crate::engine::{Entity, Level, World, wire_id};
-use crate::sim::{Event, EventVisibility, fountain_pos, rules};
+use crate::sim::{Event, EventVisibility, hero_spawn_pos, rules};
 
 impl World {
     /// Hands out the gold that arrives on its own: one a period, to every
@@ -120,12 +120,11 @@ impl World {
                 self.seats[index].hero,
                 self.seats[index].level,
             );
-            let at = fountain_pos(map, team);
+            let at = hero_spawn_pos(map, team);
             let unit = self.spawn_hero(team, at, slot, hero);
             self.level.insert(unit, Level(level));
             self.seats[index].unit = Some(unit);
             self.settle();
-            self.fill_pools(unit);
         }
     }
 

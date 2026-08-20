@@ -3,11 +3,11 @@
 use bota_proto::{HeroId, SlotId, Team, UnitKind};
 
 use crate::engine::{
-    AbilityBook, AttackCx, Attacking, Bounty, CampHome, Def, Entity, EntityAllocator, Health, Hit,
-    Hull, Inventory, Lane, LaneAi, Level, Mana, March, NeutralAi, Orders, PendingCast, Projectile,
-    Route, Seat, SightCx, Stats, StatsCx, Statuses, Table, Target, Tier, Transform, Upgrades,
-    Visibility, attacking_system, derive_stats, hitting_system, missile_system, regenerate,
-    visibility_system,
+    AbilityBook, AttackCx, Attacking, AuraCx, Auras, Bounty, CampHome, Def, Entity,
+    EntityAllocator, Expiry, Health, Hit, Hull, Inventory, Lane, LaneAi, Level, Mana, March,
+    NeutralAi, Orders, PendingCast, Projectile, Route, Seat, SightCx, Stats, StatsCx, Statuses,
+    Table, Target, Teleport, Tier, Transform, UnitOrder, Upgrades, Visibility, attacking_system,
+    aura_system, derive_stats, hitting_system, missile_system, regenerate, visibility_system,
 };
 use crate::engine::{HitCx, MissileCx};
 
@@ -67,6 +67,12 @@ pub struct World {
     pub stats: Table<Stats>,
     /// What is on each entity and runs out on its own.
     pub statuses: Table<Statuses>,
+    /// How long each entity that stands for a time has left.
+    pub expiry: Table<Expiry>,
+    /// The teleport each entity is channelling.
+    pub teleport: Table<Teleport>,
+    /// What each entity hands out to those standing near it.
+    pub auras: Table<Auras>,
 
     /// Routes being walked by whoever a player drives.
     pub route: Table<Route>,
@@ -142,6 +148,9 @@ impl World {
             tier: Table::new(),
             stats: Table::new(),
             statuses: Table::new(),
+            expiry: Table::new(),
+            teleport: Table::new(),
+            auras: Table::new(),
             route: Table::new(),
             march: Table::new(),
             orders: Table::new(),
@@ -201,6 +210,25 @@ impl World {
         blow
     }
 
+    /// Tells an entity what to do, leaving what it is waiting on alone.
+    ///
+    /// The order and the wait before it may be re-aimed live in one component;
+    /// writing that component whole is how the wait gets lost.
+    pub fn set_order(&mut self, entity: Entity, order: UnitOrder) {
+        match self.orders.get_mut(entity) {
+            Some(orders) => orders.current = order,
+            None => {
+                self.orders.insert(
+                    entity,
+                    Orders {
+                        current: order,
+                        cooldown: 0,
+                    },
+                );
+            }
+        }
+    }
+
     /// Puts an entity on a side.
     ///
     /// Standing on a side is what makes an entity something sides can see, so
@@ -255,11 +283,13 @@ impl World {
         world
     }
 
-    /// Brings everything worked out into line with what stands: stats, pools
-    /// and who sees what.
+    /// Brings everything worked out into line with what stands: stats and who
+    /// sees what.
     ///
     /// Called for a world just built and after anything is put into one, so
-    /// nothing newly stood up is invisible until the next tick.
+    /// nothing newly stood up is invisible until the next tick. Pools are
+    /// left alone: what stands with them is whatever it has left, and filling
+    /// them is the business of whoever stood the entity up.
     pub fn settle(&mut self) {
         derive_stats(StatsCx {
             entities: &self.entities,
@@ -272,9 +302,6 @@ impl World {
             health: &mut self.health,
             mana: &mut self.mana,
         });
-        for entity in self.entities.iter().collect::<Vec<_>>() {
-            self.fill_pools(entity);
-        }
         visibility_system(SightCx {
             entities: &self.entities,
             transform: &self.transform,
@@ -296,6 +323,15 @@ impl World {
         self.tick_gear();
         self.passive_gold();
         self.tick_respawns();
+        self.tick_teleports();
+        self.tick_expiries();
+        aura_system(AuraCx {
+            entities: &self.entities,
+            transform: &self.transform,
+            team: &self.team,
+            auras: &self.auras,
+            statuses: &mut self.statuses,
+        });
         derive_stats(StatsCx {
             entities: &self.entities,
             def: &self.def,
@@ -307,8 +343,7 @@ impl World {
             health: &mut self.health,
             mana: &mut self.mana,
         });
-        self.tick_lane_ai();
-        self.acquire_targets();
+        self.tick_targeting();
         self.tick_jungle();
         self.march_lanes();
         self.walk_bodies();

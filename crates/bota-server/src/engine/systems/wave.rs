@@ -2,7 +2,7 @@
 
 use bota_proto::{Team, Vec2};
 
-use crate::engine::{Lane, LaneAi, March, Orders, UnitDef, UnitOrder, Upgrades, World};
+use crate::engine::{Lane, LaneAi, March, UnitDef, UnitOrder, Upgrades, World};
 use crate::sim::{
     Purpose, WavePlan, advance_waypoint, creep_spawn_pos, lane_routes, rules, spawn_offsets,
     team_index, wave_at, wave_plan,
@@ -43,9 +43,11 @@ impl World {
                         creep,
                         LaneAi {
                             anchor: None,
-                            chase_left: 0,
-                            provoked: 0,
                             last_seen: None,
+                            keep_until: 0,
+                            roused_by: None,
+                            roused_at_own: false,
+                            chase_until: 0,
                         },
                     );
                 }
@@ -101,13 +103,7 @@ impl World {
             let Some(going) = going else {
                 continue;
             };
-            self.orders.insert(
-                entity,
-                Orders {
-                    current: UnitOrder::AttackMove { pos: going },
-                    cooldown: 0,
-                },
-            );
+            self.set_order(entity, UnitOrder::AttackMove { pos: going });
         }
     }
 }

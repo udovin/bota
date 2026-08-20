@@ -122,6 +122,8 @@ pub struct UnitView {
     /// The fog itself is not on the wire; each side derives what it needs from
     /// this field and the positions in the view.
     pub vision_radius: Fixed,
+    /// How far it reveals what hides. Zero for whatever gives no true sight.
+    pub true_sight_radius: Fixed,
     /// Conditions currently affecting it.
     pub statuses: StatusFlags,
     /// Which hero this is, when `kind` is [`UnitKind::Hero`].

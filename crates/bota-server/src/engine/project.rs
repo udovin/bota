@@ -1,8 +1,11 @@
 //! The world as a side is allowed to see it.
 
-use bota_proto::{Fixed, PlayerView, ProjectileView, StatusFlags, Team, UnitView, WorldView};
+use bota_proto::{
+    AbilityView, EffectId, EffectView, Fixed, PlayerView, ProjectileView, StatusFlags, Team,
+    UnitView, WorldView,
+};
 
-use crate::engine::{Entity, World};
+use crate::engine::{Entity, StatusKind, World, ability_mana_cost, item_views};
 
 /// The handle as it travels on the wire.
 pub fn wire_id(entity: Entity) -> bota_proto::EntityId {
@@ -83,7 +86,7 @@ impl World {
                     },
                     stash: match viewer {
                         Some(team) if team != seat.team => None,
-                        _ => Some(vec![None; seat.stash.slots.len()]),
+                        _ => Some(item_views(&seat.stash)),
                     },
                     kills: seat.kills,
                     deaths: seat.deaths,
@@ -121,13 +124,38 @@ impl World {
             magic_resist: Fixed::from_ratio(stats.magic_resist_pct, 100),
             radius: self.hull.get(entity).map_or(Fixed::ZERO, |h| h.radius),
             vision_radius: stats.vision,
-            statuses: StatusFlags::default(),
+            true_sight_radius: stats.true_sight,
+            statuses: StatusFlags {
+                bits: if stats.hides {
+                    StatusFlags::INVISIBLE
+                } else {
+                    0
+                },
+            },
             hero: self.hero.get(entity).copied(),
             owner: self.owner.get(entity).copied(),
             level: self.level.get(entity).map_or(0, |l| l.0),
-            abilities: Vec::new(),
-            items: Vec::new(),
-            effects: Vec::new(),
+            abilities: self.abilities.get(entity).map_or_else(Vec::new, |book| {
+                book.slots
+                    .iter()
+                    .map(|ability| AbilityView {
+                        id: ability.id,
+                        level: ability.level,
+                        cooldown_left: ability.cooldown,
+                        mana_cost: ability_mana_cost(ability.id, ability.level),
+                    })
+                    .collect()
+            }),
+            items: self.inventory.get(entity).map_or_else(Vec::new, item_views),
+            effects: self.statuses.get(entity).map_or_else(Vec::new, |on_it| {
+                on_it
+                    .active()
+                    .map(|status| EffectView {
+                        id: EffectId(effect_id(status.kind)),
+                        ticks_left: status.ticks_left,
+                    })
+                    .collect()
+            }),
         })
     }
 }
@@ -141,5 +169,15 @@ fn shown(held: Fixed) -> i32 {
         held.to_int().max(1)
     } else {
         held.to_int()
+    }
+}
+
+/// Which effect one kind is on the wire.
+fn effect_id(kind: StatusKind) -> u16 {
+    match kind {
+        StatusKind::Haste { .. } => 0,
+        StatusKind::Mending { .. } => 1,
+        StatusKind::Clarity { .. } => 2,
+        StatusKind::Fountain { .. } => 3,
     }
 }

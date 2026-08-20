@@ -12,7 +12,10 @@ use crate::sim::{Event, EventVisibility, Ground, PassGrid, sight_clear};
 /// The row itself belongs to the entity: it is made when the entity is and
 /// given up when it goes, so this only ever rewrites what is already there.
 ///
-/// A side always sees its own, and both sides always see a building. Beyond
+/// A side always sees its own, and both sides always see a building. What
+/// hides asks for two things at once from any other side: ordinary sight of
+/// where it stands, and true sight reaching it. True sight takes nothing off
+/// what hides in ground nobody is looking at. Beyond
 /// that, everything that can see is walked
 /// in turn against everything inside its sight radius, and the line is traced
 /// only for what its side cannot already see: once one pair of eyes has an
@@ -97,6 +100,43 @@ pub fn visibility_system(cx: SightCx<'_>) {
             {
                 seen.add(side);
             }
+        }
+    }
+    // What hides is not given away by standing in the open: for the other
+    // side it exists only where true sight reaches it.
+    for hidden in entities.iter() {
+        if !stats.get(hidden).is_some_and(|stats| stats.hides) {
+            continue;
+        }
+        let (Some(side), Some(at)) = (
+            team.get(hidden).copied(),
+            transform.get(hidden).map(|t| t.pos),
+        ) else {
+            continue;
+        };
+        let Some(already) = visibility.get(hidden).copied() else {
+            continue;
+        };
+        let mut seen = Visibility::NONE;
+        seen.add(side);
+        for viewer in entities.iter() {
+            let (Some(their_side), Some(from), Some(reach)) = (
+                team.get(viewer).copied(),
+                transform.get(viewer).map(|t| t.pos),
+                stats.get(viewer).map(|stats| stats.true_sight),
+            ) else {
+                continue;
+            };
+            if their_side != side
+                && already.by(their_side)
+                && reach > Fixed::ZERO
+                && from.within(at, reach)
+            {
+                seen.add(their_side);
+            }
+        }
+        if let Some(row) = visibility.get_mut(hidden) {
+            *row = seen;
         }
     }
 }

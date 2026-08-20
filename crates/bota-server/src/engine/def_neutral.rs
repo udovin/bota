@@ -135,6 +135,9 @@ const NEUTRAL_BASE: UnitDef = UnitDef {
         xp: 0,
     },
     per_upgrade: NEUTRAL_GROWTH,
+    auras: &[],
+    true_sight: 0,
+    hides: false,
 };
 
 /// Every kind, in the order of [`NeutralKind`].

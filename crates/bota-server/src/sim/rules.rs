@@ -423,11 +423,12 @@ pub const ACQUISITION_RANGE: i32 = 600;
 /// Candidates within this many world units of each other rank as equally
 /// close, and what a hero is doing breaks the tie.
 pub const AGGRO_TIE_RANGE: i32 = 100;
-/// Ticks before an attack order may re-aim the same creep or tower again.
+/// Ticks before an attack order may re-aim the same creep or tower again,
+/// 3 seconds.
 pub const ORDER_AGGRO_COOLDOWN_TICKS: u32 = 90;
 /// Ticks a creep handed a target by an attack order keeps it before the
-/// ordinary ranking may take it back.
-pub const ORDER_AGGRO_HOLD_TICKS: u32 = 90;
+/// ordinary ranking may take it back, 2.33 seconds.
+pub const ORDER_AGGRO_HOLD_TICKS: u32 = 70;
 /// Game tick from which player units may aggro lane creeps unconditionally.
 pub const FREE_AGGRO_TICK: u32 = FIRST_WAVE_TICK + 5 * 60 * TICKS_PER_SECOND;
 /// How close to its own tier-one tower a lane creep may be aggroed before

@@ -115,6 +115,7 @@ fn project_unit(
         magic_resist: bota_proto::Fixed::from_ratio(u.magic_resist_pct, 100),
         radius: u.radius,
         vision_radius: u.vision_radius,
+        true_sight_radius: bota_proto::Fixed::ZERO,
         statuses: StatusFlags::default(),
         hero: u.hero,
         owner: u.owner,

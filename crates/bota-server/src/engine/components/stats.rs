@@ -41,6 +41,10 @@ pub struct Stats {
     pub turn_rate: u16,
     /// How far it sees.
     pub vision: Fixed,
+    /// How far it reveals what hides. Zero for whatever gives no true sight.
+    pub true_sight: Fixed,
+    /// Whether the other side sees it only through true sight.
+    pub hides: bool,
     /// Whether damage passes it by.
     pub invulnerable: bool,
 }

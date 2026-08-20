@@ -3,8 +3,8 @@
 use bota_proto::{Angle, Fixed, HeroId, SlotId, Team, UnitKind, Vec2};
 
 use crate::engine::{
-    Attacking, Bounty, Def, Entity, Health, Hull, Level, Mana, March, Orders, Transform, UnitOrder,
-    World,
+    Attacking, Auras, Bounty, Def, Entity, Health, Hull, Level, Mana, March, Orders, Transform,
+    UnitOrder, World,
 };
 
 impl World {
@@ -29,13 +29,20 @@ impl World {
                 facing: Angle::default(),
             },
         );
-        self.hull.insert(
-            entity,
-            Hull {
-                radius: Fixed::from_int(def.radius),
-            },
-        );
+        // A kind that takes no room on the ground gets no hull at all, and so
+        // is passed through rather than walked round or eased apart.
+        if def.radius > 0 {
+            self.hull.insert(
+                entity,
+                Hull {
+                    radius: Fixed::from_int(def.radius),
+                },
+            );
+        }
         self.health.insert(entity, Health { hp: Fixed::ZERO });
+        if !def.auras.is_empty() {
+            self.auras.insert(entity, Auras(def.auras));
+        }
         if def.max_mana > 0 {
             self.mana.insert(entity, Mana { mana: Fixed::ZERO });
         }

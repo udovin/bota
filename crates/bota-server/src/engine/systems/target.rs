@@ -2,7 +2,7 @@
 
 use bota_proto::{Fixed, Team, UnitKind, Vec2};
 
-use crate::engine::{Entity, World, is_structure};
+use crate::engine::{Entity, World, is_lane_creep, is_structure};
 use crate::sim::{CAMPS, isqrt64, rules};
 
 /// The class order a unit ranks its targets by.
@@ -38,6 +38,11 @@ fn class_of(kind: UnitKind) -> TargetClass {
     }
 }
 
+/// Where a kind of unit sits in an order. Lower is taken first.
+pub fn class_rank_of(kind: UnitKind, order: PriorityOrder) -> u8 {
+    class_rank(class_of(kind), order)
+}
+
 /// Where a class sits in an order. Lower is taken first.
 fn class_rank(class: TargetClass, order: PriorityOrder) -> u8 {
     match order {
@@ -59,17 +64,6 @@ fn class_rank(class: TargetClass, order: PriorityOrder) -> u8 {
 /// Whether the camp at this spot is one lane creeps will fight.
 pub fn pullable_camp(pos: Vec2) -> bool {
     CAMPS.iter().any(|camp| camp.pullable && camp.pos == pos)
-}
-
-/// Whether a kind of unit is a lane creep.
-fn lane_creep(kind: UnitKind) -> bool {
-    matches!(
-        kind,
-        UnitKind::CreepMelee
-            | UnitKind::CreepFlagbearer
-            | UnitKind::CreepRanged
-            | UnitKind::CreepSiege
-    )
 }
 
 impl World {
@@ -110,7 +104,7 @@ impl World {
             if seeker_kind.is_some_and(is_structure) {
                 return false;
             }
-            if seeker_kind.is_some_and(lane_creep) {
+            if seeker_kind.is_some_and(is_lane_creep) {
                 return self
                     .camp_home
                     .get(target)
@@ -257,7 +251,7 @@ impl World {
         let Some(kind) = self.kind.get(entity).copied() else {
             return false;
         };
-        let share = if lane_creep(kind) {
+        let share = if is_lane_creep(kind) {
             rules::DENY_HP_PCT
         } else if is_structure(kind) {
             rules::DENY_BUILDING_HP_PCT

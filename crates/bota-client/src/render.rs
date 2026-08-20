@@ -352,6 +352,8 @@ fn draw_world(app: &App, view: &WorldView) {
 
     draw_world_fog(app, view, sw, sh);
 
+    draw_teleport_spots(app, view, to_screen);
+
     let me = app.my_hero();
     for u in &view.units {
         draw_unit(app, u, me == Some(u.id), to_screen);
@@ -374,6 +376,34 @@ fn draw_world(app: &App, view: &WorldView) {
     }
 }
 
+/// The ground a held scroll may be aimed at: a ring round every building of
+/// one's own side that still stands.
+fn draw_teleport_spots(app: &App, view: &WorldView, to_screen: impl Fn(f32, f32) -> (f32, f32)) {
+    let Some(slot) = app.pending_item else {
+        return;
+    };
+    if app.item_id_at(slot).map(|id| id.0) != Some(ITEM_TOWN_PORTAL_SCROLL) {
+        return;
+    }
+    let Some(side) = app.my_team() else {
+        return;
+    };
+    let radius = TELEPORT_RANGE * app.camera.zoom;
+    for u in &view.units {
+        if u.team != side
+            || !matches!(
+                u.kind,
+                UnitKind::Tower | UnitKind::Ancient | UnitKind::Fountain
+            )
+        {
+            continue;
+        }
+        let (x, y) = to_screen(u.pos.x.to_f32(), u.pos.y.to_f32());
+        draw_circle(x, y, radius, Color::new(0.35, 0.75, 1.0, 0.12));
+        draw_circle_lines(x, y, radius, 2.0, Color::new(0.45, 0.85, 1.0, 0.8));
+    }
+}
+
 fn draw_unit(app: &App, u: &UnitView, mine: bool, to_screen: impl Fn(f32, f32) -> (f32, f32)) {
     let (x, y) = to_screen(u.pos.x.to_f32(), u.pos.y.to_f32());
     let r = (u.radius.to_f32() * app.camera.zoom).max(4.0);
@@ -385,6 +415,24 @@ fn draw_unit(app: &App, u: &UnitView, mine: bool, to_screen: impl Fn(f32, f32) -
         }
         UnitKind::Fountain => {
             draw_circle_lines(x, y, r, 3.0, color);
+        }
+        // A ward takes no room on the ground, so it is drawn to a size of its
+        // own rather than to its hull. The one that reveals is drawn hollow
+        // and square, the one that watches solid and pointed.
+        UnitKind::Ward => {
+            let eye = (10.0 * app.camera.zoom).max(4.0);
+            if u.true_sight_radius > bota_proto::Fixed::ZERO {
+                draw_poly_lines(x, y, 4, eye, 45.0, 2.0, color);
+                if mine {
+                    let reach = u.true_sight_radius.to_f32() * app.camera.zoom;
+                    draw_circle_lines(x, y, reach, 1.0, Color::new(0.9, 0.8, 1.0, 0.35));
+                }
+            } else {
+                draw_poly(x, y, 3, eye, 90.0, color);
+            }
+            if u.statuses.bits & bota_proto::StatusFlags::INVISIBLE != 0 {
+                draw_circle_lines(x, y, eye + 3.0, 1.0, Color::new(0.8, 0.8, 1.0, 0.5));
+            }
         }
         _ => draw_circle(x, y, r, color),
     }
@@ -747,6 +795,13 @@ fn draw_minimap(app: &App, view: &WorldView) {
             UnitKind::Tower => draw_rectangle(x - 2.0, y - 2.0, 4.0, 4.0, color),
             UnitKind::Ancient => draw_rectangle(x - 3.0, y - 3.0, 6.0, 6.0, color),
             UnitKind::Fountain => draw_circle_lines(x, y, 3.0, 1.0, color),
+            UnitKind::Ward => {
+                if u.true_sight_radius > bota_proto::Fixed::ZERO {
+                    draw_poly_lines(x, y, 4, 2.5, 45.0, 1.0, color);
+                } else {
+                    draw_poly(x, y, 3, 2.5, 90.0, color);
+                }
+            }
             UnitKind::Hero => {
                 draw_circle(x, y, 3.0, color);
                 if me == Some(u.id) {
@@ -949,7 +1004,7 @@ fn draw_slot_boxes(
     }
 }
 
-/// One item box: name, charges, the cooldown shade, the held outline.
+/// One item box: the icon, charges, the cooldown shade, the held outline.
 fn draw_item_box(
     r: &crate::hud::UiRect,
     item: Option<&bota_proto::ItemView>,
@@ -969,11 +1024,13 @@ fn draw_item_box(
         draw_text("-", r.x + 12.0, r.y + 17.0, 14.0, DARKGRAY);
         return;
     };
-    let name = ITEM_NAMES
-        .get(usize::from(item.id.0))
-        .copied()
-        .unwrap_or("?");
-    draw_text(name, r.x + 2.0, r.y + 16.0, 12.0, WHITE);
+    if !crate::icons::draw_item_icon(item.id.0, r.x + 1.0, r.y + 1.0, r.w - 2.0, r.h - 2.0) {
+        let name = ITEM_NAMES
+            .get(usize::from(item.id.0))
+            .copied()
+            .unwrap_or("?");
+        draw_text(name, r.x + 2.0, r.y + 16.0, 12.0, WHITE);
+    }
     if item.charges > 0 {
         draw_text(
             format!("{}", item.charges),
@@ -1075,8 +1132,15 @@ fn draw_shop(app: &App, view: &WorldView) {
         let idx = usize::from(id);
         let affordable = gold >= ITEM_COSTS[idx];
         let color = if affordable { WHITE } else { GRAY };
-        draw_text(ITEM_NAMES[idx], r.x + 4.0, r.y + 16.0, 15.0, color);
-        draw_text(ITEM_STATS[idx], r.x + 78.0, r.y + 16.0, 13.0, DARKGRAY);
+        let icon = r.h - 4.0;
+        let drawn = crate::icons::draw_item_icon(id, r.x + 2.0, r.y + 2.0, icon * 1.5, icon);
+        let text = if drawn {
+            r.x + icon * 1.5 + 6.0
+        } else {
+            r.x + 4.0
+        };
+        draw_text(ITEM_NAMES[idx], text, r.y + 16.0, 15.0, color);
+        draw_text(ITEM_STATS[idx], text + 62.0, r.y + 16.0, 13.0, DARKGRAY);
         draw_text(
             format!("{}", ITEM_COSTS[idx]),
             r.x + r.w - 42.0,
@@ -1095,43 +1159,75 @@ fn draw_shop(app: &App, view: &WorldView) {
     draw_text(hint, sell.x + 6.0, sell.y + 18.0, 13.0, GRAY);
 }
 
+/// How an item is aimed when it is used.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Aim {
+    /// At nothing: it works on whoever used it.
+    Own,
+    /// At a spot on the ground.
+    Point,
+    /// At a unit.
+    Unit,
+}
+
+/// How each catalog item is aimed, by item id.
+pub const ITEM_AIM: [Aim; 9] = [
+    Aim::Own,
+    Aim::Unit,
+    Aim::Unit,
+    Aim::Own,
+    Aim::Point,
+    Aim::Point,
+    Aim::Point,
+    Aim::Unit,
+    Aim::Point,
+];
+
+/// How far from an allied building a scroll may land, in world units.
+pub const TELEPORT_RANGE: f32 = 600.0;
+
+/// Item id of the Town Portal Scroll.
+pub const ITEM_TOWN_PORTAL_SCROLL: u16 = 8;
+
 /// Display names of the catalog, by item id.
 pub const ITEM_NAMES: [&str; 9] = [
-    "Boots", "Blades", "Brdswd", "Claymr", "Plate", "Vital", "Energy", "Salve", "Clarity",
+    "Boots", "Clarity", "Salve", "Branch", "Obs", "Quell", "Sentry", "Tango", "TP",
 ];
 /// Prices of the catalog, by item id.
-pub const ITEM_COSTS: [i32; 9] = [500, 450, 1000, 1400, 1400, 1100, 800, 110, 95];
+pub const ITEM_COSTS: [i32; 9] = [500, 50, 110, 50, 100, 900, 50, 90, 100];
 /// One-line stats of the catalog, by item id.
 pub const ITEM_STATS: [&str; 9] = [
     "+45 MS",
-    "+9 DMG",
-    "+16 DMG",
-    "+20 DMG",
-    "+10 ARM",
-    "+250 HP",
-    "+250 MP",
-    "400HP/30s",
-    "240MP/30s",
+    "150MP/25s",
+    "400HP/10s",
+    "+30HP+15MP",
+    "Vision",
+    "+18 creep",
+    "True sight",
+    "115HP x3",
+    "Teleport",
 ];
 /// What each catalog item does, for the hover popup.
 const ITEM_TIPS: [&str; 9] = [
     "+45 movement speed.",
-    "+9 attack damage.",
-    "+16 attack damage.",
-    "+20 attack damage.",
-    "+10 armor.",
-    "+250 maximum health.",
-    "+250 maximum mana.",
-    "Consumable. Restores 400 health over 30 s. Any hero's hit breaks it.",
-    "Consumable. Restores 240 mana over 30 s. Any hero's hit breaks it.",
+    "Consumable. Restores 150 mana over 25 s. Any hero's hit breaks it.",
+    "Consumable. Restores 400 health over 10 s. Any hero's hit breaks it.",
+    "+30 maximum health, +15 maximum mana, +1 attack damage.",
+    "Consumable. Stands a ward that sees 1600 and that the enemy cannot see.",
+    "+18 attack damage against anything that is not a hero. Fells a tree.",
+    "Consumable. Stands a ward that gives true sight, revealing enemy wards.",
+    "Three charges. Eats a tree to restore 115 health over 16 s.",
+    "Consumable. Channels, then carries you to an allied building.",
 ];
 /// Names of the timed effects, by effect id.
-const EFFECT_NAMES: [&str; 3] = ["Frenzy", "Salve", "Clarity"];
+const EFFECT_NAMES: [&str; 5] = ["Frenzy", "Salve", "Clarity", "Fountain", "Fountain"];
 /// What each timed effect does, for the hover popup.
-const EFFECT_TIPS: [&str; 3] = [
+const EFFECT_TIPS: [&str; 5] = [
     "Attack speed increased.",
     "Regenerating health. Any hero's hit breaks it.",
     "Regenerating mana. Any hero's hit breaks it.",
+    "Regenerating health for standing in the fountain.",
+    "Regenerating mana for standing in the fountain.",
 ];
 /// What each ability does, for the hover popup.
 const ABILITY_TIPS: [&str; 4] = [

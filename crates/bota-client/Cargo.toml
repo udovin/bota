@@ -6,3 +6,4 @@ edition.workspace = true
 [dependencies]
 bota-proto = { workspace = true }
 macroquad = "0.4"
+resvg = "0.48.1"

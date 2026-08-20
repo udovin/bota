@@ -11,9 +11,14 @@ use crate::state::{App, Phase, Selection, Source};
 /// Handles one frame of input.
 pub fn handle(app: &mut App) {
     if is_key_pressed(KeyCode::Escape) {
-        if app.attack_move_armed || app.pending_ability.is_some() || app.held_item.is_some() {
+        if app.attack_move_armed
+            || app.pending_ability.is_some()
+            || app.pending_item.is_some()
+            || app.held_item.is_some()
+        {
             app.attack_move_armed = false;
             app.pending_ability = None;
+            app.pending_item = None;
             app.held_item = None;
         } else if app.shop_open {
             app.shop_open = false;
@@ -33,7 +38,9 @@ pub fn handle(app: &mut App) {
             if !ui_click {
                 // A click that confirms an armed order never doubles as a
                 // selection of whatever it landed on.
-                let armed = app.attack_move_armed || app.pending_ability.is_some();
+                let armed = app.attack_move_armed
+                    || app.pending_ability.is_some()
+                    || app.pending_item.is_some();
                 if app.over.is_none() {
                     order_controls(app);
                 }
@@ -156,12 +163,10 @@ fn finish_item_drag(app: &mut App, mx: f32, my: f32, sw: f32, sh: f32) {
     };
     if let Some(to) = item_box_under(mx, my, sw, sh) {
         if to == from {
-            // A click in place drinks a consumable from the inventory.
+            // A click in place uses what is in the inventory, or takes it up
+            // to be aimed if it needs aiming.
             if from < 6 && app.consumable_at(from) {
-                app.send_order(Order::UseItem {
-                    slot: ItemSlot(from),
-                    target: OrderTarget::None,
-                });
+                use_or_aim(app, from);
             }
         } else {
             app.send_order(Order::MoveItem {
@@ -290,6 +295,30 @@ fn order_controls(app: &mut App) {
         .camera
         .screen_to_world(sx, sy, screen_width(), screen_height());
     let ground = world_vec(wx, wy);
+    // An armed item spends the next left click, on the ground or on a unit.
+    if let Some(slot) = app.pending_item
+        && is_mouse_button_pressed(MouseButton::Left)
+    {
+        app.pending_item = None;
+        let target = match app.aim_of(slot) {
+            crate::render::Aim::Point => Some(OrderTarget::Point { pos: ground }),
+            // One's own hero is a target like any other here: a salve is
+            // drunk by clicking the one drinking it.
+            crate::render::Aim::Unit => app
+                .view
+                .as_ref()
+                .and_then(|view| unit_under_cursor(view, wx, wy, None, true))
+                .map(|target| OrderTarget::Unit { target }),
+            crate::render::Aim::Own => Some(OrderTarget::None),
+        };
+        if let Some(target) = target {
+            app.send_order(Order::UseItem {
+                slot: ItemSlot(slot),
+                target,
+            });
+        }
+        return;
+    }
     // An armed unit-target ability spends the next left click.
     if let Some(slot) = app.pending_ability
         && is_mouse_button_pressed(MouseButton::Left)
@@ -326,6 +355,7 @@ fn order_controls(app: &mut App) {
     if is_mouse_button_pressed(MouseButton::Right) {
         app.attack_move_armed = false;
         app.pending_ability = None;
+        app.pending_item = None;
         let me = app.my_hero();
         let target = app
             .view
@@ -350,10 +380,36 @@ fn item_keys(app: &mut App) {
     ];
     for (i, key) in keys.into_iter().enumerate() {
         if is_key_pressed(key) {
+            use_or_aim(app, i as u8);
+        }
+    }
+}
+
+/// Uses an item that needs no aiming, or takes it up to be aimed.
+///
+/// Reaching for one already in hand aims it at oneself, so a salve takes two
+/// presses of its own key and no click at all.
+fn use_or_aim(app: &mut App, slot: u8) {
+    let aim = app.aim_of(slot);
+    if aim == crate::render::Aim::Unit && app.pending_item == Some(slot) {
+        app.pending_item = None;
+        if let Some(target) = app.my_hero() {
             app.send_order(Order::UseItem {
-                slot: ItemSlot(i as u8),
-                target: OrderTarget::None,
+                slot: ItemSlot(slot),
+                target: OrderTarget::Unit { target },
             });
+        }
+        return;
+    }
+    match aim {
+        crate::render::Aim::Own => app.send_order(Order::UseItem {
+            slot: ItemSlot(slot),
+            target: OrderTarget::None,
+        }),
+        crate::render::Aim::Point | crate::render::Aim::Unit => {
+            app.attack_move_armed = false;
+            app.pending_ability = None;
+            app.pending_item = Some(slot);
         }
     }
 }

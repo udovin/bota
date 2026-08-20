@@ -53,6 +53,7 @@ pub fn hero_unit() -> UnitView {
         magic_resist: Fixed { raw: 16384 },
         radius: fixed(24),
         vision_radius: fixed(1800),
+        true_sight_radius: fixed(0),
         statuses: StatusFlags {
             bits: StatusFlags::SLOWED | StatusFlags::DOT,
         },
@@ -92,6 +93,7 @@ pub fn creep_unit(idx: u32) -> UnitView {
         magic_resist: Fixed { raw: 0 },
         radius: fixed(16),
         vision_radius: fixed(1100),
+        true_sight_radius: fixed(0),
         statuses: StatusFlags::default(),
         hero: None,
         owner: None,

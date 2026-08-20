@@ -132,3 +132,19 @@ fn arguments_parse_and_default() {
     assert_eq!(args(&["--what"]), None, "an unknown flag asks for usage");
     assert_eq!(args(&["--addr"]), None, "a missing value asks for usage");
 }
+
+#[test]
+fn every_item_drawing_rasterises_to_something_visible() {
+    for (index, art) in crate::icons::ART.iter().enumerate() {
+        let (w, h, bytes) = crate::icons::pixels(art).expect("the drawing is readable");
+        assert_eq!(w, 192, "item {index} is drawn to the frame");
+        assert_eq!(h, 128, "item {index} is drawn to the frame");
+        assert_eq!(bytes.len(), (w * h * 4) as usize);
+        let painted = bytes.chunks_exact(4).filter(|px| px[3] > 0).count();
+        assert!(
+            painted > (w * h / 2) as usize,
+            "item {index} covers its frame: {painted} of {}",
+            w * h
+        );
+    }
+}

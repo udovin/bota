@@ -8,9 +8,14 @@ use crate::sim::{facing_gap, facing_towards, find_path, grid_los, per_tick, rule
 impl World {
     /// Turns and steps everything that has somewhere to be.
     ///
-    /// What an entity is set on decides first: with its target in reach it
-    /// stands still and comes round to it, out of reach it walks at it. Only
-    /// with nothing to fight does it walk where it was told.
+    /// A channel roots outright, and a swing roots whoever is making it: from
+    /// the moment it begins until the recovery after it runs out, the entity
+    /// does not leave the spot it stands on, though it keeps coming round to
+    /// what it is swinging at.
+    ///
+    /// Past that, what an entity is set on decides first: with its target in
+    /// reach it stands still and comes round to it, out of reach it walks at
+    /// it. Only with nothing to fight does it walk where it was told.
     ///
     /// Turning comes first and costs the tick: an entity more than
     /// [`rules::TURN_TOLERANCE_BRADS`] off the way it wants to face stands
@@ -18,15 +23,49 @@ impl World {
     /// way; anything a player drives slides along it.
     pub fn walk_bodies(&mut self) {
         for entity in self.entities.iter().collect::<Vec<_>>() {
+            // Channelling roots outright: there is nothing to come round to.
+            if self.is_channelling(entity) {
+                continue;
+            }
+            // Mid-swing it comes round to what the swing was begun against;
+            // recovering from one, to whatever it is set on now.
+            let (rooted, face) = match self.attacking.get(entity).copied() {
+                Some(state) if state.windup.is_some() => {
+                    (true, state.windup.map(|windup| windup.target))
+                }
+                Some(state) if state.recovering > 0 => (true, self.target_of(entity)),
+                _ => (false, None),
+            };
+            if rooted {
+                if let Some(at) = face.and_then(|on| self.transform.get(on)).map(|t| t.pos) {
+                    self.turn_to(entity, at);
+                }
+                continue;
+            }
             // What it is set on comes before where it was told to go: in
             // reach it stands and comes round, out of reach it closes.
-            let on_target = self
-                .target_of(entity)
-                .filter(|on| self.alive(*on))
-                .and_then(|on| {
-                    let at = self.transform.get(on)?.pos;
-                    Some((at, self.in_reach(entity, on)))
-                });
+            //
+            // An attack order at something it cannot strike still walks it
+            // there, and right up to it: reach is only worth stopping at when
+            // there is something to do from reach.
+            let ordered_at = match self.orders.get(entity).map(|o| o.current) {
+                Some(UnitOrder::Attack { target, .. }) => Some(target),
+                _ => None,
+            };
+            let chosen = self.target_of(entity).filter(|on| self.alive(*on));
+            let ordered = ordered_at.filter(|on| self.alive(*on));
+            let on_target = match (chosen, ordered) {
+                // Something it may strike: it closes only to its reach and
+                // stops there.
+                (Some(on), _) => self
+                    .transform
+                    .get(on)
+                    .map(|at| (at.pos, self.in_reach(entity, on))),
+                // Something it may not: reach means nothing, so it walks right
+                // up until the bodies touch.
+                (None, Some(on)) => self.transform.get(on).map(|at| (at.pos, false)),
+                (None, None) => None,
+            };
             let holding = matches!(
                 self.orders.get(entity).map(|o| o.current),
                 Some(UnitOrder::Hold)
@@ -56,12 +95,7 @@ impl World {
                 continue;
             }
             if facing_only {
-                let wanted = facing_towards(from, dest);
-                if let Some(stats) = self.stats.get(entity).copied()
-                    && let Some(transform) = self.transform.get_mut(entity)
-                {
-                    transform.facing = turn_towards(transform.facing, wanted, stats.turn_rate);
-                }
+                self.turn_to(entity, dest);
                 continue;
             }
             let waypoint = self.next_corner(entity, from, dest);
@@ -100,6 +134,23 @@ impl World {
                 transform.facing = facing;
                 transform.pos = next;
             }
+        }
+    }
+
+    /// Comes round towards a spot without leaving the one it stands on.
+    fn turn_to(&mut self, entity: Entity, dest: Vec2) {
+        let (Some(from), Some(rate)) = (
+            self.transform.get(entity).map(|t| t.pos),
+            self.stats.get(entity).map(|stats| stats.turn_rate),
+        ) else {
+            return;
+        };
+        if from == dest {
+            return;
+        }
+        let wanted = facing_towards(from, dest);
+        if let Some(transform) = self.transform.get_mut(entity) {
+            transform.facing = turn_towards(transform.facing, wanted, rate);
         }
     }
 

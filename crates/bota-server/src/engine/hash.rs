@@ -5,7 +5,7 @@
 
 use bota_proto::{Angle, Fixed, Team, UnitKind, Vec2};
 
-use crate::engine::{Entity, Target, World};
+use crate::engine::{Entity, Inventory, StatusKind, Target, World};
 
 /// FNV-1a over the state a tick depends on.
 pub struct Fnv {
@@ -147,10 +147,17 @@ impl World {
             }
             if let Some(statuses) = self.statuses.get(entity) {
                 for status in statuses.0.iter() {
-                    fnv.u8(status.kind as u8);
+                    hash_status_kind(&mut fnv, status.kind);
                     fnv.u32(status.ticks_left);
-                    fnv.i32(status.magnitude);
                 }
+            }
+            if let Some(bag) = self.inventory.get(entity) {
+                hash_bag(&mut fnv, bag);
+            }
+            if let Some(going) = self.teleport.get(entity) {
+                fnv.u32(going.ticks_left);
+                fnv.vec2(going.to);
+                fnv.u32(going.slot as u32);
             }
         }
         for seat in self.seats.iter() {
@@ -163,7 +170,52 @@ impl World {
             fnv.u32(u32::from(seat.deaths));
             fnv.u32(u32::from(seat.last_hits));
             fnv.u32(u32::from(seat.denies));
+            hash_bag(&mut fnv, &seat.stash);
         }
         fnv.done()
+    }
+}
+
+/// One effect kind and everything it carries.
+fn hash_status_kind(fnv: &mut Fnv, kind: StatusKind) {
+    match kind {
+        StatusKind::Haste { pct } => {
+            fnv.u8(0);
+            fnv.i32(pct);
+        }
+        StatusKind::Mending { per_tick } => {
+            fnv.u8(1);
+            fnv.i32(per_tick);
+        }
+        StatusKind::Clarity { per_tick } => {
+            fnv.u8(2);
+            fnv.i32(per_tick);
+        }
+        StatusKind::Fountain {
+            hp_per_tick,
+            mana_per_tick,
+        } => {
+            fnv.u8(3);
+            fnv.i32(hp_per_tick);
+            fnv.i32(mana_per_tick);
+        }
+    }
+}
+
+/// Every slot of a bag, empty ones counted so slots keep their numbers.
+fn hash_bag(fnv: &mut Fnv, bag: &Inventory) {
+    for slot in bag.slots.iter() {
+        match slot {
+            None => fnv.u8(0),
+            Some(stack) => {
+                fnv.u8(1);
+                fnv.u32(u32::from(stack.id.0));
+                fnv.u8(stack.charges);
+                fnv.u32(stack.cooldown);
+                fnv.u32(stack.mute);
+                fnv.u32(stack.bought_tick);
+                fnv.u8(u8::from(stack.touched));
+            }
+        }
     }
 }

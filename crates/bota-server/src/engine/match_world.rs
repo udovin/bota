@@ -4,10 +4,10 @@
 //! been carried over answers for real; the rest is named here so the loop can
 //! run, and says plainly that it does nothing yet.
 
-use bota_proto::{MatchStats, Order, RejectReason, SlotId, SlotStats, Team, Vec2};
+use bota_proto::{MatchStats, Order, RejectReason, SlotId, SlotStats, Team};
 
-use crate::engine::{Entity, Orders, PendingCast, Seat, UnitOrder, World};
-use crate::sim::{Command, Event, MatchConfig, MatchRng, fountain_pos, map_of, rules};
+use crate::engine::{Entity, PendingCast, Seat, UnitOrder, World};
+use crate::sim::{Command, Event, MatchConfig, MatchRng, hero_spawn_pos, map_of, rules};
 
 impl World {
     /// A world at tick zero for a match: the map standing, a seat per player,
@@ -19,7 +19,7 @@ impl World {
         let mut world = World::on_map(map);
         world.rng = rng;
         for pick in &cfg.picks {
-            let at = fountain_pos(map, pick.team);
+            let at = hero_spawn_pos(map, pick.team);
             let hero = world.spawn_hero(pick.team, at, pick.slot, pick.hero);
             let mut seat = Seat::new(
                 pick.slot,
@@ -56,6 +56,15 @@ impl World {
         else {
             return;
         };
+        // An order is an animation cancel: the recovery after a swing ends
+        // with it. Giving up a swing that has not landed is the attack
+        // cycle's own business.
+        if let Some(state) = self.attacking.get_mut(unit) {
+            state.recovering = 0;
+        }
+        // An order also takes a channelled teleport away, before whatever the
+        // order itself does gets a chance to start another.
+        self.teleport.remove(unit);
         let wanted = match cmd.order {
             Order::Move { pos } => UnitOrder::Move { pos },
             Order::AttackMove { pos } => UnitOrder::AttackMove { pos },
@@ -65,8 +74,7 @@ impl World {
                 let Some(mark) = self.of_wire(target) else {
                     return;
                 };
-                self.set_target(unit, mark);
-                self.rouse_creeps(unit, mark);
+                self.rouse_bystanders(unit, mark);
                 let at = self
                     .transform
                     .get(mark)
@@ -80,8 +88,8 @@ impl World {
                 self.order_cast(unit, PendingCast { slot, target });
                 return;
             }
-            Order::UseItem { slot, .. } => {
-                self.use_item(unit, usize::from(slot.0));
+            Order::UseItem { slot, target } => {
+                self.use_item(unit, usize::from(slot.0), target);
                 return;
             }
             Order::LevelUpAbility { slot } => {
@@ -89,47 +97,21 @@ impl World {
                 self.learn(unit, usize::from(slot.0), &mut events);
                 return;
             }
+            Order::MoveItem { from, to } => {
+                self.move_item(cmd.slot, usize::from(from.0), usize::from(to.0));
+                return;
+            }
+            Order::SellItem { slot: at } => {
+                self.sell_item(cmd.slot, usize::from(at.0));
+                return;
+            }
             Order::BuyItem { item } => {
                 let mut events = Vec::new();
                 self.buy(cmd.slot, item, &mut events);
                 return;
             }
-            _ => return,
         };
-        self.orders.insert(
-            unit,
-            Orders {
-                current: wanted,
-                cooldown: 0,
-            },
-        );
-    }
-
-    /// Wakes the lane creeps near an attack order onto whoever gave it.
-    ///
-    /// Ordering an attack at one of your own does not hand them the orderer:
-    /// they rank everything else first.
-    fn rouse_creeps(&mut self, orderer: Entity, mark: Entity) {
-        let own = self.team.get(orderer).copied() == self.team.get(mark).copied();
-        let at = self.transform.get(orderer).map_or(Vec2::ZERO, |t| t.pos);
-        for creep in self.entities.iter().collect::<Vec<_>>() {
-            if self.lane_ai.get(creep).is_none() || !self.hostile(creep, orderer) {
-                continue;
-            }
-            // A creep answers an order it could have seen: its own acquisition
-            // reaches the one who gave it.
-            let reach = self
-                .stats
-                .get(creep)
-                .map_or(bota_proto::Fixed::ZERO, |s| s.acquisition);
-            if self
-                .transform
-                .get(creep)
-                .is_some_and(|t| t.pos.within(at, reach))
-            {
-                self.provoke(creep, orderer, own);
-            }
-        }
+        self.set_order(unit, wanted);
     }
 
     /// The seat at a slot, if that slot is in the match.
@@ -140,7 +122,8 @@ impl World {
     /// Whether a seat may issue an order right now.
     ///
     /// A seat with no body standing may order nothing, and a target it cannot
-    /// see may as well not exist.
+    /// see may as well not exist. Everything else is allowed to be asked for,
+    /// whether or not it can be carried out.
     pub fn validate_order(&self, slot: SlotId, order: &Order) -> Result<(), RejectReason> {
         let Some(seat) = self.seats.iter().find(|s| s.slot == slot) else {
             return Err(RejectReason::HeroDead);
@@ -159,11 +142,10 @@ impl World {
                 if !self.can_see(seat.team, entity) {
                     return Err(RejectReason::UnknownTarget);
                 }
-                // One of your own is struck only as a deny, and only once it
-                // is worn down far enough.
-                if !self.may_attack_on_order(unit, entity) {
-                    return Err(RejectReason::WrongTargetKind);
-                }
+                // Pointing an attack at one of your own is an order like any
+                // other: what it cannot do is land, and that is settled when
+                // targets are chosen. Turning it down here would take the
+                // creeps' answer to it with it.
                 Ok(())
             }
             _ => Ok(()),

@@ -6,6 +6,7 @@
 
 mod camera;
 mod hud;
+mod icons;
 mod input;
 mod net;
 mod render;

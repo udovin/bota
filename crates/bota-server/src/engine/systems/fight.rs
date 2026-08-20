@@ -9,75 +9,10 @@ impl World {
     /// Each entity that can attack takes the best hostile in reach of its
     /// acquisition, and keeps it while it lives and stays in range.
     ///
-    /// What is taken on depends on the order in hand: one told to walk
-    /// somewhere or to stand takes on nothing, one told to attack takes on
-    /// that and nothing else, and one left idle, holding, or walking to attack
-    /// looks for the best thing in reach of its acquisition.
-    ///
-    /// A lane creep is left out: it has a mind of its own, which runs first.
-    pub fn acquire_targets(&mut self) {
-        for entity in self.entities.iter().collect::<Vec<_>>() {
-            if self.attacking.get(entity).is_none() || self.lane_ai.get(entity).is_some() {
-                continue;
-            }
-            // The order decides whether anything is taken on at all.
-            match self.orders.get(entity).map(|o| o.current) {
-                // Named outright, and held however far it runs.
-                Some(crate::engine::UnitOrder::Attack { target, .. }) => {
-                    if self.may_attack_on_order(entity, target) {
-                        self.set_target(entity, target);
-                    } else {
-                        self.target.remove(entity);
-                    }
-                    continue;
-                }
-                // Told to walk somewhere, it walks; told to stand, it
-                // stands. Whatever it passes, or whatever passes it, is
-                // nothing to it either way.
-                Some(crate::engine::UnitOrder::Move { .. } | crate::engine::UnitOrder::Stand) => {
-                    self.target.remove(entity);
-                    continue;
-                }
-                _ => {}
-            }
-            if let Some(held) = self.target_of(entity)
-                && self.alive(held)
-                && self.within_acquisition(entity, held)
-            {
-                continue;
-            }
-            let range = self
-                .stats
-                .get(entity)
-                .map_or(Fixed::ZERO, |s| s.acquisition);
-            let order = self.priority_of(entity);
-            match self.acquire(entity, range, order) {
-                Some(found) => {
-                    self.set_target(entity, found);
-                }
-                None => {
-                    self.target.remove(entity);
-                }
-            }
-        }
-    }
-
     /// Whether an entity is still standing.
     pub fn alive(&self, entity: Entity) -> bool {
         self.entities.contains(entity)
             && self.health.get(entity).is_some_and(|h| h.hp > Fixed::ZERO)
-    }
-
-    /// Whether a held target is still inside acquisition range.
-    fn within_acquisition(&self, seeker: Entity, target: Entity) -> bool {
-        let (Some(at), Some(their_at), Some(stats)) = (
-            self.transform.get(seeker),
-            self.transform.get(target),
-            self.stats.get(seeker),
-        ) else {
-            return false;
-        };
-        at.pos.within(their_at.pos, stats.acquisition)
     }
 
     /// Whether an attacker reaches its target, edge to edge.

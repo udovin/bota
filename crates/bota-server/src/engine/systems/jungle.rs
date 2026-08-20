@@ -2,7 +2,7 @@
 
 use bota_proto::{Team, Vec2};
 
-use crate::engine::{CampHome, NeutralAi, Orders, UnitOrder, Upgrades, World, rosters_of};
+use crate::engine::{CampHome, NeutralAi, UnitOrder, Upgrades, World, rosters_of};
 use crate::sim::{Purpose, rules};
 
 impl World {
@@ -106,22 +106,9 @@ impl World {
                 if at.within(home.home, back) {
                     ai.going_home = false;
                     ai.leash_left = ai.next_window;
-                    self.orders.insert(
-                        entity,
-                        Orders {
-                            current: UnitOrder::Idle,
-                            cooldown: 0,
-                        },
-                    );
+                    self.set_order(entity, UnitOrder::Idle);
                 } else {
-                    self.target.remove(entity);
-                    self.orders.insert(
-                        entity,
-                        Orders {
-                            current: UnitOrder::Move { pos: home.home },
-                            cooldown: 0,
-                        },
-                    );
+                    self.set_order(entity, UnitOrder::Move { pos: home.home });
                 }
                 self.neutral_ai.insert(entity, ai);
                 continue;
@@ -134,7 +121,6 @@ impl World {
                     ai.going_home = true;
                     ai.reaggro_block = rules::NEUTRAL_REAGGRO_BLOCK;
                     ai.next_window = rules::NEUTRAL_SHORT_WINDOW;
-                    self.target.remove(entity);
                 }
             }
             if !ai.going_home
@@ -144,13 +130,7 @@ impl World {
                 let Some(their_at) = self.transform.get(target).map(|t| t.pos) else {
                     continue;
                 };
-                self.orders.insert(
-                    entity,
-                    Orders {
-                        current: UnitOrder::AttackMove { pos: their_at },
-                        cooldown: 0,
-                    },
-                );
+                self.set_order(entity, UnitOrder::AttackMove { pos: their_at });
             }
             self.neutral_ai.insert(entity, ai);
         }

@@ -8,6 +8,7 @@
 
 use bota_proto::{Fixed, UnitKind};
 
+use crate::engine::{Aura, StatusKind};
 use crate::sim::rules;
 
 /// What an entity gains for each step of whatever raises it: a level past the
@@ -66,6 +67,11 @@ pub struct UnitDef {
     pub turn_rate: u16,
     /// How far it sees, in world units.
     pub vision: i32,
+    /// How far it reveals what hides, in world units. Zero for whatever gives
+    /// no true sight.
+    pub true_sight: i32,
+    /// Whether the other side sees it only through true sight.
+    pub hides: bool,
     /// The circle it occupies, in world units.
     pub radius: i32,
     /// Whether damage passes it by.
@@ -80,6 +86,8 @@ pub struct UnitDef {
     pub per_level: Growth,
     /// What each upgrade interval adds.
     pub per_upgrade: Growth,
+    /// What it hands out to its own side for standing near it.
+    pub auras: &'static [Aura],
 }
 
 /// No gain at all.
@@ -111,6 +119,8 @@ const NOTHING: UnitDef = UnitDef {
     move_speed: 0,
     turn_rate: 0,
     vision: 0,
+    true_sight: 0,
+    hides: false,
     radius: 0,
     invulnerable: false,
     ancient: false,
@@ -118,6 +128,7 @@ const NOTHING: UnitDef = UnitDef {
     bounty_xp: 0,
     per_level: NO_GROWTH,
     per_upgrade: NO_GROWTH,
+    auras: &[],
 };
 
 /// Which kind of unit an entity is. Points into the table, never a copy.
@@ -259,8 +270,20 @@ pub const ANCIENT: UnitDef = UnitDef {
 };
 
 /// A fountain.
+/// What a fountain mends on its own side standing in it.
+const FOUNTAIN_AURAS: [Aura; 1] = [Aura {
+    kind: StatusKind::Fountain {
+        hp_per_tick: rules::FOUNTAIN_HEAL_HP_PER_TICK * 100,
+        mana_per_tick: rules::FOUNTAIN_HEAL_MANA_PER_TICK * 100,
+    },
+    radius: rules::FOUNTAIN_HEAL_RADIUS,
+    ticks: rules::TICKS_PER_SECOND,
+}];
+
 pub const FOUNTAIN: UnitDef = UnitDef {
     kind: UnitKind::Fountain,
+    max_hp: 1,
+    auras: &FOUNTAIN_AURAS,
     damage: rules::FOUNTAIN_ATTACK_DAMAGE,
     attack_range: rules::FOUNTAIN_ATTACK_RANGE,
     acquisition: rules::FOUNTAIN_ATTACK_RANGE,
@@ -273,10 +296,30 @@ pub const FOUNTAIN: UnitDef = UnitDef {
     ..NOTHING
 };
 
+/// An observer ward: it sees far and the other side cannot see it.
+pub const OBSERVER_WARD: UnitDef = UnitDef {
+    kind: UnitKind::Ward,
+    max_hp: 200,
+    vision: 1600,
+    hides: true,
+    ..NOTHING
+};
+
+/// A sentry ward: it sees nothing of itself, and what it gives is true sight.
+pub const SENTRY_WARD: UnitDef = UnitDef {
+    kind: UnitKind::Ward,
+    max_hp: 200,
+    vision: 0,
+    true_sight: 850,
+    hides: true,
+    ..NOTHING
+};
+
 /// A lane tower of one tier.
 const fn tower_of(index: usize) -> UnitDef {
     UnitDef {
         kind: UnitKind::Tower,
+        true_sight: rules::TOWER_ATTACK_RANGE,
         max_hp: rules::TOWER_TIER_HP[index],
         damage: rules::TOWER_TIER_DAMAGE[index],
         attack_range: rules::TOWER_ATTACK_RANGE,
@@ -324,5 +367,16 @@ pub fn is_structure(kind: UnitKind) -> bool {
     matches!(
         kind,
         UnitKind::Tower | UnitKind::Ancient | UnitKind::Fountain
+    )
+}
+
+/// Whether a kind of unit is a lane creep: one of what a wave is made of.
+pub fn is_lane_creep(kind: UnitKind) -> bool {
+    matches!(
+        kind,
+        UnitKind::CreepMelee
+            | UnitKind::CreepFlagbearer
+            | UnitKind::CreepRanged
+            | UnitKind::CreepSiege
     )
 }
