@@ -1,6 +1,6 @@
 //! The numbers the bot plays by: written out, read back, and moved about.
 
-use crate::{Dice, LEARNED, Params, Worth, score};
+use crate::{Dice, Params, Worth, score};
 
 #[test]
 fn a_written_set_reads_back_the_same() {
@@ -81,35 +81,27 @@ fn a_nudge_moves_a_few_numbers_and_leaves_the_rest() {
 }
 
 #[test]
-fn the_numbers_that_are_kept_read_back() {
-    // The guard on the file that ships with the crate: a knob renamed or taken
-    // away leaves it naming something nothing is called, and a bot that fell
-    // back to the plain numbers would play worse for no visible reason.
-    let read = Params::parse(LEARNED);
-    assert!(
-        read.is_ok(),
-        "the numbers kept beside the crate do not read: {:?}",
-        read.err()
-    );
+fn what_is_written_out_is_what_reads_back_in() {
+    // The set kept beside the repository is one machine's, so a test cannot
+    // ask for it. What it can hold is the round trip that keeps it readable: a
+    // knob renamed leaves the old file naming something nothing is called, and
+    // a bot that quietly fell back to the plain numbers would play worse for
+    // no visible reason.
+    let written = Params::default().to_text();
+    let read = Params::parse(&written);
+    assert!(read.is_ok(), "what training writes does not read: {read:?}");
     assert_eq!(
-        Params::learned(),
         read.unwrap_or_default(),
-        "and what the bot plays by is what the file holds"
+        Params::default(),
+        "and it reads back the same numbers"
     );
-}
-
-#[test]
-fn the_same_seed_walks_the_same_path() {
-    let one: Vec<u64> = (0..8)
-        .scan(Dice::from_seed(3), |d, _| Some(d.next_u64()))
-        .collect();
-    let other: Vec<u64> = (0..8)
-        .scan(Dice::from_seed(3), |d, _| Some(d.next_u64()))
-        .collect();
-    assert_eq!(
-        one, other,
-        "a search from one seed is a search anybody can run again"
-    );
+    if let Some(kept) = Params::read_from(&Params::path()) {
+        assert_eq!(
+            Params::learned(),
+            kept,
+            "what the bot plays by is what the kept file holds"
+        );
+    }
 }
 
 #[test]

@@ -103,8 +103,19 @@ New external dependencies only after discussion. Allowed:
 | `serde` (derive) | `bota-proto` | message serialization |
 | `postcard` 1.1 | `bota-proto` | compact binary format |
 | `macroquad` | `bota-client` | rendering |
+| `resvg` | `bota-client` | rasterising the item art |
 | `rand_chacha` 0.10 | `bota-server` | PRNG |
-| `clap` | `bota-server` | command line arguments |
+| `clap` (derive) | every binary | command line arguments |
+| `candle-core` 0.11 | `bota-bot` | the network the second bot decides with |
+
+Every binary parses its arguments with `clap` and its derive. There is no bar low enough
+for a hand-rolled parser to be worth clearing: it costs a hundred lines, generates no
+`--help`, validates nothing, and quietly lets a flag apply to the wrong subcommand.
+
+`candle-core` is one dependency and a hundred and twenty-five transitive ones, in a crate
+that had one. It is worth it only while there is a network; every call to it lives in
+`bot/src/net/model.rs`, so dropping it back to a hand-written matrix multiply costs that
+file and nothing else.
 
 The requirement for any primitive that affects the simulation: **value-stability**,
 i.e. a guarantee of identical values across versions and platforms. Hence

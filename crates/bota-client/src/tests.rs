@@ -1,7 +1,8 @@
 //! Client logic that works without a window.
 
+use crate::Args;
 use crate::camera::Camera;
-use crate::parse_args;
+use clap::Parser;
 
 #[test]
 fn camera_transforms_round_trip() {
@@ -108,42 +109,47 @@ fn the_bottom_panel_stays_on_screen() {
 
 #[test]
 fn arguments_parse_and_default() {
-    let args = |list: &[&str]| parse_args(&list.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+    let args = |list: &[&str]| {
+        let mut whole = vec!["bota-client"];
+        whole.extend_from_slice(list);
+        Args::try_parse_from(whole)
+    };
     let defaults = args(&[]).expect("no arguments is fine");
     assert_eq!(defaults.addr, "127.0.0.1:4455");
+    assert_eq!(defaults.name, "player");
     assert!(!defaults.spectate);
     assert_eq!(defaults.replay, None);
 
-    let full = args(&[
-        "--addr",
-        "10.0.0.2:5000",
-        "--name",
-        "alice",
-        "--spectate",
-        "--replay",
-        "m.brp",
-    ])
-    .expect("all flags are known");
+    let full = args(&["--addr", "10.0.0.2:5000", "--name", "alice", "--spectate"])
+        .expect("all flags are known");
     assert_eq!(full.addr, "10.0.0.2:5000");
     assert_eq!(full.name, "alice");
     assert!(full.spectate);
-    assert_eq!(full.replay, Some(std::path::PathBuf::from("m.brp")));
 
-    assert_eq!(args(&["--what"]), None, "an unknown flag asks for usage");
-    assert_eq!(args(&["--addr"]), None, "a missing value asks for usage");
+    let watching = args(&["--replay", "m.brp"]).expect("a replay is a whole way to run");
+    assert_eq!(watching.replay, Some(std::path::PathBuf::from("m.brp")));
+
+    assert!(args(&["--what"]).is_err(), "an unknown flag is refused");
+    assert!(args(&["--addr"]).is_err(), "a missing value is refused");
+    assert!(
+        args(&["--replay", "m.brp", "--spectate"]).is_err(),
+        "a file to play and a match to watch are two different runs"
+    );
 }
 
 #[test]
 fn every_item_drawing_rasterises_to_something_visible() {
-    for (index, art) in crate::icons::ART.iter().enumerate() {
+    for face in crate::catalog::ITEMS {
+        let name = face.name;
+        let art = face.icon.expect("every item is drawn");
         let (w, h, bytes) = crate::icons::pixels(art).expect("the drawing is readable");
-        assert_eq!(w, 192, "item {index} is drawn to the frame");
-        assert_eq!(h, 128, "item {index} is drawn to the frame");
+        assert_eq!(w, 192, "{name} is drawn to the frame");
+        assert_eq!(h, 128, "{name} is drawn to the frame");
         assert_eq!(bytes.len(), (w * h * 4) as usize);
         let painted = bytes.chunks_exact(4).filter(|px| px[3] > 0).count();
         assert!(
             painted > (w * h / 2) as usize,
-            "item {index} covers its frame: {painted} of {}",
+            "{name} covers its frame: {painted} of {}",
             w * h
         );
     }
@@ -168,5 +174,93 @@ fn every_ability_box_has_a_key_to_press() {
             crate::render::ability_key(usize::from(slot)).is_some(),
             "slot {slot} has a key"
         );
+    }
+}
+
+#[test]
+fn every_catalog_entry_answers_to_its_own_id() {
+    for (index, face) in crate::catalog::ABILITIES.iter().enumerate() {
+        assert_eq!(
+            usize::from(face.id),
+            index,
+            "ability {} is in place",
+            face.name
+        );
+        assert_eq!(
+            crate::catalog::ability(face.id).map(|found| found.name),
+            Some(face.name)
+        );
+        assert!(face.max_level > 0, "{} can be levelled", face.name);
+    }
+    for (index, face) in crate::catalog::ITEMS.iter().enumerate() {
+        assert_eq!(
+            usize::from(face.id),
+            index,
+            "item {} is in place",
+            face.name
+        );
+        assert_eq!(
+            crate::catalog::item(face.id).map(|found| found.name),
+            Some(face.name)
+        );
+        assert!(face.cost > 0, "{} has a price", face.name);
+        assert!(
+            !face.at_a_tree || face.aim == crate::catalog::Aim::Point,
+            "{} is aimed at the ground to reach a tree",
+            face.name
+        );
+    }
+    for (index, face) in crate::catalog::EFFECTS.iter().enumerate() {
+        assert_eq!(
+            usize::from(face.id),
+            index,
+            "effect {} is in place",
+            face.name
+        );
+        assert_eq!(
+            crate::catalog::effect(face.id).map(|found| found.name),
+            Some(face.name)
+        );
+    }
+    for (index, face) in crate::catalog::HEROES.iter().enumerate() {
+        assert_eq!(
+            usize::from(face.id),
+            index,
+            "hero {} is in place",
+            face.name
+        );
+    }
+    assert_eq!(
+        crate::catalog::item(crate::catalog::TOWN_PORTAL_SCROLL).map(|face| face.name),
+        Some("TP"),
+        "the named scroll id is the scroll"
+    );
+}
+
+#[test]
+fn every_catalog_entry_has_something_to_say() {
+    for face in crate::catalog::ABILITIES {
+        assert!(
+            !face.name.is_empty() && !face.blurb.is_empty(),
+            "{}",
+            face.id
+        );
+    }
+    for face in crate::catalog::ITEMS {
+        assert!(
+            !face.name.is_empty() && !face.blurb.is_empty() && !face.stats.is_empty(),
+            "{}",
+            face.id
+        );
+    }
+    for face in crate::catalog::EFFECTS {
+        assert!(
+            !face.name.is_empty() && !face.blurb.is_empty(),
+            "{}",
+            face.id
+        );
+    }
+    for face in crate::catalog::HEROES {
+        assert!(!face.name.is_empty(), "{}", face.id);
     }
 }

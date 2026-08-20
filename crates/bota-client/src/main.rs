@@ -5,6 +5,7 @@
 //! depend on.
 
 mod camera;
+mod catalog;
 mod hud;
 mod icons;
 mod input;
@@ -19,44 +20,29 @@ mod tests;
 use std::path::PathBuf;
 
 use bota_proto::{ClientMsg, Role};
+use clap::Parser;
 use macroquad::prelude::{Conf, next_frame};
 
 use crate::net::Net;
 use crate::replay_play::ReplayPlayer;
 use crate::state::{App, Source};
 
-/// What the command line asked for.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// bota client: rendering, input, spectating and replays.
+#[derive(Parser, Clone, Debug, PartialEq, Eq)]
+#[command(version, about, long_about = None)]
 pub struct Args {
-    /// Server address to connect to.
+    /// Where the server listens.
+    #[arg(long, default_value = "127.0.0.1:4455")]
     pub addr: String,
-    /// Display name for the lobby.
+    /// What the lobby shows.
+    #[arg(long, default_value = "player")]
     pub name: String,
     /// Watch instead of playing.
+    #[arg(long)]
     pub spectate: bool,
     /// Play this file instead of connecting anywhere.
+    #[arg(long, value_name = "FILE", conflicts_with_all = ["addr", "spectate"])]
     pub replay: Option<PathBuf>,
-}
-
-/// Parses arguments; `None` asks for the usage text.
-pub fn parse_args(args: &[String]) -> Option<Args> {
-    let mut parsed = Args {
-        addr: "127.0.0.1:4455".to_string(),
-        name: "player".to_string(),
-        spectate: false,
-        replay: None,
-    };
-    let mut it = args.iter();
-    while let Some(arg) = it.next() {
-        match arg.as_str() {
-            "--addr" => parsed.addr = it.next()?.clone(),
-            "--name" => parsed.name = it.next()?.clone(),
-            "--spectate" => parsed.spectate = true,
-            "--replay" => parsed.replay = Some(PathBuf::from(it.next()?)),
-            _ => return None,
-        }
-    }
-    Some(parsed)
 }
 
 fn conf() -> Conf {
@@ -70,13 +56,7 @@ fn conf() -> Conf {
 
 #[macroquad::main(conf)]
 async fn main() {
-    let cli: Vec<String> = std::env::args().skip(1).collect();
-    let Some(args) = parse_args(&cli) else {
-        eprintln!(
-            "usage: bota-client [--addr HOST:PORT] [--name NAME] [--spectate] [--replay FILE]"
-        );
-        return;
-    };
+    let args = Args::parse();
     let mut app = match build_app(&args) {
         Ok(app) => app,
         Err(err) => {

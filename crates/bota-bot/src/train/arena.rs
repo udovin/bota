@@ -15,7 +15,7 @@ use std::thread;
 
 use bota_proto::HeroId;
 
-use crate::{Brain, Link, Outcome, Params, play_on};
+use crate::{Bot, Brain, Link, Outcome, Params, play_on};
 
 /// How to start a server for one bout.
 #[derive(Clone, Debug)]
@@ -131,21 +131,39 @@ pub fn bout(
     one: Params,
     other: Params,
 ) -> std::io::Result<(Outcome, Outcome)> {
+    let mut first = Brain::with(one);
+    let mut second = Brain::with(other);
+    bout_between(ground, seed, &mut first, &mut second)
+}
+
+/// The same, between any two bots at all.
+///
+/// The bots are borrowed rather than taken, so whatever they gathered during
+/// the match is still there to read afterwards. Both seats are joined before
+/// either plays: seats go out in the order the server sees connections arrive,
+/// and which side a bot plays has to be the caller's decision rather than the
+/// scheduler's.
+pub fn bout_between<A, B>(
+    ground: &Ground,
+    seed: u64,
+    one: &mut A,
+    other: &mut B,
+) -> std::io::Result<(Outcome, Outcome)>
+where
+    A: Bot + Send,
+    B: Bot + Send,
+{
     let yard = open_the_yard(ground, seed)?;
-    // Seats go out in the order the server sees the connections arrive, and
-    // joining waits for the answer, so the first set here takes the first seat
-    // and nothing about the machine can change that.
     let (first, first_seat) = Link::join(&yard.addr, "one", ground.hero)?;
     let (second, second_seat) = Link::join(&yard.addr, "other", ground.hero)?;
     let ticks = ground.ticks;
-    let ours = thread::spawn(move || {
-        let mut brain = Brain::with(one);
-        play_on(&mut brain, first, first_seat, Some(ticks))
+    let played = thread::scope(|scope| {
+        let ours = scope.spawn(|| play_on(one, first, first_seat, Some(ticks)));
+        let mine = play_on(other, second, second_seat, Some(ticks));
+        let yours = ours
+            .join()
+            .unwrap_or_else(|_| Err(std::io::Error::other("a seat gave up")));
+        (yours, mine)
     });
-    let mut theirs = Brain::with(other);
-    let mine = play_on(&mut theirs, second, second_seat, Some(ticks));
-    let yours = ours
-        .join()
-        .map_err(|_| std::io::Error::other("a seat gave up"))?;
-    Ok((yours?, mine?))
+    Ok((played.0?, played.1?))
 }

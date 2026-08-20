@@ -1,2 +1,4 @@
 /target/
 /training/
+/params.txt
+/weights.safetensors

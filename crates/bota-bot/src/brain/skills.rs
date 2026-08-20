@@ -127,25 +127,37 @@ fn ready(sight: &Sight, at: usize, params: &Params) -> bool {
 /// The list is walked in slot order and the first that answers wins, so what
 /// the hero carries decides the order, not the policy.
 pub fn cast(sight: &Sight, params: &Params, rot_burns: bool) -> Option<Want> {
-    for at in 0..sight.me.abilities.len() {
-        if !ready(sight, at, params) {
-            continue;
-        }
-        let ability = sight.me.abilities[at];
-        let slot = AbilitySlot(at as u8);
-        let aimed = match ability.id.0 {
-            FRENZY => at_myself(sight, params),
-            BOUNCE | DISMEMBER => at_a_hero(sight, params),
-            VOLLEY => at_a_crowd(sight, params),
-            MEAT_HOOK => at_where_one_is_going(sight, params),
-            ROT => rot_toggle(sight, params, rot_burns),
-            _ => None,
-        };
-        if let Some(at) = aimed {
-            return Some(Want::Cast { slot, at });
-        }
+    (0..sight.me.abilities.len()).find_map(|at| aimed_cast(sight, at, params, Some(rot_burns)))
+}
+
+/// The cast one slot would make, if it is worth making.
+///
+/// Whether the rot is burning is something only the bot that has been toggling
+/// it knows. Left unsaid, the toggle is offered either way: what it would do
+/// is then for whoever is choosing to work out.
+pub fn aimed_cast(
+    sight: &Sight,
+    at: usize,
+    params: &Params,
+    rot_burns: Option<bool>,
+) -> Option<Want> {
+    if !ready(sight, at, params) {
+        return None;
     }
-    None
+    let ability = sight.me.abilities.get(at)?;
+    let slot = AbilitySlot(at as u8);
+    let aimed = match ability.id.0 {
+        FRENZY => at_myself(sight, params),
+        BOUNCE | DISMEMBER => at_a_hero(sight, params),
+        VOLLEY => at_a_crowd(sight, params),
+        MEAT_HOOK => at_where_one_is_going(sight, params),
+        ROT => match rot_burns {
+            Some(burning) => rot_toggle(sight, params, burning),
+            None => Some(OrderTarget::None),
+        },
+        _ => None,
+    };
+    aimed.map(|at| Want::Cast { slot, at })
 }
 
 /// Worth it while there is an enemy hero near enough to matter.

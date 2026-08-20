@@ -743,26 +743,29 @@ the arrow's speed, what an ability reaches) are tuned the same way as the number
 for taste. `Params` is `f32` throughout: the bot is allowed float, and uniform fields are
 what let a search treat the set as a vector without a case per field.
 
-`crates/bota-bot/params.txt` is where a trained set lives and the one thing training
-writes. It is committed, and it is **baked into the binary** with `include_str!`: a bot
-that had to find a file beside itself would play differently depending on where it was
-copied to. `Params::PATH` is the same file as a path, from `CARGO_MANIFEST_DIR`, and only
-training uses it — it reads that file to carry on from where the last run stopped and
-writes it when it improves. So a run that improves the numbers takes a rebuild before
-anything plays by them.
+A trained set lives in `params.txt` **beside the repository, not inside it**, and is not
+committed. Weights are the same, in `weights.safetensors`. Both are read when the bot runs
+rather than carried inside the binary, so a training run takes effect without a rebuild
+and a machine without one plays by the numbers the code was written with.
 
-Three sets, and the difference matters:
+They are not committed because of what they are. A set of numbers is what one machine's
+training run happened to arrive at over a few hours against one opponent — it is an
+artefact of a run, not a statement about the game, and the run that produced it is
+reproducible from its seed. Committing it would put a binary blob in review that nobody
+can read and everybody would have to merge.
+
+Two sets, and the difference matters:
 
 | | What it is | Who plays by it |
 |---|---|---|
-| `Params::default()` | the numbers the code was written with | the tests, and `--plain` |
-| `Params::learned()` | `params.txt` as baked in at build time | `Brain::new()`, and `play` |
-| the file at `Params::PATH` | `params.txt` as it is on disk now | `train`, as its starting point |
+| `Params::default()` | the numbers the code was written with | the tests, `--plain`, and any machine with no kept file |
+| `Params::learned()` | `params.txt` as it is on disk now | `Brain::new()`, `play`, and `train` as its starting point |
 
-The tests pin the policy against `default()`, never against the learned set: what a test
-measures is the decision, and a trained set is data that moves under it. A test does
-check that the committed file reads back, so a knob renamed or taken away fails the build
-rather than silently dropping the bot to the plain numbers.
+The tests pin the policy against `default()`, never against a trained set: what a test
+measures is the decision, and a trained set is data that moves under it. What a test does
+hold is the round trip — a knob renamed leaves an old file naming something nothing is
+called, and a bot that quietly fell back to the plain numbers would play worse for no
+visible reason.
 
 ### Self-play
 
@@ -820,6 +823,88 @@ through the fog would learn to.
 `Watched` writes a line a tick — where it stood, what it had, what was near, and the order
 it gave. It is what a match is read back from without watching it, and it is the shape a
 policy learned from recorded play would be trained on.
+
+### The second bot: a network that chooses
+
+There are two bots in the crate and they share everything but the choosing. The
+rule-driven one weighs its wants in a fixed order and takes the first that answers. The
+other draws up the same wants, scores each with a network, and takes the highest.
+
+Scoring candidates rather than emitting an action is what makes a network fit this game
+at all. An order is parameterised — walk *there*, hit *that one* — so a fixed row of N
+action classes cannot name the action space, and a head that regresses a position has to
+learn from scratch that positions off the lane are worthless. Scoring sidesteps both:
+which orders exist stays with the code that knows the rules, the number of them is free
+to change from tick to tick, and the same weights judge a swing at one creep and a swing
+at another.
+
+A row shown to the network is the tick and one candidate laid end to end — twenty-four
+numbers about the world, thirty-two about the candidate, every one of them brought to
+about the same size. Two hidden layers of a hundred and twenty-eight, one number out:
+some twenty-four thousand weights. The library is behind one file, `net/model.rs`, so
+what the bot decides does not depend on which tensor crate is underneath.
+
+### Teaching it, in two halves
+
+**Copying first.** A network started from nothing spends a very long time discovering
+that walking into a tower is bad, and every match costs seconds. It does not have to:
+there is already a bot that plays a respectable lane, and every order it gives is an
+answer to a question the network will be asked. So the first half is not a search at all.
+Play matches, write down the candidates and which was taken, and move the weights until
+the network takes the same one. Thirty-one thousand decisions and four passes — about a
+minute — gets it agreeing with the rules **87%** of the time, and playing level with them.
+Chance is one in twenty-four.
+
+How faithful the copy is turns out to decide everything. Thirty-one thousand decisions
+and four passes gets 87% agreement, and a network that agrees seven times in eight plays
+*worse* than what it copied — errors compound, and a lane is unforgiving. Sixty-two
+thousand and ten passes gets **92.6%**, and that one plays better than what it copied. The
+gap between those two runs is the difference between a second bot that is a curiosity and
+one that is worth keeping.
+
+That the candidate list holds what the rule bot chose is checked and reported rather than
+assumed: **98.7%** of its orders are candidates the network could have picked. Whatever is
+short of that is behaviour the network cannot be taught, and a number that drops after a
+change to either bot says so.
+
+**Practising second.** Copying cannot beat what it copied. The second half plays the
+network against **a frozen greedy copy of itself** on the same seed — one side wandering,
+one side taking what it already believes — and moves the weights towards the wandering
+choices of matches where wandering paid.
+
+The frozen side is the whole trick, and it was learned the hard way. The first cut scored
+each seat against the average of the generation, which sounds reasonable and is nearly
+noise: both seats play the same weights, so half of them come out above average whatever
+they did. Sharpening towards those halves sharpens randomness, and it showed — over five
+rounds the loss fell from 0.121 to 0.057 while the matches got *worse*, 44 down to 33. A
+policy agreeing with itself ever harder looks exactly like a policy learning. Against a
+side that made no unusual choices on the same seed, the difference is what the unusual
+choices were worth, which is the thing being asked.
+
+**Measure against something that does not move.** The second thing learned the hard way,
+and the same lesson the search over the numbers taught: a round's own matches are worth
+whatever their seeds were worth, so reading that number as progress is reading the luck of
+the draw. Every fifth round the network plays the rule-driven bot greedily, on the same
+handful of seeds every time, from both sides. That margin is the only number in a run that
+means the same thing in the first round and the last — and it is what showed that the 87%
+copy was twenty-odd points *behind* while its own matches looked fine. From the better
+copy, which starts level and a little ahead, the margin climbs: +17 at five rounds, +26 at
+ten. The share of wandering that pays falls as it goes, from three quarters towards a
+third, which is what a policy absorbing its own good accidents looks like.
+
+Two smaller things keep it honest. Each seed is played twice with the sides swapped, so
+nothing learned is a fact about which end of the map a seat began at. And a slice of what
+was copied is gone over again every round: a policy taught only from its own recent
+matches forgets the parts of the game those matches did not visit, and there is nothing
+in a lane to remind it.
+
+The weights are kept in `weights.safetensors` beside the repository, on the same rule as
+the numbers: read when the bot runs, not committed, not carried inside the binary. Asked to
+play by weights that are not there, the bot says so rather than playing something else.
+
+Credit inside a match is handed out bluntly — every decision shares the match's score.
+Nothing in the match says which tick won it, and inventing a signal that is not there
+would be worse than admitting there is none.
 
 A forward model (rolling out hypothetical futures for planning) is not supported and
 not needed now: the bot has no hidden state, so it could not roll forward with the

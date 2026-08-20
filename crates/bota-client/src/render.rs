@@ -59,10 +59,10 @@ fn draw_lobby(app: &App) {
     draw_text(hint, x, y, 24.0, GRAY);
     y += 40.0;
     if app.my_slot.is_some() {
-        let roster = HERO_NAMES
+        let roster = crate::catalog::HEROES
             .iter()
             .enumerate()
-            .map(|(id, name)| format!("{}: {name}", id + 1))
+            .map(|(id, hero)| format!("{}: {}", id + 1, hero.name))
             .collect::<Vec<_>>()
             .join("   ");
         draw_text(format!("pick a hero   {roster}"), x, y, 22.0, GOLD);
@@ -77,8 +77,8 @@ fn draw_lobby(app: &App) {
         };
         let hero = slot
             .hero
-            .and_then(|hero| HERO_NAMES.get(usize::from(hero.0)))
-            .map_or(String::new(), |name| format!(" as {name}"));
+            .and_then(|hero| crate::catalog::hero(hero.0))
+            .map_or(String::new(), |hero| format!(" as {}", hero.name));
         let line = format!("{:?} seat {}: {holder}{hero}", slot.team, slot.slot.0);
         let mine = app.my_slot == Some(slot.slot);
         let color = if mine { WHITE } else { team_color(slot.team) };
@@ -406,7 +406,7 @@ fn draw_teleport_spots(app: &App, view: &WorldView, to_screen: impl Fn(f32, f32)
     let Some(slot) = app.pending_item else {
         return;
     };
-    if app.item_id_at(slot).map(|id| id.0) != Some(ITEM_TOWN_PORTAL_SCROLL) {
+    if app.item_id_at(slot).map(|id| id.0) != Some(crate::catalog::TOWN_PORTAL_SCROLL) {
         return;
     }
     let Some(side) = app.my_team() else {
@@ -437,7 +437,7 @@ fn draw_tree_pick(app: &App, view: &WorldView, to_screen: impl Fn(f32, f32) -> (
     let Some(id) = app.item_id_at(slot) else {
         return;
     };
-    if !AIMED_AT_A_TREE.contains(&id.0) {
+    if !crate::catalog::item(id.0).is_some_and(|face| face.at_a_tree) {
         return;
     }
     let (mx, my) = mouse_position();
@@ -917,10 +917,7 @@ fn draw_effects(unit: &UnitView, rect: &crate::hud::UiRect, rate: u32) {
     for (e, r) in unit.effects.iter().zip(boxes) {
         draw_rectangle(r.x, r.y, r.w, r.h, Color::new(0.08, 0.10, 0.14, 0.95));
         draw_rectangle_lines(r.x, r.y, r.w, r.h, 1.0, Color::new(0.7, 0.6, 0.2, 1.0));
-        let name = EFFECT_NAMES
-            .get(usize::from(e.id.0))
-            .copied()
-            .unwrap_or("?");
+        let name = crate::catalog::effect(e.id.0).map_or("?", |face| face.name);
         let secs = e.ticks_left / rate + 1;
         draw_text(name, r.x + 4.0, r.y + 15.0, 13.0, WHITE);
         let label = format!("{secs}s");
@@ -997,49 +994,15 @@ const ABILITY_KEYS: [&str; 6] = ["Q", "W", "E", "R", "T", "G"];
 pub fn ability_key(slot: usize) -> Option<&'static str> {
     ABILITY_KEYS.get(slot).copied()
 }
-/// Display names of the Sylla kit, by ability id.
-const ABILITY_NAMES: [&str; 13] = [
-    "Crit", "Frenzy", "Bounce", "Volley", "Hook", "Rot", "Heap", "Dismem", "Burst", "Return",
-    "Stash", "Give", "Shield",
-];
-/// How far each ability may be levelled, by ability id.
-const ABILITY_CAPS: [u8; 13] = [4, 4, 4, 3, 4, 4, 4, 3, 1, 1, 1, 1, 1];
-/// Which abilities are ultimates, which wait on higher hero levels.
-const ABILITY_ULTS: [bool; 13] = [
-    false, false, false, true, false, false, false, true, false, false, false, false, false,
-];
-/// Display names of the heroes, by hero id.
-pub const HERO_NAMES: [&str; 2] = ["Sylla", "Pudge"];
-
-/// How each ability is aimed, by ability id.
-pub const ABILITY_AIM: [Aim; 13] = [
-    Aim::Own,
-    Aim::Own,
-    Aim::Unit,
-    Aim::Own,
-    Aim::Point,
-    Aim::Own,
-    Aim::Own,
-    Aim::Unit,
-    Aim::Own,
-    Aim::Own,
-    Aim::Own,
-    Aim::Own,
-    Aim::Own,
-];
-
-/// How far an ability may be levelled, whatever slot it sits in.
-pub fn ability_cap(id: u16) -> u8 {
-    ABILITY_CAPS.get(usize::from(id)).copied().unwrap_or(0)
-}
-
 /// Whether an ability could take a skill point at this hero level.
 fn learnable(id: u16, level: u8, hero_level: u8) -> bool {
-    if level >= ability_cap(id) {
+    let Some(face) = crate::catalog::ability(id) else {
+        return false;
+    };
+    if level >= face.max_level {
         return false;
     }
-    let ultimate = ABILITY_ULTS.get(usize::from(id)).copied().unwrap_or(false);
-    let floor = if ultimate {
+    let floor = if face.ultimate {
         [6, 8, 10]
             .get(usize::from(level))
             .copied()
@@ -1084,10 +1047,7 @@ fn draw_slot_boxes(
                     16.0,
                     WHITE,
                 );
-                let name = ABILITY_NAMES
-                    .get(usize::from(a.id.0))
-                    .copied()
-                    .unwrap_or("?");
+                let name = crate::catalog::ability(a.id.0).map_or("?", |face| face.name);
                 draw_text(name, cx + 2.0, cy + 28.0, 11.0, LIGHTGRAY);
                 if a.level > 0 && a.mana_cost > 0 {
                     draw_text(
@@ -1098,7 +1058,7 @@ fn draw_slot_boxes(
                         SKYBLUE,
                     );
                 }
-                for pip in 0..usize::from(ability_cap(a.id.0)) {
+                for pip in 0..usize::from(crate::catalog::ability_cap(a.id.0)) {
                     let lit = pip < usize::from(a.level);
                     let color = if lit { GOLD } else { DARKGRAY };
                     draw_rectangle(cx + 4.0 + pip as f32 * 8.0, cy + ch - 7.0, 6.0, 4.0, color);
@@ -1165,10 +1125,7 @@ fn draw_item_box(
         return;
     };
     if !crate::icons::draw_item_icon(item.id.0, r.x + 1.0, r.y + 1.0, r.w - 2.0, r.h - 2.0) {
-        let name = ITEM_NAMES
-            .get(usize::from(item.id.0))
-            .copied()
-            .unwrap_or("?");
+        let name = crate::catalog::item(item.id.0).map_or("?", |face| face.name);
         draw_text(name, r.x + 2.0, r.y + 16.0, 12.0, WHITE);
     }
     if item.charges > 0 {
@@ -1268,9 +1225,11 @@ fn draw_shop(app: &App, view: &WorldView) {
         );
     }
     let gold = p.gold.unwrap_or(0);
-    for (id, r) in crate::hud::shop_rows(&shop, ITEM_NAMES.len()) {
-        let idx = usize::from(id);
-        let affordable = gold >= ITEM_COSTS[idx];
+    for (id, r) in crate::hud::shop_rows(&shop, crate::catalog::ITEMS.len()) {
+        let Some(face) = crate::catalog::item(id) else {
+            continue;
+        };
+        let affordable = gold >= face.cost;
         let color = if affordable { WHITE } else { GRAY };
         let icon = r.h - 4.0;
         let drawn = crate::icons::draw_item_icon(id, r.x + 2.0, r.y + 2.0, icon * 1.5, icon);
@@ -1279,10 +1238,10 @@ fn draw_shop(app: &App, view: &WorldView) {
         } else {
             r.x + 4.0
         };
-        draw_text(ITEM_NAMES[idx], text, r.y + 16.0, 15.0, color);
-        draw_text(ITEM_STATS[idx], text + 62.0, r.y + 16.0, 13.0, DARKGRAY);
+        draw_text(face.name, text, r.y + 16.0, 15.0, color);
+        draw_text(face.stats, text + 62.0, r.y + 16.0, 13.0, DARKGRAY);
         draw_text(
-            format!("{}", ITEM_COSTS[idx]),
+            format!("{}", face.cost),
             r.x + r.w - 42.0,
             r.y + 16.0,
             14.0,
@@ -1299,102 +1258,11 @@ fn draw_shop(app: &App, view: &WorldView) {
     draw_text(hint, sell.x + 6.0, sell.y + 18.0, 13.0, GRAY);
 }
 
-/// How an item is aimed when it is used.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Aim {
-    /// At nothing: it works on whoever used it.
-    Own,
-    /// At a spot on the ground.
-    Point,
-    /// At a unit.
-    Unit,
-}
-
-/// How each catalog item is aimed, by item id.
-pub const ITEM_AIM: [Aim; 9] = [
-    Aim::Own,
-    Aim::Unit,
-    Aim::Unit,
-    Aim::Point,
-    Aim::Point,
-    Aim::Point,
-    Aim::Point,
-    Aim::Point,
-    Aim::Point,
-];
-
 /// How far from an allied building a scroll may land, in world units.
 pub const TELEPORT_RANGE: f32 = 600.0;
 
-/// Item id of the Town Portal Scroll.
-pub const ITEM_TOWN_PORTAL_SCROLL: u16 = 8;
-
-/// Item ids of what is aimed at a tree rather than at open ground.
-pub const AIMED_AT_A_TREE: [u16; 2] = [5, 7];
-
 /// The circle a tree stands in, in world units.
 pub const TREE_RADIUS: f32 = 48.0;
-
-/// Display names of the catalog, by item id.
-pub const ITEM_NAMES: [&str; 9] = [
-    "Boots", "Clarity", "Salve", "Branch", "Obs", "Quell", "Sentry", "Tango", "TP",
-];
-/// Prices of the catalog, by item id.
-pub const ITEM_COSTS: [i32; 9] = [500, 50, 110, 50, 100, 225, 50, 90, 100];
-/// One-line stats of the catalog, by item id.
-pub const ITEM_STATS: [&str; 9] = [
-    "+45 MS",
-    "150MP/25s",
-    "400HP/10s",
-    "+30HP+15MP",
-    "Vision",
-    "+18 creep",
-    "True sight",
-    "115HP x3",
-    "Teleport",
-];
-/// What each catalog item does, for the hover popup.
-const ITEM_TIPS: [&str; 9] = [
-    "+45 movement speed.",
-    "Consumable. Restores 150 mana over 25 s. Any hero's hit breaks it.",
-    "Consumable. Restores 400 health over 10 s. Any hero's hit breaks it.",
-    "+30 maximum health, +15 maximum mana, +1 attack damage.",
-    "Consumable. Stands a ward that sees 1600 and that the enemy cannot see.",
-    "+18 attack damage against creeps. Fells the tree you point at.",
-    "Consumable. Stands a ward that gives true sight, revealing enemy wards.",
-    "Three charges. Eats a tree to restore 115 health over 16 s.",
-    "Consumable. Channels, then carries you to an allied building.",
-];
-/// Names of the timed effects, by effect id.
-const EFFECT_NAMES: [&str; 7] = [
-    "Frenzy", "Mending", "Clarity", "Fountain", "Held", "Slowed", "Burning",
-];
-/// What each timed effect does, for the hover popup.
-const EFFECT_TIPS: [&str; 7] = [
-    "Attack speed increased.",
-    "Regenerating health.",
-    "Regenerating mana.",
-    "Regenerating health and mana for standing in the fountain.",
-    "Cannot move, attack or cast.",
-    "Movement speed reduced.",
-    "Losing health over time.",
-];
-/// What each ability does, for the hover popup.
-const ABILITY_TIPS: [&str; 13] = [
-    "Passive. 20/25/30/35% chance to strike for 175/200/225/250% damage.",
-    "No target. +20/28/36/44% attack speed for 6 s. 30/40/50/60 mana.",
-    "Enemy target, range 550. 70/140/210/280 magic damage, then jumps to the 2/4/6/8 nearest new enemies.",
-    "Ultimate, no target. An attack at 80/100/120% damage flies at every enemy within 700.",
-    "Point target, range 1100. Catches the first unit in its way, drags it back and deals 90/180/270/360 pure damage.",
-    "Toggle. Burns everything within 250 for 30/60/90/120 a second and slows it, its owner included, but never kills its owner.",
-    "Passive. Magic resistance, and health for every death near you.",
-    "Ultimate, enemy target, range 150. Holds it for 3 s, eating it and healing you.",
-    "No target. The courier flies 50% faster for 6 s. 120 s wait.",
-    "No target. The courier puts what it holds back in the stash, then goes home.",
-    "No target. The courier takes what waits in your stash and carries it to you.",
-    "No target. The courier carries what it holds to you, then goes home.",
-    "No target. Nothing gets through to the courier for 2 s. 200 s wait.",
-];
 
 /// The hover popup for whatever HUD element sits under the cursor.
 fn draw_tooltips(app: &App, view: &WorldView) {
@@ -1423,17 +1291,9 @@ fn draw_tooltips(app: &App, view: &WorldView) {
             if r.contains(mx, my)
                 && let Some(a) = u.abilities.get(usize::from(slot))
             {
-                let name = ABILITY_NAMES
-                    .get(usize::from(a.id.0))
-                    .copied()
-                    .unwrap_or("?");
-                let mut lines = vec![
-                    ABILITY_TIPS
-                        .get(usize::from(a.id.0))
-                        .copied()
-                        .unwrap_or("")
-                        .to_string(),
-                ];
+                let face = crate::catalog::ability(a.id.0);
+                let name = face.map_or("?", |face| face.name);
+                let mut lines = vec![face.map_or("", |face| face.blurb).to_string()];
                 if a.level == 0 {
                     lines.push("Not learned. Ctrl+key spends a point.".to_string());
                 }
@@ -1479,17 +1339,18 @@ fn draw_tooltips(app: &App, view: &WorldView) {
         }
         if app.shop_open {
             let shop = crate::hud::shop_panel(sw, sh);
-            for (id, r) in crate::hud::shop_rows(&shop, ITEM_NAMES.len()) {
-                if r.contains(mx, my) {
-                    let idx = usize::from(id);
+            for (id, r) in crate::hud::shop_rows(&shop, crate::catalog::ITEMS.len()) {
+                if r.contains(mx, my)
+                    && let Some(face) = crate::catalog::item(id)
+                {
                     let where_to = if app.at_home_shop() {
                         "Click to buy."
                     } else {
                         "Click to buy into the stash."
                     };
                     tip = Some((
-                        format!("{}  {} g", ITEM_NAMES[idx], ITEM_COSTS[idx]),
-                        vec![ITEM_TIPS[idx].to_string(), where_to.to_string()],
+                        format!("{}  {} g", face.name, face.cost),
+                        vec![face.blurb.to_string(), where_to.to_string()],
                     ));
                 }
             }
@@ -1499,11 +1360,11 @@ fn draw_tooltips(app: &App, view: &WorldView) {
         let boxes = crate::hud::effect_boxes(&panel, u.effects.len());
         for (e, r) in u.effects.iter().zip(boxes) {
             if r.contains(mx, my) {
-                let idx = usize::from(e.id.0);
+                let face = crate::catalog::effect(e.id.0);
                 tip = Some((
-                    EFFECT_NAMES.get(idx).copied().unwrap_or("?").to_string(),
+                    face.map_or("?", |face| face.name).to_string(),
                     vec![
-                        EFFECT_TIPS.get(idx).copied().unwrap_or("").to_string(),
+                        face.map_or("", |face| face.blurb).to_string(),
                         format!("{}s left.", e.ticks_left / rate + 1),
                     ],
                 ));
@@ -1517,9 +1378,9 @@ fn draw_tooltips(app: &App, view: &WorldView) {
 
 /// The popup lines of one owned item.
 fn item_tip(item: &bota_proto::ItemView, backpack: bool, rate: u32) -> (String, Vec<String>) {
-    let idx = usize::from(item.id.0);
-    let name = ITEM_NAMES.get(idx).copied().unwrap_or("?");
-    let mut lines = vec![ITEM_TIPS.get(idx).copied().unwrap_or("").to_string()];
+    let face = crate::catalog::item(item.id.0);
+    let name = face.map_or("?", |face| face.name);
+    let mut lines = vec![face.map_or("", |face| face.blurb).to_string()];
     if item.charges > 0 {
         lines.push(format!(
             "{} charge(s). Click it or press its number key to use.",

@@ -1,22 +1,9 @@
-//! The item art, turned from drawings into something the screen can take.
+//! The art, turned from drawings into something the screen can take.
 //!
 //! Each file draws its icon inside one fixed frame of a wider canvas; what is
 //! rasterised is that frame alone, once, the first time it is asked for.
 
 use macroquad::prelude::*;
-
-/// The nine drawings, in the order of the catalog.
-pub const ART: [&[u8]; 9] = [
-    include_bytes!("../assets/items/boots.svg"),
-    include_bytes!("../assets/items/clarity.svg"),
-    include_bytes!("../assets/items/healing_salve.svg"),
-    include_bytes!("../assets/items/iron_branch.svg"),
-    include_bytes!("../assets/items/observer_ward.svg"),
-    include_bytes!("../assets/items/quelling_blade.svg"),
-    include_bytes!("../assets/items/sentry_ward.svg"),
-    include_bytes!("../assets/items/tango.svg"),
-    include_bytes!("../assets/items/town_portal_scroll.svg"),
-];
 
 /// The frame the icon is drawn in, inside the canvas of the file.
 const FRAME: (f32, f32, f32, f32) = (220.0, 50.0, 240.0, 160.0);
@@ -24,26 +11,24 @@ const FRAME: (f32, f32, f32, f32) = (220.0, 50.0, 240.0, 160.0);
 /// How many pixels one unit of that frame is rasterised to.
 const SCALE: f32 = 0.8;
 
-/// The icon of one item, or nothing for an id the catalog does not hold.
+/// The texture of one drawing.
 ///
-/// The first call for an id draws it; every call after hands back the same
-/// texture.
-pub fn item_icon(id: u16) -> Option<Texture2D> {
+/// The first call for a drawing rasterises it; every call after hands back the
+/// same texture.
+pub fn icon(art: &'static [u8]) -> Option<Texture2D> {
     thread_local! {
-        static DRAWN: std::cell::RefCell<Vec<Option<Texture2D>>> =
+        static DRAWN: std::cell::RefCell<Vec<(usize, Option<Texture2D>)>> =
             const { std::cell::RefCell::new(Vec::new()) };
     }
-    let index = usize::from(id);
-    let art = ART.get(index)?;
+    let key = art.as_ptr() as usize;
     DRAWN.with(|slot| {
         let mut drawn = slot.borrow_mut();
-        if drawn.is_empty() {
-            drawn.resize(ART.len(), None);
+        if let Some((_, texture)) = drawn.iter().find(|(seen, _)| *seen == key) {
+            return texture.clone();
         }
-        if drawn[index].is_none() {
-            drawn[index] = rasterise(art);
-        }
-        drawn[index].clone()
+        let texture = rasterise(art);
+        drawn.push((key, texture.clone()));
+        texture
     })
 }
 
@@ -93,11 +78,14 @@ pub fn pixels(art: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
 
 /// Draws an item's icon to fill a box, or reports that there is none to draw.
 pub fn draw_item_icon(id: u16, x: f32, y: f32, w: f32, h: f32) -> bool {
-    let Some(icon) = item_icon(id) else {
+    let Some(texture) = crate::catalog::item(id)
+        .and_then(|face| face.icon)
+        .and_then(icon)
+    else {
         return false;
     };
     draw_texture_ex(
-        &icon,
+        &texture,
         x,
         y,
         WHITE,

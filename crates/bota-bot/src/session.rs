@@ -103,7 +103,7 @@ pub struct Outcome {
 /// In lockstep every tick is acknowledged: the server advances no further
 /// until each seat has, so a bot that stays quiet holds the whole match at the
 /// ack timeout.
-pub fn play<B: Bot>(bot: &mut B, seat: &Seat) -> std::io::Result<Outcome> {
+pub fn play<B: Bot + ?Sized>(bot: &mut B, seat: &Seat) -> std::io::Result<Outcome> {
     let (link, seated) = Link::join(&seat.addr, &seat.name, seat.hero)?;
     play_on(bot, link, seated, seat.limit)
 }
@@ -114,7 +114,7 @@ pub fn play<B: Bot>(bot: &mut B, seat: &Seat) -> std::io::Result<Outcome> {
 /// arrive, so anything that cares which side it plays joins first and plays
 /// after: joining is what settles it, and it has settled by the time this is
 /// called.
-pub fn play_on<B: Bot>(
+pub fn play_on<B: Bot + ?Sized>(
     bot: &mut B,
     mut link: Link,
     seated: Seated,

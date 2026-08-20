@@ -84,6 +84,11 @@ pub fn last_hit<'a>(sight: &Sight<'a>, params: &Params) -> Option<&'a UnitView> 
         .min_by(|one, other| order_by_hp(sight, one, other, params))
 }
 
+/// Whether one of its own is worn far enough down to be put out at all.
+pub fn deniable(creep: &UnitView, params: &Params) -> bool {
+    part(creep.hp, creep.max_hp) < params.deny_hp_part
+}
+
 /// One of its own that a swing would put out, if one would.
 ///
 /// Only a creep worn far enough down may be denied at all; below that the
@@ -91,7 +96,7 @@ pub fn last_hit<'a>(sight: &Sight<'a>, params: &Params) -> Option<&'a UnitView> 
 pub fn deny<'a>(sight: &Sight<'a>, params: &Params) -> Option<&'a UnitView> {
     sight
         .own_creeps()
-        .filter(|creep| part(creep.hp, creep.max_hp) < params.deny_hp_part)
+        .filter(|creep| deniable(creep, params))
         .filter(|creep| worth_walking(sight, creep, params))
         .filter(|creep| one_swing_takes_it(sight, creep, params))
         .min_by(|one, other| order_by_hp(sight, one, other, params))

@@ -138,6 +138,37 @@ fn still_at_it(told: Option<(u16, u32)>, errand: u16, now: u32, params: &Params)
     })
 }
 
+/// Every errand the courier could be given this instant.
+///
+/// Legality only: whether a trip is worth making, and whether the way is safe,
+/// are judgements, and a network choosing for itself makes its own.
+pub fn ready_errands(sight: &Sight, slot: SlotId) -> Vec<Want> {
+    let mut out = Vec::new();
+    let Some(courier) = mine(sight, slot) else {
+        return out;
+    };
+    let holding = carried(courier) > 0;
+    let waiting = waiting_in_stash(sight) > 0;
+    let mut errand = |which: u16| {
+        if let Some(slot) = ready(courier, which) {
+            out.push(Want::Errand {
+                courier: courier.id,
+                slot,
+            });
+        }
+    };
+    if holding {
+        errand(DELIVER);
+    }
+    if waiting && !holding {
+        errand(TAKE_STASH);
+    }
+    if holding || waiting {
+        errand(BURST);
+    }
+    out
+}
+
 /// Sending it home, for when there is nothing else to do with it.
 pub fn go_home(courier: &UnitView) -> Option<Want> {
     Some(Want::Errand {

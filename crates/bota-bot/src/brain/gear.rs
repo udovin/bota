@@ -203,6 +203,39 @@ pub fn refill(sight: &Sight, params: &Params) -> Option<Want> {
     })
 }
 
+/// Everything the bot carries that it could use this instant.
+///
+/// What is worth using is not decided here: the thresholds belong to whoever
+/// is choosing, and a network choosing for itself is shown the whole of what
+/// it holds.
+pub fn usable_items(sight: &Sight, trees: &[Vec2], params: &Params) -> Vec<Want> {
+    let mut out = Vec::new();
+    if under_effect(sight, MENDING) {
+        return out;
+    }
+    if let (Some(slot), Some(tree)) = (slot_of(sight.me, TANGO), nearest_tree(sight, trees, params))
+    {
+        out.push(Want::Use {
+            slot,
+            at: OrderTarget::Point { pos: tree },
+        });
+    }
+    if let Some(slot) = slot_of(sight.me, SALVE) {
+        out.push(Want::Use {
+            slot,
+            at: OrderTarget::None,
+        });
+    }
+    if let Some(slot) = slot_of(sight.me, CLARITY).filter(|_| !under_effect(sight, CLARITY_EFFECT))
+    {
+        out.push(Want::Use {
+            slot,
+            at: OrderTarget::None,
+        });
+    }
+    out
+}
+
 /// The nearest tree still standing that a tango would reach.
 pub fn nearest_tree(sight: &Sight, trees: &[Vec2], params: &Params) -> Option<Vec2> {
     trees

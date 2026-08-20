@@ -9,6 +9,7 @@
 mod brain;
 mod geom;
 mod link;
+mod net;
 mod params;
 mod session;
 mod trail;
@@ -17,6 +18,7 @@ mod train;
 pub use brain::*;
 pub use geom::*;
 pub use link::*;
+pub use net::*;
 pub use params::*;
 pub use session::*;
 pub use trail::*;

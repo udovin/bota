@@ -345,17 +345,26 @@ impl App {
     }
 
     /// How the ability in one of our slots is aimed.
-    pub fn ability_aim_of(&self, slot: u8) -> crate::render::Aim {
+    pub fn ability_aim_of(&self, slot: u8) -> crate::catalog::Aim {
         self.ability_id_at(slot)
-            .and_then(|id| crate::render::ABILITY_AIM.get(usize::from(id.0)).copied())
-            .unwrap_or(crate::render::Aim::Own)
+            .map_or(crate::catalog::Aim::Own, |id| {
+                crate::catalog::ability_aim(id.0)
+            })
+    }
+
+    /// Whether the ability in one of our slots works on its own.
+    pub fn ability_is_passive(&self, slot: u8) -> bool {
+        self.ability_id_at(slot)
+            .and_then(|id| crate::catalog::ability(id.0))
+            .is_some_and(|face| face.passive)
     }
 
     /// How the item in one of our slots is aimed.
-    pub fn aim_of(&self, slot: u8) -> crate::render::Aim {
+    pub fn aim_of(&self, slot: u8) -> crate::catalog::Aim {
         self.item_id_at(slot)
-            .and_then(|id| crate::render::ITEM_AIM.get(usize::from(id.0)).copied())
-            .unwrap_or(crate::render::Aim::Own)
+            .map_or(crate::catalog::Aim::Own, |id| {
+                crate::catalog::item_aim(id.0)
+            })
     }
 
     /// Whether one of our fifteen item slots holds an item right now.

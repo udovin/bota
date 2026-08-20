@@ -13,7 +13,7 @@ use bota_proto::{EventKind, MatchInfo, MatchStats, Order, SlotId, Team, UnitKind
 use crate::{Ask, Bot, is_wave_creep, span};
 
 /// A bot with everything it does written down as it does it.
-pub struct Watched<'a, B> {
+pub struct Watched<'a, B: ?Sized> {
     /// The bot itself.
     bot: &'a mut B,
     /// Where the record goes.
@@ -22,7 +22,7 @@ pub struct Watched<'a, B> {
     slot: Option<SlotId>,
 }
 
-impl<'a, B: Bot> Watched<'a, B> {
+impl<'a, B: Bot + ?Sized> Watched<'a, B> {
     /// Follows a bot, writing the record to a file.
     pub fn writing_to(bot: &'a mut B, path: &Path) -> std::io::Result<Watched<'a, B>> {
         let mut out = BufWriter::new(File::create(path)?);
@@ -39,7 +39,7 @@ impl<'a, B: Bot> Watched<'a, B> {
 pub const TRAIL_HEADING: &str =
     "# tick x y hp mana gold level last_hits denies deaths foes allies nearest order";
 
-impl<B: Bot> Bot for Watched<'_, B> {
+impl<B: Bot + ?Sized> Bot for Watched<'_, B> {
     fn seated(&mut self, slot: Option<SlotId>) {
         self.slot = slot;
         self.bot.seated(slot);
@@ -71,7 +71,7 @@ impl<B: Bot> Bot for Watched<'_, B> {
     }
 }
 
-impl<B: Bot> Watched<'_, B> {
+impl<B: Bot + ?Sized> Watched<'_, B> {
     /// Writes one line about one tick.
     fn note(&mut self, view: &WorldView, ask: Option<&Ask>) -> std::io::Result<()> {
         let Some(slot) = self.slot else {

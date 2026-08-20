@@ -10,6 +10,7 @@
 //! holds those as numbers like any other here, and they are tuned the same way.
 
 use std::fmt;
+use std::path::{Path, PathBuf};
 
 /// Declares the whole set once: the fields, their defaults, and the range a
 /// search may move each one in.
@@ -166,27 +167,30 @@ pub const KEPT_HEADING: &str =
 # an error.
 ";
 
-/// The numbers the last training run left behind, as they are kept on disk.
-///
-/// Baked in rather than read at runtime: a bot that has to find a file beside
-/// itself is a bot that plays differently depending on where it was copied to.
-pub const LEARNED: &str = include_str!("../params.txt");
-
 impl Params {
-    /// Where the learned set lives, so that training can write it back.
+    /// Where a trained set is kept: beside the repository, not inside it.
     ///
-    /// The path is the one this was built from, which is the source tree it
-    /// belongs to. A binary carried elsewhere still plays by [`LEARNED`]; only
-    /// writing wants a path.
-    pub const PATH: &'static str = concat!(env!("CARGO_MANIFEST_DIR"), "/params.txt");
+    /// Worked out from the tree this was built from. A set of numbers is what
+    /// one machine's training run happened to arrive at, so it is neither
+    /// committed nor carried inside the binary; a build without one plays by
+    /// the numbers the code was written with.
+    pub fn path() -> PathBuf {
+        beside_the_repository("params.txt")
+    }
 
-    /// What the last training run left behind.
+    /// What the last training run left, read from that file.
     ///
-    /// The set the bot plays by unless it is handed another. A file that will
-    /// not read gives the plain numbers back, and the test beside this makes
-    /// sure the one that is committed does read.
+    /// Read once and kept: this is asked for every time a bot is made, and
+    /// training makes thousands of them.
     pub fn learned() -> Params {
-        Params::parse(LEARNED).unwrap_or_default()
+        static KEPT: std::sync::OnceLock<Params> = std::sync::OnceLock::new();
+        *KEPT.get_or_init(|| Params::read_from(&Params::path()).unwrap_or_default())
+    }
+
+    /// The set a file holds, or nothing when it holds none that reads.
+    pub fn read_from(path: &Path) -> Option<Params> {
+        let text = std::fs::read_to_string(path).ok()?;
+        Params::parse(&text).ok()
     }
 
     /// How many numbers there are.
@@ -295,3 +299,16 @@ impl fmt::Display for ParamError {
 }
 
 impl std::error::Error for ParamError {}
+
+/// One of the files that sit beside the repository rather than inside it.
+///
+/// The tree this was built from, with the crate directories taken back off.
+/// Written out plainly so that the help text a binary prints names a path a
+/// person can read.
+pub fn beside_the_repository(named: &str) -> PathBuf {
+    let here = Path::new(env!("CARGO_MANIFEST_DIR"));
+    here.parent()
+        .and_then(Path::parent)
+        .unwrap_or(here)
+        .join(named)
+}

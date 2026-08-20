@@ -126,8 +126,7 @@ fn ui_clicks(app: &mut App) -> bool {
             let shop = crate::hud::shop_panel(sw, sh);
             if shop.contains(mx, my) {
                 if left {
-                    for (id, rect) in crate::hud::shop_rows(&shop, crate::render::ITEM_NAMES.len())
-                    {
+                    for (id, rect) in crate::hud::shop_rows(&shop, crate::catalog::ITEMS.len()) {
                         if rect.contains(mx, my) {
                             app.send_order(Order::BuyItem { item: ItemId(id) });
                         }
@@ -263,7 +262,7 @@ fn lobby_controls(app: &mut App) {
         for (id, key) in picks
             .into_iter()
             .enumerate()
-            .take(crate::render::HERO_NAMES.len())
+            .take(crate::catalog::HEROES.len())
         {
             if is_key_pressed(key) {
                 app.source.send(&ClientMsg::PickHero {
@@ -360,15 +359,15 @@ fn order_controls(app: &mut App) {
     {
         app.pending_item = None;
         let target = match app.aim_of(slot) {
-            crate::render::Aim::Point => Some(OrderTarget::Point { pos: ground }),
+            crate::catalog::Aim::Point => Some(OrderTarget::Point { pos: ground }),
             // One's own hero is a target like any other here: a salve is
             // drunk by clicking the one drinking it.
-            crate::render::Aim::Unit => app
+            crate::catalog::Aim::Unit => app
                 .view
                 .as_ref()
                 .and_then(|view| unit_under_cursor(view, wx, wy, None, true))
                 .map(|target| OrderTarget::Unit { target }),
-            crate::render::Aim::Own => Some(OrderTarget::None),
+            crate::catalog::Aim::Own => Some(OrderTarget::None),
         };
         if let Some(target) = target {
             app.send_order(Order::UseItem {
@@ -384,15 +383,15 @@ fn order_controls(app: &mut App) {
     {
         app.pending_ability = None;
         let target = match app.ability_aim_of(slot) {
-            crate::render::Aim::Point => Some(OrderTarget::Point { pos: ground }),
-            crate::render::Aim::Unit => {
+            crate::catalog::Aim::Point => Some(OrderTarget::Point { pos: ground }),
+            crate::catalog::Aim::Unit => {
                 let me = app.my_hero();
                 app.view
                     .as_ref()
                     .and_then(|view| unit_under_cursor(view, wx, wy, me, true))
                     .map(|target| OrderTarget::Unit { target })
             }
-            crate::render::Aim::Own => Some(OrderTarget::None),
+            crate::catalog::Aim::Own => Some(OrderTarget::None),
         };
         if let Some(target) = target {
             app.send_order(Order::CastAbility {
@@ -456,7 +455,7 @@ fn item_keys(app: &mut App) {
 /// presses of its own key and no click at all.
 fn use_or_aim(app: &mut App, slot: u8) {
     let aim = app.aim_of(slot);
-    if aim == crate::render::Aim::Unit && app.pending_item == Some(slot) {
+    if aim == crate::catalog::Aim::Unit && app.pending_item == Some(slot) {
         app.pending_item = None;
         if let Some(target) = app.my_hero() {
             app.send_order(Order::UseItem {
@@ -467,11 +466,11 @@ fn use_or_aim(app: &mut App, slot: u8) {
         return;
     }
     match aim {
-        crate::render::Aim::Own => app.send_order(Order::UseItem {
+        crate::catalog::Aim::Own => app.send_order(Order::UseItem {
             slot: ItemSlot(slot),
             target: OrderTarget::None,
         }),
-        crate::render::Aim::Point | crate::render::Aim::Unit => {
+        crate::catalog::Aim::Point | crate::catalog::Aim::Unit => {
             app.attack_move_armed = false;
             app.pending_ability = None;
             app.pending_item = Some(slot);
@@ -505,13 +504,15 @@ fn ability_keys(app: &mut App) {
             app.send_order(Order::LevelUpAbility {
                 slot: AbilitySlot(slot),
             });
+        } else if app.ability_is_passive(slot) {
+            // A passive works on its own; there is nothing to send.
         } else {
             match app.ability_aim_of(slot) {
-                crate::render::Aim::Own => app.send_order(Order::CastAbility {
+                crate::catalog::Aim::Own => app.send_order(Order::CastAbility {
                     slot: AbilitySlot(slot),
                     target: OrderTarget::None,
                 }),
-                crate::render::Aim::Point | crate::render::Aim::Unit => {
+                crate::catalog::Aim::Point | crate::catalog::Aim::Unit => {
                     app.attack_move_armed = false;
                     app.pending_item = None;
                     app.pending_ability = Some(slot);
