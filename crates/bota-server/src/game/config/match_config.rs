@@ -1,6 +1,6 @@
 //! Everything a match is created from.
 
-use bota_proto::{EventKind, MapId, MatchInfo, Order, Pick, SlotId, Team, TickMode};
+use bota_proto::{EntityId, EventKind, MapId, MatchInfo, Order, Pick, SlotId, Team, TickMode};
 
 use crate::game::MatchRng;
 
@@ -55,6 +55,8 @@ impl MatchConfig {
 pub struct Command {
     /// Which seat issued it.
     pub slot: SlotId,
+    /// Which unit it is for. Absent means that seat's own hero.
+    pub unit: Option<EntityId>,
     /// What it asks for.
     pub order: Order,
 }

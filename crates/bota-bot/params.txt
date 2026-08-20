@@ -1,0 +1,43 @@
+# The numbers this bot plays by, as the last training run left them.
+#
+# Written by `bota-bot train`, baked into the bot when it is built. A name left
+# out keeps the number the code was written with; a name nothing is called is
+# an error.
+swing_lead_ticks = 29.637676
+turn_lead_ticks = 13.004796
+missile_speed = 1604.8948
+armor_scale = 19.98653
+last_hit_slack = 219.90988
+deny_hp_part = 0.9256468
+incoming_weight = 0.81998974
+last_hit_margin = -7.2682543
+retreat_hp_part = 0.10687786
+return_hp_part = 0.38520572
+mend_hp_part = 0.5100505
+dread_seconds = 7.33354
+tower_clearance = 168.79077
+fall_back = 1923.7832
+go_home_part = 0.015703686
+stand_off = 403.12372
+keep_off_part = 0.14772627
+lane_width = 500
+arrive_radius = 27.04047
+resend_drift = 16
+resend_ticks = 21.337526
+harass_edge = 0.98936677
+cast_reach = 196.12038
+hook_reach = 1012.86304
+hook_lead_ticks = 2.7134929
+rot_reach = 167.58627
+volley_needs = 7.427689
+mana_floor_part = 0.21058552
+wedge_ticks = 73.58843
+wedge_step = 8.591047
+detour_reach = 2253.9966
+detour_ticks = 158.07608
+tree_reach = 477.23434
+courier_batch = 2.0003054
+courier_patience = 313.99643
+courier_dread = 0
+burst_gap = 6621.208
+courier_repeat = 62.332664

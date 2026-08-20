@@ -42,7 +42,9 @@ impl World {
     ///
     /// An entity already standing in a closed cell may always leave it.
     fn step_free(&self, mover: Entity, from: Vec2, next: Vec2, shoving: bool) -> bool {
-        if !self.grid.walkable(next) && self.grid.walkable(from) {
+        // What flies is over all of it: closed ground stops only what walks.
+        let flies = self.stats.get(mover).is_some_and(|stats| stats.flies);
+        if !flies && !self.grid.walkable(next) && self.grid.walkable(from) {
             return false;
         }
         shoving || !self.blocked_by_bodies(mover, from, next)

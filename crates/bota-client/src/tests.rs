@@ -148,3 +148,25 @@ fn every_item_drawing_rasterises_to_something_visible() {
         );
     }
 }
+
+#[test]
+fn every_ability_box_has_a_key_to_press() {
+    let panel = crate::hud::UiRect {
+        x: 0.0,
+        y: 0.0,
+        w: 1600.0,
+        h: 200.0,
+    };
+    let boxes = crate::hud::ability_boxes(&panel);
+    assert_eq!(
+        boxes.len(),
+        usize::from(crate::hud::ABILITY_BOXES),
+        "the panel draws as many boxes as it says it has"
+    );
+    for (slot, _) in boxes {
+        assert!(
+            crate::render::ability_key(usize::from(slot)).is_some(),
+            "slot {slot} has a key"
+        );
+    }
+}

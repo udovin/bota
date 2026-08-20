@@ -48,6 +48,10 @@ pub struct Seat {
     pub stash: Inventory,
     /// What the body left behind, while it is gone.
     pub kept: Option<Kept>,
+    /// The courier it owns, while one stands.
+    pub courier: Option<Entity>,
+    /// Ticks before the courier comes back. Zero while one stands.
+    pub courier_left: u32,
     /// Waits owed on kinds of item rather than on one stack of one: a scroll
     /// read is a scroll read, whichever one is held next.
     pub item_clocks: Vec<(ItemId, u32)>,
@@ -78,6 +82,8 @@ impl Seat {
             respawn_left: 0,
             stash: Inventory::empty(stash_slots),
             kept: None,
+            courier: None,
+            courier_left: 0,
             item_clocks: Vec::new(),
             kills: 0,
             deaths: 0,

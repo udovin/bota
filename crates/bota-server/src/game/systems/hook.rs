@@ -86,7 +86,7 @@ impl World {
                 hook.caught = Some(caught);
                 hook.returning = true;
                 if self.team.get(caught).copied() != self.team.get(hook.owner).copied() {
-                    self.spawn_hit(Some(hook.owner), caught, hook.damage, DamageKind::Pure);
+                    self.push_hit(Some(hook.owner), caught, hook.damage, DamageKind::Pure);
                 }
             } else if next == hook.aim || hook.reach_left <= Fixed::ZERO {
                 hook.returning = true;

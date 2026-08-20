@@ -242,7 +242,8 @@ impl Server {
         let period = Duration::from_nanos(1_000_000_000 / u64::from(self.opts.tick_rate.max(1)));
         let ack_timeout = period * self.opts.ack_timeout_ticks.max(1);
         let started = Instant::now();
-        let mut pending: Vec<Option<(u32, Order)>> = vec![None; self.roster.seats.len()];
+        let mut pending: Vec<Option<(u32, Option<bota_proto::EntityId>, Order)>> =
+            vec![None; self.roster.seats.len()];
         let mut acked: Vec<u32> = vec![0; self.roster.seats.len()];
 
         loop {
@@ -262,8 +263,9 @@ impl Server {
                 .iter()
                 .enumerate()
                 .filter_map(|(i, slot)| {
-                    slot.map(|(_, order)| Command {
+                    slot.map(|(_, unit, order)| Command {
                         slot: SlotId(i as u8),
+                        unit,
                         order,
                     })
                 })
@@ -342,7 +344,7 @@ impl Server {
         &mut self,
         world: &World,
         cfg: &MatchConfig,
-        pending: &mut [Option<(u32, Order)>],
+        pending: &mut [Option<(u32, Option<bota_proto::EntityId>, Order)>],
         acked: &mut [u32],
         started: Instant,
         period: Duration,
@@ -379,12 +381,12 @@ impl Server {
                     ClientMsg::Hello { role, name } => {
                         self.greet(id, role, name, Some(cfg));
                     }
-                    ClientMsg::Order { seq, order } => {
+                    ClientMsg::Order { seq, unit, order } => {
                         let Some(slot) = self.roster.seat_of(id).map(|s| s.slot) else {
                             continue;
                         };
-                        match validate(world, slot, &order) {
-                            Ok(()) => pending[usize::from(slot.0)] = Some((seq, order)),
+                        match validate(world, slot, unit, &order) {
+                            Ok(()) => pending[usize::from(slot.0)] = Some((seq, unit, order)),
                             Err(reason) => {
                                 if let Some(conn) = self.conn(id) {
                                     conn.send(&ServerMsg::OrderRejected { seq, reason });
@@ -438,7 +440,8 @@ fn match_stats(world: &World) -> bota_proto::MatchStats {
 fn validate(
     world: &World,
     slot: bota_proto::SlotId,
+    unit: Option<bota_proto::EntityId>,
     order: &bota_proto::Order,
 ) -> Result<(), bota_proto::RejectReason> {
-    world.validate_order(slot, order)
+    world.validate_order(slot, unit, order)
 }

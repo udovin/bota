@@ -70,6 +70,11 @@ impl World {
                 ability::MEAT_HOOK => self.cast_hook(entity, level, cast.target),
                 ability::ROT => self.toggle_rot(entity, level),
                 ability::DISMEMBER => self.cast_dismember(entity, level, cast.target),
+                ability::BURST => self.courier_burst(entity),
+                ability::RETURN_ITEMS => self.courier_return_items(entity),
+                ability::SHIELD => self.courier_shield(entity),
+                ability::TAKE_STASH => self.courier_take_stash(entity),
+                ability::DELIVER => self.courier_deliver(entity),
                 _ => false,
             };
             if !went {
@@ -147,6 +152,7 @@ impl World {
                 launch_tier: 0,
                 crit: false,
                 bounces_left: rules::SYLLA_BOUNCE_COUNT[level],
+                bounce_range: rules::SYLLA_BOUNCE_RANGE,
                 bounced: vec![mark],
             },
         );
@@ -174,52 +180,8 @@ impl World {
             })
             .collect();
         for mark in struck {
-            self.spawn_hit(Some(caster), mark, damage, DamageKind::Physical);
+            self.push_hit(Some(caster), mark, damage, DamageKind::Physical);
         }
-        true
-    }
-
-    /// Sends a missile on to the next enemy near where it landed.
-    ///
-    /// It never strikes the same one twice, and stops once its bounces are
-    /// spent or there is nobody left to go to.
-    pub fn bounce_on(&mut self, missile: Entity, from: Entity) -> bool {
-        let Some(mut shot) = self.projectile.get(missile).cloned() else {
-            return false;
-        };
-        if shot.bounces_left == 0 {
-            return false;
-        }
-        let Some(at) = self.transform.get(from).map(|t| t.pos) else {
-            return false;
-        };
-        let radius = rules::units(rules::SYLLA_BOUNCE_RANGE);
-        let Some(source) = shot.source else {
-            return false;
-        };
-        let next = self
-            .entities
-            .iter()
-            .filter(|other| {
-                !shot.bounced.contains(other)
-                    && self.hostile(source, *other)
-                    && self
-                        .transform
-                        .get(*other)
-                        .is_some_and(|t| t.pos.within(at, radius))
-            })
-            .min_by_key(|other| {
-                self.transform
-                    .get(*other)
-                    .map_or(i64::MAX, |t| t.pos.distance_squared(at))
-            });
-        let Some(next) = next else {
-            return false;
-        };
-        shot.bounces_left -= 1;
-        shot.bounced.push(next);
-        shot.target = next;
-        self.projectile.insert(missile, shot);
         true
     }
 

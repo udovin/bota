@@ -25,9 +25,19 @@ impl World {
         if self.kind.get(candidate) != Some(&UnitKind::Hero) {
             return 1;
         }
+        // What it is doing is read off its order, what it is holding, and the
+        // spell it is in the middle of: a spell at this side is as plain as a
+        // swing at it.
+        let casting_at = self
+            .casting
+            .get(candidate)
+            .and_then(|cast| match cast.target {
+                bota_proto::OrderTarget::Unit { target } => self.of_wire(target),
+                _ => None,
+            });
         let struck = match self.orders.get(candidate).map(|o| o.current) {
             Some(UnitOrder::Attack { target, .. }) => Some(target),
-            _ => self.target_of(candidate),
+            _ => casting_at.or_else(|| self.target_of(candidate)),
         };
         let Some(at_side) = struck.and_then(|t| self.team.get(t).copied()) else {
             return 2;

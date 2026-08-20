@@ -349,17 +349,15 @@ impl World {
         }
     }
 
-    /// Moves what sits in one slot to another, swapping whatever is in the
-    /// way.
+    /// Moves what sits in one slot of a unit to another, swapping whatever is
+    /// in the way.
     ///
-    /// Slots run inventory, then backpack, then stash. The stash takes part
-    /// only while the hero stands in its own shop. A stack coming out of the
+    /// Slots run the unit's own bag first, then the seat's stash. The stash
+    /// takes part only while that unit stands in its own shop, so a courier
+    /// waiting at the fountain reaches it as readily as a hero does. A stack coming out of the
     /// backpack into the inventory is muted for a while.
-    pub fn move_item(&mut self, slot: SlotId, from: usize, to: usize) -> bool {
+    pub fn move_item(&mut self, slot: SlotId, unit: Entity, from: usize, to: usize) -> bool {
         let Some(seat) = self.seats.iter().position(|s| s.slot == slot) else {
-            return false;
-        };
-        let Some(unit) = self.seats[seat].unit else {
             return false;
         };
         let total = BAG_SLOTS + self.seats[seat].stash.slots.len();
@@ -387,18 +385,20 @@ impl World {
         true
     }
 
-    /// Sells what sits in one slot, at its own shop.
+    /// Sells what sits in one slot.
+    ///
+    /// The stash sells from wherever its owner is: it is already at the shop.
+    /// A unit's own bag sells only while that unit stands there.
     ///
     /// An untouched stack sold soon after it was bought pays back what it
     /// cost; anything else pays back a part of it.
-    pub fn sell_item(&mut self, slot: SlotId, at: usize) -> bool {
+    pub fn sell_item(&mut self, slot: SlotId, unit: Entity, at: usize) -> bool {
         let Some(seat) = self.seats.iter().position(|s| s.slot == slot) else {
             return false;
         };
-        let Some(unit) = self.seats[seat].unit else {
-            return false;
-        };
-        if !self.at_shop(unit) {
+        // What waits in the stash waits at the shop, so it sells from
+        // anywhere; what a unit carries sells only where that unit stands.
+        if !in_stash(at) && !self.at_shop(unit) {
             return false;
         }
         let Some(stack) = self.take_slot(unit, seat, at) else {

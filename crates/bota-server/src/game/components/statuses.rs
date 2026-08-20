@@ -35,9 +35,16 @@ pub enum StatusKind {
     },
     /// Cannot act at all: it neither walks, nor turns, nor swings, nor casts.
     Stunned,
+    /// Nothing gets through: damage passes it by while it holds.
+    Shielded,
     /// Walks slower, by `pct` percent of what it would.
     Slowed {
         /// Percent taken off its speed.
+        pct: i32,
+    },
+    /// Walks faster, by `pct` percent of what it would.
+    Hastened {
+        /// Percent added to its speed.
         pct: i32,
     },
     /// Losing health over time to whoever put it on.

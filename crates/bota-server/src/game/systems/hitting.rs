@@ -3,7 +3,9 @@
 use bota_proto::{DamageKind, Fixed, Team, Vec2};
 
 use crate::game::rules;
-use crate::game::{Entity, EntityAllocator, Health, Hit, Stats, Table, Transform};
+use std::collections::VecDeque;
+
+use crate::game::{Entity, Health, Hit, Stats, Table, Transform};
 
 /// One blow once it has been felt.
 ///
@@ -29,10 +31,10 @@ pub struct Landed {
 
 /// What resolving blows reads and writes.
 pub struct HitCx<'a> {
-    /// Which entities exist, and where a spent blow is given up.
-    pub entities: &'a mut EntityAllocator,
     /// The blows waiting to be felt.
-    pub hit: &'a mut Table<Hit>,
+    pub hits: &'a mut VecDeque<Hit>,
+    /// Where a blow that was felt is left for whatever answers to it.
+    pub landed: &'a mut VecDeque<Landed>,
     /// Where each entity stands.
     pub transform: &'a Table<Transform>,
     /// Which side each entity is on.
@@ -46,23 +48,18 @@ pub struct HitCx<'a> {
 /// Takes every waiting blow off the health it landed on.
 ///
 /// A blow at something already down, or at something damage passes by, is
-/// given up unfelt. Every blow is given up either way: none survives the tick
-/// that resolves it.
-pub fn hitting_system(cx: HitCx<'_>) -> Vec<Landed> {
+/// given up unfelt. Every blow leaves the queue either way: none survives the
+/// tick that resolves it.
+pub fn hitting_system(cx: HitCx<'_>) {
     let HitCx {
-        entities,
-        hit,
+        hits,
+        landed,
         transform,
         team,
         stats,
         health,
     } = cx;
-    let mut felt = Vec::new();
-    for entity in entities.iter().collect::<Vec<_>>() {
-        let Some(blow) = hit.remove(entity) else {
-            continue;
-        };
-        entities.free(entity);
+    while let Some(blow) = hits.pop_front() {
         let standing = health
             .get(blow.target)
             .is_some_and(|health| health.hp > Fixed::ZERO);
@@ -79,7 +76,7 @@ pub fn hitting_system(cx: HitCx<'_>) -> Vec<Landed> {
         let applied = taken.min(pool.hp.to_int().max(0) + 1);
         pool.hp -= Fixed::from_int(applied);
         let fatal = pool.hp <= Fixed::ZERO;
-        felt.push(Landed {
+        landed.push_back(Landed {
             source: blow.source,
             target: blow.target,
             amount: applied,
@@ -89,7 +86,6 @@ pub fn hitting_system(cx: HitCx<'_>) -> Vec<Landed> {
             fatal,
         });
     }
-    felt
 }
 
 /// Damage after armor or magic resistance.

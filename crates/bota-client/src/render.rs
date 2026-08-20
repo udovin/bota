@@ -481,6 +481,11 @@ fn draw_unit(app: &App, u: &UnitView, mine: bool, to_screen: impl Fn(f32, f32) -
         UnitKind::Fountain => {
             draw_circle_lines(x, y, r, 3.0, color);
         }
+        UnitKind::Courier => {
+            let wing = (14.0 * app.camera.zoom).max(4.0);
+            draw_poly(x, y, 3, wing, 30.0, color);
+            draw_circle_lines(x, y, wing + 2.0, 1.0, Color::new(1.0, 1.0, 1.0, 0.35));
+        }
         // A ward takes no room on the ground, so it is drawn to a size of its
         // own rather than to its hull. The one that reveals is drawn hollow
         // and square, the one that watches solid and pointed.
@@ -754,7 +759,12 @@ fn draw_bottom_panel(app: &App, view: &WorldView) {
             draw_text("invulnerable", rect.x + 14.0, rect.y + 48.0, 14.0, GRAY);
         }
         draw_vitals(u, &rect, rate);
-        draw_slot_boxes(Some(u), &rect, rate, 0, false, None, None);
+        // Anything may be looked at; only what this seat drives answers to
+        // the keys.
+        let own = app.drives(u.id);
+        let level = if own { u.level } else { 0 };
+        let pending = if own { app.pending_ability } else { None };
+        draw_slot_boxes(Some(u), &rect, rate, level, own, pending, None);
         draw_effects(u, &rect, rate);
         return;
     }
@@ -867,6 +877,7 @@ fn draw_minimap(app: &App, view: &WorldView) {
             UnitKind::Tower => draw_rectangle(x - 2.0, y - 2.0, 4.0, 4.0, color),
             UnitKind::Ancient => draw_rectangle(x - 3.0, y - 3.0, 6.0, 6.0, color),
             UnitKind::Fountain => draw_circle_lines(x, y, 3.0, 1.0, color),
+            UnitKind::Courier => draw_poly(x, y, 3, 2.0, 30.0, color),
             UnitKind::Ward => {
                 if u.true_sight_radius > bota_proto::Fixed::ZERO {
                     draw_poly_lines(x, y, 4, 2.5, 45.0, 1.0, color);
@@ -927,6 +938,7 @@ fn kind_name(kind: UnitKind) -> &'static str {
         UnitKind::CreepSiege => "Siege Creep",
         UnitKind::CreepNeutral => "Neutral Creep",
         UnitKind::Roshan => "Roshan",
+        UnitKind::Courier => "Courier",
         UnitKind::Tower => "Tower",
         UnitKind::Ancient => "Ancient",
         UnitKind::Fountain => "Fountain",
@@ -979,20 +991,28 @@ fn draw_vitals(u: &UnitView, rect: &crate::hud::UiRect, rate: u32) {
 }
 
 /// Hotkey letters of the four ability slots.
-const ABILITY_KEYS: [&str; 4] = ["Q", "W", "E", "R"];
+const ABILITY_KEYS: [&str; 6] = ["Q", "W", "E", "R", "T", "G"];
+
+/// The key that casts one slot, if the panel has one for it.
+pub fn ability_key(slot: usize) -> Option<&'static str> {
+    ABILITY_KEYS.get(slot).copied()
+}
 /// Display names of the Sylla kit, by ability id.
-const ABILITY_NAMES: [&str; 8] = [
-    "Crit", "Frenzy", "Bounce", "Volley", "Hook", "Rot", "Heap", "Dismem",
+const ABILITY_NAMES: [&str; 13] = [
+    "Crit", "Frenzy", "Bounce", "Volley", "Hook", "Rot", "Heap", "Dismem", "Burst", "Return",
+    "Stash", "Give", "Shield",
 ];
 /// How far each ability may be levelled, by ability id.
-const ABILITY_CAPS: [u8; 8] = [4, 4, 4, 3, 4, 4, 4, 3];
+const ABILITY_CAPS: [u8; 13] = [4, 4, 4, 3, 4, 4, 4, 3, 1, 1, 1, 1, 1];
 /// Which abilities are ultimates, which wait on higher hero levels.
-const ABILITY_ULTS: [bool; 8] = [false, false, false, true, false, false, false, true];
+const ABILITY_ULTS: [bool; 13] = [
+    false, false, false, true, false, false, false, true, false, false, false, false, false,
+];
 /// Display names of the heroes, by hero id.
 pub const HERO_NAMES: [&str; 2] = ["Sylla", "Pudge"];
 
 /// How each ability is aimed, by ability id.
-pub const ABILITY_AIM: [Aim; 8] = [
+pub const ABILITY_AIM: [Aim; 13] = [
     Aim::Own,
     Aim::Own,
     Aim::Unit,
@@ -1001,6 +1021,11 @@ pub const ABILITY_AIM: [Aim; 8] = [
     Aim::Own,
     Aim::Own,
     Aim::Unit,
+    Aim::Own,
+    Aim::Own,
+    Aim::Own,
+    Aim::Own,
+    Aim::Own,
 ];
 
 /// How far an ability may be levelled, whatever slot it sits in.
@@ -1040,15 +1065,25 @@ fn draw_slot_boxes(
         let spent: u8 = u.abilities.iter().map(|a| a.level).sum();
         hero_level.saturating_sub(spent)
     });
+    let carried = unit.map_or(0, |unit| unit.abilities.len());
     for (slot, r) in crate::hud::ability_boxes(rect) {
         let i = usize::from(slot);
+        if i >= carried {
+            continue;
+        }
         let (cx, cy, cw, ch) = (r.x, r.y, r.w, r.h);
         draw_rectangle(cx, cy, cw, ch, Color::new(0.12, 0.12, 0.16, 1.0));
         let outline = if pending == Some(slot) { GOLD } else { GRAY };
         draw_rectangle_lines(cx, cy, cw, ch, 1.0, outline);
         match unit.and_then(|u| u.abilities.get(i)) {
             Some(a) => {
-                draw_text(ABILITY_KEYS[i], cx + 4.0, cy + 16.0, 16.0, WHITE);
+                draw_text(
+                    ability_key(i).unwrap_or(""),
+                    cx + 4.0,
+                    cy + 16.0,
+                    16.0,
+                    WHITE,
+                );
                 let name = ABILITY_NAMES
                     .get(usize::from(a.id.0))
                     .copied()
@@ -1095,7 +1130,13 @@ fn draw_slot_boxes(
         );
     }
     let held = if own { held } else { None };
+    // Only the slots this unit has: a courier carries, but has no pocket to
+    // carry inert things in.
+    let slots = unit.map_or(0, |unit| unit.items.len());
     for (slot, r) in crate::hud::item_boxes(rect) {
+        if usize::from(slot) >= slots {
+            continue;
+        }
         let item = unit
             .and_then(|u| u.items.get(usize::from(slot)))
             .and_then(|s| s.as_ref());
@@ -1339,11 +1380,20 @@ const EFFECT_TIPS: [&str; 7] = [
     "Losing health over time.",
 ];
 /// What each ability does, for the hover popup.
-const ABILITY_TIPS: [&str; 4] = [
+const ABILITY_TIPS: [&str; 13] = [
     "Passive. 20/25/30/35% chance to strike for 175/200/225/250% damage.",
     "No target. +20/28/36/44% attack speed for 6 s. 30/40/50/60 mana.",
     "Enemy target, range 550. 70/140/210/280 magic damage, then jumps to the 2/4/6/8 nearest new enemies.",
     "Ultimate, no target. An attack at 80/100/120% damage flies at every enemy within 700.",
+    "Point target, range 1100. Catches the first unit in its way, drags it back and deals 90/180/270/360 pure damage.",
+    "Toggle. Burns everything within 250 for 30/60/90/120 a second and slows it, its owner included, but never kills its owner.",
+    "Passive. Magic resistance, and health for every death near you.",
+    "Ultimate, enemy target, range 150. Holds it for 3 s, eating it and healing you.",
+    "No target. The courier flies 50% faster for 6 s. 120 s wait.",
+    "No target. The courier puts what it holds back in the stash, then goes home.",
+    "No target. The courier takes what waits in your stash and carries it to you.",
+    "No target. The courier carries what it holds to you, then goes home.",
+    "No target. Nothing gets through to the courier for 2 s. 200 s wait.",
 ];
 
 /// The hover popup for whatever HUD element sits under the cursor.
@@ -1391,7 +1441,11 @@ fn draw_tooltips(app: &App, view: &WorldView) {
                     lines.push(format!("Ready in {}s.", a.cooldown_left / rate + 1));
                 }
                 tip = Some((
-                    format!("{} {name}  lv{}", ABILITY_KEYS[usize::from(slot)], a.level),
+                    format!(
+                        "{} {name}  lv{}",
+                        ability_key(usize::from(slot)).unwrap_or(""),
+                        a.level
+                    ),
                     lines,
                 ));
             }

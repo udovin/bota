@@ -188,7 +188,9 @@ fn effect_id(kind: StatusKind) -> u16 {
         StatusKind::Clarity { .. } => 2,
         StatusKind::Fountain { .. } => 3,
         StatusKind::Stunned => 4,
+        StatusKind::Shielded => 8,
         StatusKind::Slowed { .. } => 5,
+        StatusKind::Hastened { .. } => 7,
         StatusKind::Burning { .. } => 6,
     }
 }
@@ -203,6 +205,7 @@ impl World {
         for status in on_it.active() {
             bits |= match status.kind {
                 StatusKind::Stunned => StatusFlags::STUNNED,
+                StatusKind::Shielded => StatusFlags::MAGIC_IMMUNE,
                 StatusKind::Slowed { .. } => StatusFlags::SLOWED,
                 StatusKind::Burning { .. } => StatusFlags::DOT,
                 _ => 0,

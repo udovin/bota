@@ -195,6 +195,52 @@ impl App {
         view.players.iter().find(|p| p.slot == slot)?.unit
     }
 
+    /// Which unit the slot panel and the keys are about.
+    ///
+    /// Whatever is selected, if anything is; our own hero otherwise.
+    pub fn commanded(&self) -> Option<bota_proto::EntityId> {
+        match self.selection {
+            crate::state::Selection::Unit(id) => Some(id),
+            _ => self.my_hero(),
+        }
+    }
+
+    /// Our own courier, while one stands.
+    pub fn my_courier(&self) -> Option<bota_proto::EntityId> {
+        let view = self.view.as_ref()?;
+        let mine = self.my_slot?;
+        view.units
+            .iter()
+            .find(|unit| unit.kind == bota_proto::UnitKind::Courier && unit.owner == Some(mine))
+            .map(|unit| unit.id)
+    }
+
+    /// Whether a unit is one this seat drives.
+    pub fn drives(&self, id: bota_proto::EntityId) -> bool {
+        let Some(view) = self.view.as_ref() else {
+            return false;
+        };
+        view.units
+            .iter()
+            .find(|unit| unit.id == id)
+            .is_some_and(|unit| unit.owner.is_some() && unit.owner == self.my_slot)
+    }
+
+    /// Which of our units an order goes to.
+    ///
+    /// Whatever of ours is selected takes it; with our own hero selected, or
+    /// nothing of ours at all, the order names nobody and the server sends it
+    /// to the hero.
+    pub fn ordering_unit(&self) -> Option<bota_proto::EntityId> {
+        let crate::state::Selection::Unit(id) = self.selection else {
+            return None;
+        };
+        let view = self.view.as_ref()?;
+        let mine = self.my_slot?;
+        let unit = view.units.iter().find(|unit| unit.id == id)?;
+        (unit.owner == Some(mine) && Some(id) != self.my_hero()).then_some(id)
+    }
+
     /// Which side this player is on, once the match has told us.
     pub fn my_team(&self) -> Option<bota_proto::Team> {
         let slot = self.my_slot?;
@@ -205,12 +251,14 @@ impl App {
     /// Whether the current selection is a unit this player commands.
     ///
     /// Orders go to the selection; anything not ours ignores them, so an
-    /// enemy or a creep can be inspected without stealing the keys.
+    /// enemy or a creep can be inspected without stealing the keys. What is
+    /// ours answers wherever it came from: a hero, a courier, or anything
+    /// else this seat is given to drive.
     pub fn controls_selection(&self) -> bool {
         match self.selection {
             Selection::Own => true,
             Selection::Seat(slot) => self.my_slot == Some(slot),
-            Selection::Unit(_) => false,
+            Selection::Unit(id) => self.drives(id),
         }
     }
 
@@ -291,8 +339,8 @@ impl App {
     /// Which ability sits in one of our four slots.
     pub fn ability_id_at(&self, slot: u8) -> Option<bota_proto::AbilityId> {
         let view = self.view.as_ref()?;
-        let me = self.my_hero()?;
-        let unit = view.units.iter().find(|u| u.id == me)?;
+        let commanded = self.commanded()?;
+        let unit = view.units.iter().find(|u| u.id == commanded)?;
         unit.abilities.get(usize::from(slot)).map(|a| a.id)
     }
 
@@ -344,9 +392,30 @@ impl App {
 
     /// Sends an order with the next sequence number.
     pub fn send_order(&mut self, order: Order) {
+        let unit = self.ordering_unit();
+        self.send_order_to(unit, order);
+    }
+
+    /// Sends one order to a named unit, whatever is selected.
+    ///
+    /// What is selected is where orders go by default; this is for the few
+    /// that name their unit themselves, so that sending one does not mean
+    /// looking away from the fight.
+    pub fn send_order_to(&mut self, unit: Option<bota_proto::EntityId>, order: Order) {
         self.seq += 1;
         let seq = self.seq;
-        self.source.send(&ClientMsg::Order { seq, order });
+        self.source.send(&ClientMsg::Order { seq, unit, order });
+    }
+
+    /// Which slot of our courier holds one ability.
+    pub fn courier_slot(&self, ability: u16) -> Option<u8> {
+        let view = self.view.as_ref()?;
+        let courier = self.my_courier()?;
+        let unit = view.units.iter().find(|unit| unit.id == courier)?;
+        unit.abilities
+            .iter()
+            .position(|held| held.id.0 == ability)
+            .map(|slot| slot as u8)
     }
 
     /// Applies one server message.

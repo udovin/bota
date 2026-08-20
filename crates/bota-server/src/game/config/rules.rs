@@ -619,6 +619,31 @@ pub const PLANTED_TREE_TICKS: u32 = 40 * TICKS_PER_SECOND;
 /// Ticks a hero waits between scrolls, whichever scroll it holds.
 pub const SCROLL_WAIT_TICKS: u32 = 2100;
 
+// The courier.
+
+/// Health a courier stands up with.
+pub const COURIER_HP: i32 = 250;
+/// World units a second a courier flies.
+pub const COURIER_MOVE_SPEED: i32 = 380;
+/// How far a courier sees.
+pub const COURIER_VISION: i32 = 500;
+/// Ticks a courier waits before it comes back.
+pub const COURIER_RESPAWN_TICKS: u32 = 25 * TICKS_PER_SECOND;
+/// Percent a burst adds to a courier's speed.
+pub const COURIER_BURST_PCT: i32 = 50;
+/// Ticks a burst lasts.
+pub const COURIER_BURST_TICKS: u32 = 6 * TICKS_PER_SECOND;
+/// Ticks between bursts.
+pub const COURIER_BURST_COOLDOWN: u32 = 120 * TICKS_PER_SECOND;
+/// Ticks a courier's shield holds.
+pub const COURIER_SHIELD_TICKS: u32 = 2 * TICKS_PER_SECOND;
+/// Ticks between shields.
+pub const COURIER_SHIELD_COOLDOWN: u32 = 200 * TICKS_PER_SECOND;
+/// How far from the shop a courier stands to reach the stash.
+pub const COURIER_STASH_RANGE: i32 = 700;
+/// How close a courier must be to hand over what it carries.
+pub const COURIER_DELIVER_RANGE: i32 = 200;
+
 // Pudge.
 
 /// Mana the hook costs, by level.

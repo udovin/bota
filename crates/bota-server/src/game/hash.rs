@@ -124,6 +124,11 @@ impl World {
                 fnv.u32(u32::from(item.0));
                 fnv.u32(*left);
             }
+            fnv.some(seat.courier.is_some());
+            if let Some(courier) = seat.courier {
+                fnv.entity(courier);
+            }
+            fnv.u32(seat.courier_left);
             fnv.some(seat.kept.is_some());
             if let Some(kept) = &seat.kept {
                 for slot in kept.book.slots.iter() {
@@ -165,8 +170,13 @@ fn hash_status_kind(fnv: &mut Fnv, kind: StatusKind) {
             fnv.i32(mana_per_tick);
         }
         StatusKind::Stunned => fnv.u8(4),
+        StatusKind::Shielded => fnv.u8(8),
         StatusKind::Slowed { pct } => {
             fnv.u8(5);
+            fnv.i32(pct);
+        }
+        StatusKind::Hastened { pct } => {
+            fnv.u8(7);
             fnv.i32(pct);
         }
         StatusKind::Burning {

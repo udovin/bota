@@ -72,6 +72,11 @@ pub struct UnitDef {
     pub true_sight: i32,
     /// Whether the other side sees it only through true sight.
     pub hides: bool,
+    /// Whether it flies: closed ground is nothing to it.
+    pub flies: bool,
+    /// Whether it only carries for another: what is in its bag is worth
+    /// nothing to it.
+    pub porter: bool,
     /// The circle it occupies, in world units.
     pub radius: i32,
     /// Whether damage passes it by.
@@ -121,6 +126,8 @@ const NOTHING: UnitDef = UnitDef {
     vision: 0,
     true_sight: 0,
     hides: false,
+    flies: false,
+    porter: false,
     radius: 0,
     invulnerable: false,
     ancient: false,
@@ -313,6 +320,19 @@ pub const FOUNTAIN: UnitDef = UnitDef {
     vision: rules::FOUNTAIN_VISION,
     radius: rules::FOUNTAIN_RADIUS,
     invulnerable: true,
+    ..NOTHING
+};
+
+/// A courier: it carries, it does not fight, and it flies over everything.
+pub const COURIER: UnitDef = UnitDef {
+    kind: UnitKind::Courier,
+    flies: true,
+    porter: true,
+    magic_resist_pct: 100,
+    max_hp: rules::COURIER_HP,
+    move_speed: rules::COURIER_MOVE_SPEED,
+    turn_rate: rules::TURN_RATE_BRADS,
+    vision: rules::COURIER_VISION,
     ..NOTHING
 };
 

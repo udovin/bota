@@ -138,6 +138,8 @@ const NEUTRAL_BASE: UnitDef = UnitDef {
     auras: &[],
     true_sight: 0,
     hides: false,
+    flies: false,
+    porter: false,
 };
 
 /// Every kind, in the order of [`NeutralKind`].

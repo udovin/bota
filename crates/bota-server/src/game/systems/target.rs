@@ -99,6 +99,11 @@ impl World {
         if self.stats.get(target).is_some_and(|s| s.invulnerable) {
             return false;
         }
+        // The jungle pays a courier no mind. Everything else takes it on like
+        // anything else.
+        if mine == Team::Neutral && self.kind.get(target) == Some(&UnitKind::Courier) {
+            return false;
+        }
         if theirs == Team::Neutral {
             let seeker_kind = self.kind.get(seeker).copied();
             if seeker_kind.is_some_and(is_structure) {

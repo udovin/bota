@@ -131,6 +131,7 @@ fn stats() -> Stats {
         vision: Fixed::ZERO,
         true_sight: Fixed::ZERO,
         hides: false,
+        flies: false,
         invulnerable: false,
     }
 }
@@ -1327,7 +1328,7 @@ fn an_order_at_something_a_side_cannot_see_is_refused() {
         target: crate::game::wire_id(hidden),
     };
     assert_eq!(
-        world.validate_order(bota_proto::SlotId(0), &order),
+        world.validate_order(bota_proto::SlotId(0), None, &order),
         Err(bota_proto::RejectReason::UnknownTarget),
         "it is nowhere near and cannot be ordered at"
     );
@@ -1340,7 +1341,10 @@ fn an_order_at_something_a_side_cannot_see_is_refused() {
     let order = bota_proto::Order::AttackUnit {
         target: crate::game::wire_id(near),
     };
-    assert_eq!(world.validate_order(bota_proto::SlotId(0), &order), Ok(()));
+    assert_eq!(
+        world.validate_order(bota_proto::SlotId(0), None, &order),
+        Ok(())
+    );
 }
 
 #[test]
@@ -1357,7 +1361,7 @@ fn a_seat_with_no_body_standing_may_order_nothing() {
         pos: bota_proto::Vec2::ZERO,
     };
     assert_eq!(
-        world.validate_order(bota_proto::SlotId(0), &order),
+        world.validate_order(bota_proto::SlotId(0), None, &order),
         Err(bota_proto::RejectReason::HeroDead)
     );
 }
@@ -1896,7 +1900,7 @@ fn swing_once(world: &mut World) {
         target: &world.target,
         statuses: &world.statuses,
         attacking: &mut world.attacking,
-        hit: &mut world.hit,
+        hits: &mut world.hits,
         projectile: &mut world.projectile,
     });
 }
@@ -2257,6 +2261,7 @@ fn a_hero_told_to_stop_stands_and_takes_on_nothing() {
     // The stop key.
     world.advance(&[crate::game::Command {
         slot: bota_proto::SlotId(0),
+        unit: None,
         order: bota_proto::Order::Stop,
     }]);
     assert_eq!(
@@ -2321,12 +2326,13 @@ fn one_of_your_own_at_full_health_cannot_be_struck() {
         target: crate::game::wire_id(own),
     };
     assert_eq!(
-        world.validate_order(bota_proto::SlotId(0), &order),
+        world.validate_order(bota_proto::SlotId(0), None, &order),
         Ok(()),
         "the order may still be given: it is how creeps are shaken off"
     );
     world.advance(&[crate::game::Command {
         slot: bota_proto::SlotId(0),
+        unit: None,
         order,
     }]);
     let was = world.health.get(own).expect("standing").hp;
@@ -2365,9 +2371,13 @@ fn one_of_your_own_worn_down_far_enough_may_be_put_out() {
     let order = bota_proto::Order::AttackUnit {
         target: crate::game::wire_id(own),
     };
-    assert_eq!(world.validate_order(bota_proto::SlotId(0), &order), Ok(()));
+    assert_eq!(
+        world.validate_order(bota_proto::SlotId(0), None, &order),
+        Ok(())
+    );
     world.advance(&[crate::game::Command {
         slot: bota_proto::SlotId(0),
+        unit: None,
         order,
     }]);
     assert_eq!(world.target_of(hero), Some(own), "it takes it on");
@@ -2396,6 +2406,7 @@ fn a_deny_is_given_up_when_the_creep_is_no_longer_worn_down() {
     );
     world.advance(&[crate::game::Command {
         slot: bota_proto::SlotId(0),
+        unit: None,
         order: bota_proto::Order::AttackUnit {
             target: crate::game::wire_id(own),
         },
@@ -2467,9 +2478,13 @@ fn your_own_building_goes_only_at_a_tenth() {
     let order = bota_proto::Order::AttackUnit {
         target: crate::game::wire_id(tower),
     };
-    assert_eq!(world.validate_order(bota_proto::SlotId(0), &order), Ok(()));
+    assert_eq!(
+        world.validate_order(bota_proto::SlotId(0), None, &order),
+        Ok(())
+    );
     world.advance(&[crate::game::Command {
         slot: bota_proto::SlotId(0),
+        unit: None,
         order,
     }]);
     assert_eq!(world.target_of(hero), Some(tower));
@@ -2725,6 +2740,7 @@ fn thinking_creep_of(world: &mut World, team: Team, at: bota_proto::Vec2) -> Ent
 fn attack_click(world: &mut World, on: Entity) {
     world.advance(&[crate::game::Command {
         slot: bota_proto::SlotId(0),
+        unit: None,
         order: bota_proto::Order::AttackUnit {
             target: crate::game::wire_id(on),
         },
@@ -2781,6 +2797,7 @@ fn the_hold_lets_go_after_two_and_a_third_seconds() {
     // The hero stops, so it is no longer laying into that side.
     world.advance(&[crate::game::Command {
         slot: bota_proto::SlotId(0),
+        unit: None,
         order: bota_proto::Order::Stop,
     }]);
     for _ in 0..rules::ORDER_AGGRO_HOLD_TICKS - 4 {
@@ -2816,6 +2833,7 @@ fn a_second_click_inside_the_wait_pulls_nothing() {
     // Stop, wait out the hold, and click again while the wait still runs.
     world.advance(&[crate::game::Command {
         slot: bota_proto::SlotId(0),
+        unit: None,
         order: bota_proto::Order::Stop,
     }]);
     for _ in 0..rules::ORDER_AGGRO_HOLD_TICKS + 2 {
@@ -2887,6 +2905,7 @@ fn a_hold_is_not_broken_by_clicking_your_own() {
     // Once the hold is out, the ranking takes the creep back on its own.
     world.advance(&[crate::game::Command {
         slot: bota_proto::SlotId(0),
+        unit: None,
         order: bota_proto::Order::Stop,
     }]);
     for _ in 0..rules::ORDER_AGGRO_HOLD_TICKS + 2 {
@@ -3013,6 +3032,7 @@ fn a_swing_costs_the_swinger_the_ground_it_stands_on() {
     for _ in 0..60 {
         world.advance(&[crate::game::Command {
             slot: bota_proto::SlotId(0),
+            unit: None,
             order: bota_proto::Order::Move {
                 pos: bota_proto::Vec2::from_ints(3000, 5000),
             },
@@ -3050,6 +3070,7 @@ fn an_order_to_break_off_gives_up_a_swing_that_has_not_landed() {
     );
     world.advance(&[crate::game::Command {
         slot: bota_proto::SlotId(0),
+        unit: None,
         order: bota_proto::Order::Stop,
     }]);
     let state = world.attacking.get(hero).copied().expect("attacking");
@@ -3083,6 +3104,7 @@ fn an_order_after_a_swing_lands_does_not_hurry_the_next_one() {
     );
     world.advance(&[crate::game::Command {
         slot: bota_proto::SlotId(0),
+        unit: None,
         order: bota_proto::Order::Stop,
     }]);
     let state = world.attacking.get(hero).copied().expect("attacking");
@@ -3252,7 +3274,7 @@ fn a_hero_at_the_shop() -> (World, Entity, bota_proto::ItemId) {
 fn what_waits_in_the_stash_can_be_taken_into_the_bag() {
     let (mut world, hero, boots) = a_hero_at_the_shop();
     assert!(
-        world.move_item(bota_proto::SlotId(0), crate::game::BAG_SLOTS, 0),
+        world.move_item(bota_proto::SlotId(0), hero, crate::game::BAG_SLOTS, 0),
         "at its own shop the stash takes part"
     );
     assert_eq!(
@@ -3279,7 +3301,7 @@ fn the_backpack_takes_from_the_stash_too() {
     let (mut world, hero, boots) = a_hero_at_the_shop();
     let pocket = rules::INVENTORY_SLOTS;
     assert!(
-        world.move_item(bota_proto::SlotId(0), crate::game::BAG_SLOTS, pocket),
+        world.move_item(bota_proto::SlotId(0), hero, crate::game::BAG_SLOTS, pocket),
         "the pocket is a place like any other"
     );
     assert_eq!(
@@ -3294,7 +3316,7 @@ fn the_backpack_takes_from_the_stash_too() {
         "carried inert, it adds nothing"
     );
     // Out of the pocket into the inventory, it waits before it works.
-    assert!(world.move_item(bota_proto::SlotId(0), pocket, 0));
+    assert!(world.move_item(bota_proto::SlotId(0), hero, pocket, 0));
     world.step();
     assert_eq!(
         world.stats.get(hero).map(|s| s.move_speed),
@@ -3318,7 +3340,7 @@ fn the_stash_is_out_of_reach_away_from_the_shop() {
     let (mut world, hero, _boots) = a_hero_at_the_shop();
     world.transform.get_mut(hero).expect("hero").pos = bota_proto::Vec2::from_ints(9600, 9216);
     assert!(
-        !world.move_item(bota_proto::SlotId(0), crate::game::BAG_SLOTS, 0),
+        !world.move_item(bota_proto::SlotId(0), hero, crate::game::BAG_SLOTS, 0),
         "out in the lane the stash cannot be reached into"
     );
 }
@@ -3326,12 +3348,13 @@ fn the_stash_is_out_of_reach_away_from_the_shop() {
 #[test]
 fn selling_soon_after_buying_pays_the_whole_price_back() {
     let mut world = World::for_match(&config(), config().rng());
+    let hero = world.seats[0].unit.expect("stood up");
     let purse = world.seats[0].gold;
     let boots = bota_proto::ItemId(crate::game::ITEM_BOOTS);
     let mut events = Vec::new();
     assert!(world.buy(bota_proto::SlotId(0), boots, &mut events));
     assert!(
-        world.sell_item(bota_proto::SlotId(0), 0),
+        world.sell_item(bota_proto::SlotId(0), hero, 0),
         "and sells it back"
     );
     assert_eq!(world.seats[0].gold, purse, "nothing was lost on it");
@@ -3464,6 +3487,7 @@ fn an_order_takes_a_channel_away_and_leaves_the_scroll() {
     assert!(world.use_item(hero, 0, bota_proto::OrderTarget::Point { pos: to }));
     world.advance(&[crate::game::Command {
         slot: bota_proto::SlotId(0),
+        unit: None,
         order: bota_proto::Order::Stop,
     }]);
     assert!(!world.is_channelling(hero), "the order took it away");
@@ -4378,6 +4402,7 @@ fn pudge_and_a_mark(apart: i32) -> (World, Entity, Entity) {
 fn throw_hook(world: &mut World, at: bota_proto::Vec2) {
     world.advance(&[crate::game::Command {
         slot: bota_proto::SlotId(0),
+        unit: None,
         order: bota_proto::Order::CastAbility {
             slot: bota_proto::AbilitySlot(0),
             target: bota_proto::OrderTarget::Point { pos: at },
@@ -4522,6 +4547,7 @@ fn a_hero_keeps_what_it_learned_and_carried_through_a_death() {
 fn pudge_casts(world: &mut World, slot: u8, target: bota_proto::OrderTarget) {
     world.advance(&[crate::game::Command {
         slot: bota_proto::SlotId(0),
+        unit: None,
         order: bota_proto::Order::CastAbility {
             slot: bota_proto::AbilitySlot(slot),
             target,
@@ -4638,6 +4664,7 @@ fn a_dismember_holds_what_it_eats_and_feeds_the_one_eating() {
     // An order of any kind lets go.
     world.advance(&[crate::game::Command {
         slot: bota_proto::SlotId(0),
+        unit: None,
         order: bota_proto::Order::Stop,
     }]);
     assert!(world.dismember.get(pudge).is_none(), "an order lets go");
@@ -4783,11 +4810,11 @@ fn a_hero_hit_loses_its_drink_but_never_what_a_tree_bought() {
     // A creep may hit all day and the drink holds.
     hand_item(&mut world, hero, crate::game::ITEM_HEALING_SALVE, 1);
     assert!(world.use_item(hero, 0, bota_proto::OrderTarget::None));
-    world.spawn_hit(Some(creep), hero, 10, bota_proto::DamageKind::Physical);
+    world.push_hit(Some(creep), hero, 10, bota_proto::DamageKind::Physical);
     world.step();
     assert!(carries(&world, hero, salve), "a creep does not break it");
     // A hero's blow puts it out.
-    world.spawn_hit(Some(theirs), hero, 10, bota_proto::DamageKind::Physical);
+    world.push_hit(Some(theirs), hero, 10, bota_proto::DamageKind::Physical);
     world.step();
     assert!(!carries(&world, hero, salve), "a hero does");
     // What a tree bought is broken by nothing.
@@ -4803,7 +4830,7 @@ fn a_hero_hit_loses_its_drink_but_never_what_a_tree_bought() {
     world.transform.get_mut(hero).expect("hero").pos = tree + bota_proto::Vec2::from_ints(120, 0);
     hand_item(&mut world, hero, crate::game::ITEM_TANGO, 1);
     assert!(world.use_item(hero, 0, bota_proto::OrderTarget::Point { pos: tree }));
-    world.spawn_hit(Some(theirs), hero, 10, bota_proto::DamageKind::Physical);
+    world.push_hit(Some(theirs), hero, 10, bota_proto::DamageKind::Physical);
     world.step();
     assert!(
         carries(&world, hero, salve),
@@ -4914,7 +4941,7 @@ fn a_camp_struck_answers_as_one() {
         "left alone the camp takes nobody on"
     );
     // One of them is struck from out there.
-    world.spawn_hit(Some(hero), beasts[0], 10, bota_proto::DamageKind::Physical);
+    world.push_hit(Some(hero), beasts[0], 10, bota_proto::DamageKind::Physical);
     world.step();
     world.step();
     for beast in &beasts {
@@ -5003,7 +5030,7 @@ fn a_blow_wakes_a_camp_from_further_than_it_can_see() {
         beasts.iter().all(|beast| world.target_of(*beast).is_none()),
         "and they sleep through it"
     );
-    world.spawn_hit(Some(hero), beasts[0], 10, bota_proto::DamageKind::Physical);
+    world.push_hit(Some(hero), beasts[0], 10, bota_proto::DamageKind::Physical);
     world.step();
     world.step();
     for beast in &beasts {
@@ -5023,7 +5050,7 @@ fn a_blow_wakes_a_camp_from_further_than_it_can_see() {
         bota_proto::HeroId(0),
     );
     world.settle();
-    world.spawn_hit(Some(far), beasts[0], 10, bota_proto::DamageKind::Physical);
+    world.push_hit(Some(far), beasts[0], 10, bota_proto::DamageKind::Physical);
     world.step();
     world.step();
     assert!(
@@ -5074,7 +5101,7 @@ fn a_cast_with_no_mana_is_named_and_refused() {
         },
     };
     assert_eq!(
-        world.validate_order(bota_proto::SlotId(0), &aim),
+        world.validate_order(bota_proto::SlotId(0), None, &aim),
         Ok(()),
         "with the mana for it, it is allowed"
     );
@@ -5082,7 +5109,7 @@ fn a_cast_with_no_mana_is_named_and_refused() {
         .mana
         .insert(pudge, crate::game::Mana { mana: Fixed::ZERO });
     assert_eq!(
-        world.validate_order(bota_proto::SlotId(0), &aim),
+        world.validate_order(bota_proto::SlotId(0), None, &aim),
         Err(bota_proto::RejectReason::NotEnoughMana),
         "and without it the seat is told why"
     );
@@ -5094,40 +5121,781 @@ fn a_cast_with_no_mana_is_named_and_refused() {
         },
     };
     assert_eq!(
-        world.validate_order(bota_proto::SlotId(0), &unlearned),
-        Err(bota_proto::RejectReason::EmptySlot)
+        world.validate_order(bota_proto::SlotId(0), None, &unlearned),
+        Err(bota_proto::RejectReason::NotLearned),
+        "a slot with no points in it says so"
+    );
+    // A passive is not a slot with nothing in it: it is one that is never
+    // cast at all.
+    let passive = bota_proto::Order::CastAbility {
+        slot: bota_proto::AbilitySlot(2),
+        target: bota_proto::OrderTarget::None,
+    };
+    assert_eq!(
+        world.validate_order(bota_proto::SlotId(0), None, &passive),
+        Err(bota_proto::RejectReason::NotCastable),
+        "and a passive says that instead"
     );
     let wrongly_aimed = bota_proto::Order::CastAbility {
         slot: bota_proto::AbilitySlot(0),
         target: bota_proto::OrderTarget::None,
     };
     assert_eq!(
-        world.validate_order(bota_proto::SlotId(0), &wrongly_aimed),
+        world.validate_order(bota_proto::SlotId(0), None, &wrongly_aimed),
         Err(bota_proto::RejectReason::WrongTargetKind)
     );
 }
 
 #[test]
-fn a_spell_aimed_at_anybody_pulls_the_creeps_onto_the_one_casting() {
-    let (mut world, hero, theirs, ours, _foe) = a_lane_with_a_hero(300);
+fn a_spell_answers_the_way_a_swing_does_and_never_lets_go() {
+    // At an enemy hero it calls them on.
+    let (mut world, hero, theirs, ours, foe) = a_lane_with_a_hero(300);
     assert_eq!(
         world.target_of(theirs),
         Some(ours),
-        "left alone the creep fights the creep"
+        "left alone, creep on creep"
     );
-    // A spell at one of your own is still a spell, and the creeps see it.
-    world.advance(&[crate::game::Command {
-        slot: bota_proto::SlotId(0),
-        order: bota_proto::Order::CastAbility {
-            slot: bota_proto::AbilitySlot(1),
-            target: bota_proto::OrderTarget::Unit {
-                target: crate::game::wire_id(ours),
-            },
-        },
-    }]);
+    cast_at(&mut world, foe);
     assert_eq!(
         world.target_of(theirs),
         Some(hero),
-        "and come for whoever cast it"
+        "a spell at an enemy hero calls them on"
+    );
+    // At an enemy creep it moves nobody.
+    let (mut world, _hero, theirs, ours, _foe) = a_lane_with_a_hero(300);
+    cast_at(&mut world, theirs);
+    assert_eq!(
+        world.target_of(theirs),
+        Some(ours),
+        "a spell at an enemy creep is a spell like any other"
+    );
+    // At one of your own it is not their business: what holds them holds.
+    let (mut world, hero, theirs, ours, foe) = a_lane_with_a_hero(300);
+    cast_at(&mut world, foe);
+    assert_eq!(world.target_of(theirs), Some(hero), "called on");
+    cast_at(&mut world, ours);
+    assert_eq!(
+        world.target_of(theirs),
+        Some(hero),
+        "and a spell at one of your own does not let them go"
+    );
+}
+
+/// Sends the bolt at somebody the way a player does.
+fn cast_at(world: &mut World, mark: Entity) {
+    world.advance(&[crate::game::Command {
+        slot: bota_proto::SlotId(0),
+        unit: None,
+        order: bota_proto::Order::CastAbility {
+            slot: bota_proto::AbilitySlot(2),
+            target: bota_proto::OrderTarget::Unit {
+                target: crate::game::wire_id(mark),
+            },
+        },
+    }]);
+}
+
+#[test]
+fn a_bolt_goes_on_to_the_next_and_never_back_to_the_same_one() {
+    let mut world = World::new();
+    let at = bota_proto::Vec2::from_ints(5000, 5000);
+    let hero = caster(&mut world, at, 2);
+    // Three enemies in a row, each within a bounce of the last.
+    let marks: Vec<Entity> = (0..3)
+        .map(|step| {
+            world.spawn_unit(
+                &MELEE_CREEP,
+                bota_proto::Team::Dire,
+                at + bota_proto::Vec2::from_ints(300 + 300 * step, 0),
+            )
+        })
+        .collect();
+    world.settle();
+    world.step();
+    let full: Vec<i32> = marks
+        .iter()
+        .map(|mark| world.health.get(*mark).expect("standing").hp.to_int())
+        .collect();
+    world.order_cast(
+        hero,
+        crate::game::PendingCast {
+            slot: bota_proto::AbilitySlot(2),
+            target: bota_proto::OrderTarget::Unit {
+                target: crate::game::wire_id(marks[0]),
+            },
+        },
+    );
+    for _ in 0..120 {
+        world.step();
+    }
+    for (mark, was) in marks.iter().zip(full) {
+        assert!(
+            world.health.get(*mark).expect("standing").hp.to_int() < was,
+            "the bolt reached every one of them"
+        );
+    }
+    assert!(
+        world
+            .entities
+            .iter()
+            .all(|entity| world.projectile.get(entity).is_none()),
+        "and is gone once it runs out of places to go"
+    );
+}
+
+#[test]
+fn a_spell_aimed_at_what_it_cannot_take_is_named_and_refused() {
+    let mut world = World::for_match(&config(), config().rng());
+    let hero = world.seats[0].unit.expect("stood up");
+    world
+        .level
+        .insert(hero, crate::game::Level(rules::HERO_MAX_LEVEL));
+    let mut events = Vec::new();
+    assert!(world.learn(hero, 2, &mut events), "the bolt is learned");
+    let ally = world.spawn_unit(
+        &MELEE_CREEP,
+        bota_proto::Team::Radiant,
+        world.transform.get(hero).expect("standing").pos,
+    );
+    world.settle();
+    world.step();
+    let at_an_ally = bota_proto::Order::CastAbility {
+        slot: bota_proto::AbilitySlot(2),
+        target: bota_proto::OrderTarget::Unit {
+            target: crate::game::wire_id(ally),
+        },
+    };
+    assert_eq!(
+        world.validate_order(bota_proto::SlotId(0), None, &at_an_ally),
+        Err(bota_proto::RejectReason::WrongTargetKind),
+        "a bolt at one of your own is refused and named"
+    );
+}
+
+/// The courier of the first seat, while one stands.
+fn the_courier(world: &World) -> Entity {
+    world.seats[0].courier.expect("a seat has a courier")
+}
+
+#[test]
+fn a_seat_stands_up_with_a_courier_of_its_own() {
+    let world = World::for_match(&config(), config().rng());
+    let courier = the_courier(&world);
+    assert_eq!(
+        world.kind.get(courier),
+        Some(&bota_proto::UnitKind::Courier),
+        "it is a courier"
+    );
+    assert_eq!(
+        world.owner.get(courier),
+        Some(&bota_proto::SlotId(0)),
+        "and it belongs to the seat"
+    );
+    assert!(
+        world.inventory.get(courier).is_some(),
+        "and it has room to carry"
+    );
+    assert_eq!(
+        world.stats.get(courier).map(|stats| stats.damage),
+        Some(0),
+        "a courier does not fight"
+    );
+}
+
+#[test]
+fn a_courier_brought_down_comes_back_in_its_own_time() {
+    let mut world = World::for_match(&config(), config().rng());
+    let courier = the_courier(&world);
+    let mut events = Vec::new();
+    world.bury(vec![(courier, None)], &mut events);
+    world.step();
+    assert!(world.seats[0].courier.is_none(), "it is gone");
+    assert!(world.seats[0].courier_left > 0, "and a wait has started");
+    for _ in 0..rules::COURIER_RESPAWN_TICKS {
+        world.step();
+    }
+    let back = world.seats[0].courier.expect("it came back");
+    assert_ne!(back, courier, "as a new body");
+    assert_eq!(
+        world.transform.get(back).map(|at| at.pos),
+        Some(world.courier_home(bota_proto::Team::Radiant)),
+        "at its own fountain"
+    );
+}
+
+#[test]
+fn a_courier_fetches_the_stash_and_hands_it_to_its_owner() {
+    let mut world = World::for_match(&config(), config().rng());
+    let hero = world.seats[0].unit.expect("stood up");
+    let courier = the_courier(&world);
+    let boots = bota_proto::ItemId(crate::game::ITEM_BOOTS);
+    world.seats[0].stash.slots[0] = Some(crate::game::ItemStack {
+        id: boots,
+        charges: 0,
+        cooldown: 0,
+        mute: 0,
+        bought_tick: 0,
+        touched: false,
+    });
+    // Standing at the fountain, it takes what waits there on the next tick.
+    assert!(world.courier_take_stash(courier));
+    world.step();
+    assert!(
+        world.seats[0].stash.slots[0].is_none(),
+        "the stash is empty"
+    );
+    assert_eq!(
+        world.inventory.get(courier).expect("carries").slots[0].map(|held| held.id),
+        Some(boots),
+        "and the courier holds it"
+    );
+    // Sent out to its owner, it walks there and hands it over.
+    world.transform.get_mut(hero).expect("standing").pos =
+        world.courier_home(bota_proto::Team::Radiant) + bota_proto::Vec2::from_ints(900, 0);
+    assert!(world.courier_deliver(courier));
+    for _ in 0..400 {
+        world.step();
+        if world
+            .inventory
+            .get(hero)
+            .is_some_and(|bag| bag.held().count() > 0)
+        {
+            break;
+        }
+    }
+    assert_eq!(
+        world.inventory.get(hero).expect("has a bag").slots[0].map(|held| held.id),
+        Some(boots),
+        "what it carried is in its owner's hands"
+    );
+    assert_eq!(
+        world
+            .inventory
+            .get(courier)
+            .expect("carries")
+            .held()
+            .count(),
+        0,
+        "and the courier carries nothing now"
+    );
+}
+
+#[test]
+fn a_burst_makes_a_courier_fly_faster_and_only_one_at_a_time() {
+    let mut world = World::for_match(&config(), config().rng());
+    let courier = the_courier(&world);
+    world.step();
+    let plain = world.stats.get(courier).expect("settled").move_speed;
+    assert!(world.courier_burst(courier));
+    world.step();
+    assert!(
+        world.stats.get(courier).expect("settled").move_speed > plain,
+        "it flies faster"
+    );
+    assert!(
+        !world.courier_burst(courier),
+        "and one burst at a time is all it has"
+    );
+}
+
+#[test]
+fn an_order_goes_to_the_unit_it_names_and_only_to_ones_this_seat_drives() {
+    let mut world = World::for_match(&config(), config().rng());
+    let hero = world.seats[0].unit.expect("stood up");
+    let courier = the_courier(&world);
+    let to = world.courier_home(bota_proto::Team::Radiant) + bota_proto::Vec2::from_ints(600, 0);
+    let walk = bota_proto::Order::Move { pos: to };
+    // Naming nobody is the hero.
+    assert_eq!(
+        world.validate_order(bota_proto::SlotId(0), None, &walk),
+        Ok(())
+    );
+    // Naming its own courier is allowed, and the order lands on the courier.
+    let named = Some(crate::game::wire_id(courier));
+    assert_eq!(
+        world.validate_order(bota_proto::SlotId(0), named, &walk),
+        Ok(()),
+        "a seat drives its own courier"
+    );
+    world.advance(&[crate::game::Command {
+        slot: bota_proto::SlotId(0),
+        unit: named,
+        order: walk,
+    }]);
+    assert!(
+        matches!(
+            world.orders.get(courier).map(|orders| orders.current),
+            Some(crate::game::UnitOrder::Move { pos }) if pos == to
+        ),
+        "the courier was told, not the hero"
+    );
+    assert!(
+        !matches!(
+            world.orders.get(hero).map(|orders| orders.current),
+            Some(crate::game::UnitOrder::Move { .. })
+        ),
+        "and the hero was left alone"
+    );
+    // Anything else is nobody this seat drives.
+    let creep = world.spawn_unit(
+        &MELEE_CREEP,
+        bota_proto::Team::Radiant,
+        bota_proto::Vec2::from_ints(6000, 6000),
+    );
+    world.settle();
+    assert_eq!(
+        world.validate_order(
+            bota_proto::SlotId(0),
+            Some(crate::game::wire_id(creep)),
+            &walk
+        ),
+        Err(bota_proto::RejectReason::NotYourUnit),
+        "a creep of its own side is still not its to drive"
+    );
+}
+
+#[test]
+fn a_courier_carries_its_errands_as_abilities() {
+    let mut world = World::for_match(&config(), config().rng());
+    let courier = the_courier(&world);
+    let book = world.abilities.get(courier).expect("a courier casts");
+    let carried: Vec<_> = book.slots.iter().map(|slot| slot.id).collect();
+    assert_eq!(
+        carried,
+        vec![
+            crate::game::ability::TAKE_STASH,
+            crate::game::ability::RETURN_ITEMS,
+            crate::game::ability::BURST,
+            crate::game::ability::DELIVER,
+            crate::game::ability::SHIELD,
+        ],
+        "it knows what a courier knows"
+    );
+    assert!(
+        book.slots.iter().all(|slot| slot.level == 1),
+        "and knows them from the start"
+    );
+    // Sent through the wire the way a player sends it.
+    let named = Some(crate::game::wire_id(courier));
+    // The burst sits third, after the two that fetch and put back.
+    let burst = bota_proto::Order::CastAbility {
+        slot: bota_proto::AbilitySlot(2),
+        target: bota_proto::OrderTarget::None,
+    };
+    assert_eq!(
+        world.validate_order(bota_proto::SlotId(0), named, &burst),
+        Ok(())
+    );
+    world.step();
+    let plain = world.stats.get(courier).expect("settled").move_speed;
+    world.advance(&[crate::game::Command {
+        slot: bota_proto::SlotId(0),
+        unit: named,
+        order: burst,
+    }]);
+    world.step();
+    assert!(
+        world.stats.get(courier).expect("settled").move_speed > plain,
+        "the burst went off"
+    );
+}
+
+#[test]
+fn a_courier_told_to_go_at_a_unit_follows_it() {
+    let mut world = World::for_match(&config(), config().rng());
+    let courier = the_courier(&world);
+    let home = world.courier_home(bota_proto::Team::Radiant);
+    // Something of its own side standing a way off, that then walks further.
+    let mark = world.spawn_unit(
+        &MELEE_CREEP,
+        bota_proto::Team::Radiant,
+        home + bota_proto::Vec2::from_ints(700, 0),
+    );
+    world.settle();
+    world.advance(&[crate::game::Command {
+        slot: bota_proto::SlotId(0),
+        unit: Some(crate::game::wire_id(courier)),
+        order: bota_proto::Order::AttackUnit {
+            target: crate::game::wire_id(mark),
+        },
+    }]);
+    for _ in 0..120 {
+        world.step();
+    }
+    let near = |world: &World| {
+        let at = world.transform.get(courier).expect("standing").pos;
+        let to = world.transform.get(mark).expect("standing").pos;
+        crate::game::isqrt64(at.distance_squared(to))
+            <= i64::from(bota_proto::Fixed::from_int(150).raw)
+    };
+    assert!(near(&world), "it went to it");
+    // Moved on, it is followed rather than left behind.
+    world.transform.get_mut(mark).expect("standing").pos =
+        home + bota_proto::Vec2::from_ints(700, 900);
+    for _ in 0..200 {
+        world.step();
+    }
+    assert!(near(&world), "and it keeps up when the mark moves");
+}
+
+#[test]
+fn a_courier_at_the_fountain_reaches_the_stash_itself() {
+    let mut world = World::for_match(&config(), config().rng());
+    let hero = world.seats[0].unit.expect("stood up");
+    let courier = the_courier(&world);
+    let boots = bota_proto::ItemId(crate::game::ITEM_BOOTS);
+    world.seats[0].stash.slots[0] = Some(crate::game::ItemStack {
+        id: boots,
+        charges: 0,
+        cooldown: 0,
+        mute: 0,
+        bought_tick: 0,
+        touched: false,
+    });
+    // The hero is out in the lane, so the stash is nothing to it.
+    world.transform.get_mut(hero).expect("standing").pos =
+        world.courier_home(bota_proto::Team::Radiant) + bota_proto::Vec2::from_ints(4000, 0);
+    assert!(
+        !world.move_item(bota_proto::SlotId(0), hero, crate::game::BAG_SLOTS, 0),
+        "out in the lane a hero cannot reach into the stash"
+    );
+    // The courier is standing at the fountain, so for it the stash is right
+    // there.
+    assert!(
+        world.move_item(bota_proto::SlotId(0), courier, crate::game::BAG_SLOTS, 0),
+        "the courier at the fountain reaches it"
+    );
+    assert_eq!(
+        world.inventory.get(courier).expect("carries").slots[0].map(|held| held.id),
+        Some(boots),
+        "and what waited there is in its hands"
+    );
+    assert!(
+        world.seats[0].stash.slots[0].is_none(),
+        "the stash is empty"
+    );
+    // And back again.
+    assert!(world.move_item(bota_proto::SlotId(0), courier, 0, crate::game::BAG_SLOTS));
+    assert_eq!(
+        world.seats[0].stash.slots[0].map(|held| held.id),
+        Some(boots),
+        "it goes back the same way"
+    );
+}
+
+#[test]
+fn an_order_takes_a_courier_off_its_errand() {
+    let mut world = World::for_match(&config(), config().rng());
+    let hero = world.seats[0].unit.expect("stood up");
+    let courier = the_courier(&world);
+    let home = world.courier_home(bota_proto::Team::Radiant);
+    world.transform.get_mut(hero).expect("standing").pos =
+        home + bota_proto::Vec2::from_ints(3000, 0);
+    // Something to carry, or it would simply go home instead.
+    if let Some(bag) = world.inventory.get_mut(courier) {
+        bag.slots[0] = Some(crate::game::ItemStack {
+            id: bota_proto::ItemId(crate::game::ITEM_BOOTS),
+            charges: 0,
+            cooldown: 0,
+            mute: 0,
+            bought_tick: 0,
+            touched: false,
+        });
+    }
+    // Sent to its owner, it is on its way.
+    assert!(world.courier_deliver(courier));
+    for _ in 0..30 {
+        world.step();
+    }
+    assert_eq!(
+        world.errand.get(courier),
+        Some(&crate::game::Errand::ToOwner),
+        "it is on the errand"
+    );
+    // Told to go somewhere else, it goes there instead.
+    let aside = home + bota_proto::Vec2::from_ints(0, 800);
+    world.advance(&[crate::game::Command {
+        slot: bota_proto::SlotId(0),
+        unit: Some(crate::game::wire_id(courier)),
+        order: bota_proto::Order::Move { pos: aside },
+    }]);
+    assert_eq!(
+        world.errand.get(courier),
+        Some(&crate::game::Errand::None),
+        "the order took it off the errand"
+    );
+    for _ in 0..300 {
+        world.step();
+    }
+    assert_eq!(
+        world.transform.get(courier).map(|at| at.pos),
+        Some(aside),
+        "and it went where it was told"
+    );
+}
+
+#[test]
+fn a_courier_that_has_handed_over_turns_for_home() {
+    let mut world = World::for_match(&config(), config().rng());
+    let hero = world.seats[0].unit.expect("stood up");
+    let courier = the_courier(&world);
+    let home = world.courier_home(bota_proto::Team::Radiant);
+    world.transform.get_mut(hero).expect("standing").pos =
+        home + bota_proto::Vec2::from_ints(900, 0);
+    world.seats[0].stash.slots[0] = Some(crate::game::ItemStack {
+        id: bota_proto::ItemId(crate::game::ITEM_BOOTS),
+        charges: 0,
+        cooldown: 0,
+        mute: 0,
+        bought_tick: 0,
+        touched: false,
+    });
+    assert!(world.courier_take_stash(courier));
+    world.step();
+    assert!(world.courier_deliver(courier));
+    for _ in 0..300 {
+        world.step();
+        if world.errand.get(courier) == Some(&crate::game::Errand::None) {
+            break;
+        }
+    }
+    assert!(
+        world
+            .inventory
+            .get(hero)
+            .is_some_and(|bag| bag.held().count() > 0),
+        "it handed over"
+    );
+    assert!(
+        matches!(
+            world.orders.get(courier).map(|orders| orders.current),
+            Some(crate::game::UnitOrder::Move { pos }) if pos == home
+        ),
+        "and turned for home on its own"
+    );
+}
+
+#[test]
+fn taking_the_stash_carries_it_on_without_being_asked_twice() {
+    let mut world = World::for_match(&config(), config().rng());
+    let hero = world.seats[0].unit.expect("stood up");
+    let courier = the_courier(&world);
+    let home = world.courier_home(bota_proto::Team::Radiant);
+    world.transform.get_mut(hero).expect("standing").pos =
+        home + bota_proto::Vec2::from_ints(900, 0);
+    world.seats[0].stash.slots[0] = Some(crate::game::ItemStack {
+        id: bota_proto::ItemId(crate::game::ITEM_BOOTS),
+        charges: 0,
+        cooldown: 0,
+        mute: 0,
+        bought_tick: 0,
+        touched: false,
+    });
+    assert!(world.courier_take_stash(courier));
+    for _ in 0..300 {
+        world.step();
+        if world
+            .inventory
+            .get(hero)
+            .is_some_and(|bag| bag.held().count() > 0)
+        {
+            break;
+        }
+    }
+    assert!(
+        world.inventory.get(hero).expect("has a bag").held().count() > 0,
+        "one press fetched it and brought it"
+    );
+}
+
+#[test]
+fn an_errand_with_nothing_to_do_sends_the_courier_home() {
+    let mut world = World::for_match(&config(), config().rng());
+    let courier = the_courier(&world);
+    let home = world.courier_home(bota_proto::Team::Radiant);
+    world.transform.get_mut(courier).expect("standing").pos =
+        home + bota_proto::Vec2::from_ints(1500, 0);
+    // Nothing in the stash and nothing in its hands.
+    assert!(world.courier_take_stash(courier));
+    world.step();
+    assert_eq!(
+        world.errand.get(courier),
+        Some(&crate::game::Errand::GoingHome),
+        "with nothing to take it goes home"
+    );
+    for _ in 0..400 {
+        world.step();
+    }
+    assert_eq!(
+        world.transform.get(courier).map(|at| at.pos),
+        Some(home),
+        "and gets there"
+    );
+}
+
+#[test]
+fn a_courier_whose_owner_fell_puts_what_it_carries_back() {
+    let mut world = World::for_match(&config(), config().rng());
+    let hero = world.seats[0].unit.expect("stood up");
+    let courier = the_courier(&world);
+    if let Some(bag) = world.inventory.get_mut(courier) {
+        bag.slots[0] = Some(crate::game::ItemStack {
+            id: bota_proto::ItemId(crate::game::ITEM_BOOTS),
+            charges: 0,
+            cooldown: 0,
+            mute: 0,
+            bought_tick: 0,
+            touched: false,
+        });
+    }
+    let mut events = Vec::new();
+    world.bury(vec![(hero, None)], &mut events);
+    assert!(world.courier_deliver(courier));
+    for _ in 0..300 {
+        world.step();
+        if world.seats[0].stash.held().count() > 0 {
+            break;
+        }
+    }
+    assert!(
+        world.seats[0].stash.held().count() > 0,
+        "with nobody to hand to, it put it back in the stash"
+    );
+}
+
+#[test]
+fn a_shielded_courier_takes_nothing() {
+    let mut world = World::for_match(&config(), config().rng());
+    let courier = the_courier(&world);
+    world.step();
+    let full = world.health.get(courier).expect("standing").hp;
+    assert!(world.courier_shield(courier));
+    world.step();
+    world.push_hit(None, courier, 100, bota_proto::DamageKind::Pure);
+    world.step();
+    assert_eq!(
+        world.health.get(courier).map(|health| health.hp),
+        Some(full),
+        "nothing gets through while it holds"
+    );
+    for _ in 0..rules::COURIER_SHIELD_TICKS {
+        world.step();
+    }
+    world.push_hit(None, courier, 100, bota_proto::DamageKind::Pure);
+    world.step();
+    assert!(
+        world.health.get(courier).expect("standing").hp < full,
+        "and once it lifts the courier is a courier again"
+    );
+}
+
+#[test]
+fn the_stash_sells_from_anywhere_and_a_bag_only_at_the_shop() {
+    let mut world = World::for_match(&config(), config().rng());
+    let hero = world.seats[0].unit.expect("stood up");
+    let boots = bota_proto::ItemId(crate::game::ITEM_BOOTS);
+    let stack = crate::game::ItemStack {
+        id: boots,
+        charges: 0,
+        cooldown: 0,
+        mute: 0,
+        bought_tick: 0,
+        touched: true,
+    };
+    if let Some(bag) = world.inventory.get_mut(hero) {
+        bag.slots[0] = Some(stack);
+    }
+    world.seats[0].stash.slots[0] = Some(stack);
+    // Out in the lane, well away from its own shop.
+    world.transform.get_mut(hero).expect("standing").pos =
+        world.courier_home(bota_proto::Team::Radiant) + bota_proto::Vec2::from_ints(4000, 0);
+    world.settle();
+    assert!(
+        !world.sell_item(bota_proto::SlotId(0), hero, 0),
+        "what it carries is not sold from out there"
+    );
+    let purse = world.seats[0].gold;
+    assert!(
+        world.sell_item(bota_proto::SlotId(0), hero, crate::game::BAG_SLOTS),
+        "what waits in the stash is already at the shop"
+    );
+    assert!(world.seats[0].gold > purse, "and paid for");
+    assert!(
+        world.seats[0].stash.slots[0].is_none(),
+        "and gone from the stash"
+    );
+    // The order is refused and named the same way.
+    let sell_bag = bota_proto::Order::SellItem {
+        slot: bota_proto::ItemSlot(0),
+    };
+    assert_eq!(
+        world.validate_order(bota_proto::SlotId(0), None, &sell_bag),
+        Err(bota_proto::RejectReason::NotAtShop)
+    );
+}
+
+#[test]
+fn the_jungle_pays_a_courier_no_mind_but_the_other_side_does_not() {
+    let mut world = World::for_match(&config(), config().rng());
+    let courier = the_courier(&world);
+    let at = world.transform.get(courier).expect("standing").pos;
+    // A neutral and a creep of the other side, both standing on top of it.
+    let beast = world.spawn_unit(
+        crate::game::NeutralKind::Kobold.def(),
+        bota_proto::Team::Neutral,
+        at,
+    );
+    world
+        .camp_home
+        .insert(beast, crate::game::CampHome { camp: 0, home: at });
+    world.neutral_ai.insert(
+        beast,
+        crate::game::NeutralAi {
+            leash_left: rules::NEUTRAL_AGGRO_WINDOW,
+            reaggro_block: 0,
+            next_window: rules::NEUTRAL_AGGRO_WINDOW,
+            going_home: false,
+            roused_by: None,
+            awake: true,
+        },
+    );
+    let creep = world.spawn_unit(&MELEE_CREEP, bota_proto::Team::Dire, at);
+    world.settle();
+    for _ in 0..10 {
+        world.step();
+    }
+    assert!(
+        !world.hostile(beast, courier),
+        "the jungle does not take a courier on"
+    );
+    assert_ne!(world.target_of(beast), Some(courier));
+    assert!(
+        world.hostile(creep, courier),
+        "a creep of the other side does"
+    );
+    assert_eq!(world.target_of(creep), Some(courier), "and goes for it");
+}
+
+#[test]
+fn what_a_courier_carries_is_worth_nothing_to_the_courier() {
+    let mut world = World::for_match(&config(), config().rng());
+    let courier = the_courier(&world);
+    world.step();
+    let plain = world.stats.get(courier).expect("settled").move_speed;
+    if let Some(bag) = world.inventory.get_mut(courier) {
+        bag.slots[0] = Some(crate::game::ItemStack {
+            id: bota_proto::ItemId(crate::game::ITEM_BOOTS),
+            charges: 0,
+            cooldown: 0,
+            mute: 0,
+            bought_tick: 0,
+            touched: false,
+        });
+    }
+    world.step();
+    assert_eq!(
+        world.stats.get(courier).map(|stats| stats.move_speed),
+        Some(plain),
+        "it carries the boots, it does not wear them"
     );
 }

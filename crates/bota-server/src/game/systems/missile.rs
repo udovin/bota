@@ -1,8 +1,12 @@
 //! Missiles in the air, and what they leave behind when they arrive.
 
+use std::collections::VecDeque;
+
 use bota_proto::{Fixed, Team};
 
-use crate::game::{EntityAllocator, Health, Hit, Projectile, Table, Transform, Visibility};
+use crate::game::{
+    Entity, EntityAllocator, Health, Hit, Projectile, Table, Transform, Visibility, World, rules,
+};
 use crate::game::{facing_towards, move_towards, per_tick};
 
 /// What flight reads and writes.
@@ -20,13 +24,16 @@ pub struct MissileCx<'a> {
     /// Health, for telling whether a missile still has anybody to reach.
     pub health: &'a Table<Health>,
     /// Where an arriving missile leaves its blow.
-    pub hit: &'a mut Table<Hit>,
+    pub hits: &'a mut VecDeque<Hit>,
+    /// Where one that still has a bounce in it is left to be sent on.
+    pub bounced: &'a mut VecDeque<(Entity, Entity)>,
 }
 
 /// Moves every missile along and turns the ones that arrive into blows.
 ///
 /// A missile whose target has fallen is given up in the air: nothing it was
-/// aimed at is left to reach.
+/// aimed at is left to reach. One that lands with a bounce still in it is
+/// left on the bounce queue rather than given up.
 pub fn missile_system(cx: MissileCx<'_>) {
     let MissileCx {
         entities,
@@ -35,7 +42,8 @@ pub fn missile_system(cx: MissileCx<'_>) {
         team,
         visibility,
         health,
-        hit,
+        hits,
+        bounced,
     } = cx;
     for missile in entities.iter().collect::<Vec<_>>() {
         let Some(shot) = projectile.get(missile).cloned() else {
@@ -58,17 +66,19 @@ pub fn missile_system(cx: MissileCx<'_>) {
         if next != to {
             continue;
         }
-        let blow = entities.alloc();
-        hit.insert(
-            blow,
-            Hit {
-                source: shot.source,
-                target: shot.target,
-                amount: shot.damage,
-                kind: shot.kind,
-                crit: shot.crit,
-            },
-        );
+        hits.push_back(Hit {
+            source: shot.source,
+            target: shot.target,
+            amount: shot.damage,
+            kind: shot.kind,
+            crit: shot.crit,
+        });
+        // One with bounces left is kept where it landed: where it goes next
+        // is settled once it is known what stands there.
+        if shot.bounces_left > 0 {
+            bounced.push_back((missile, shot.target));
+            continue;
+        }
         give_up(missile, entities, projectile, transform, team, visibility);
     }
 }
@@ -87,4 +97,68 @@ fn give_up(
     team.remove(missile);
     visibility.remove(missile);
     entities.free(missile);
+}
+
+impl World {
+    /// Sends every missile that landed on to its next mark, and gives up the
+    /// ones with nowhere left to go.
+    pub fn bounce_missiles(&mut self) {
+        for (missile, from) in std::mem::take(&mut self.bounced) {
+            if !self.bounce_on(missile, from) {
+                self.give_up_missile(missile);
+            }
+        }
+    }
+
+    /// Sends a missile on to the next enemy near where it landed.
+    ///
+    /// It never strikes the same one twice, and stops once its bounces are
+    /// spent or there is nobody left to go to.
+    pub fn bounce_on(&mut self, missile: Entity, from: Entity) -> bool {
+        let Some(mut shot) = self.projectile.get(missile).cloned() else {
+            return false;
+        };
+        if shot.bounces_left == 0 {
+            return false;
+        }
+        let Some(at) = self.transform.get(from).map(|t| t.pos) else {
+            return false;
+        };
+        let radius = rules::units(shot.bounce_range);
+        let Some(source) = shot.source else {
+            return false;
+        };
+        let next = self
+            .entities
+            .iter()
+            .filter(|other| {
+                !shot.bounced.contains(other)
+                    && self.hostile(source, *other)
+                    && self
+                        .transform
+                        .get(*other)
+                        .is_some_and(|t| t.pos.within(at, radius))
+            })
+            .min_by_key(|other| {
+                self.transform
+                    .get(*other)
+                    .map_or(i64::MAX, |t| t.pos.distance_squared(at))
+            });
+        let Some(next) = next else {
+            return false;
+        };
+        shot.bounces_left -= 1;
+        shot.bounced.push(next);
+        shot.target = next;
+        self.projectile.insert(missile, shot);
+        true
+    }
+
+    /// Takes a missile out of the air and out of the world.
+    pub fn give_up_missile(&mut self, missile: Entity) {
+        self.projectile.remove(missile);
+        self.transform.remove(missile);
+        self.team.remove(missile);
+        self.despawn(missile);
+    }
 }

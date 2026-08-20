@@ -33,6 +33,7 @@ pub fn handle(app: &mut App) {
     match app.phase {
         Phase::Lobby => lobby_controls(app),
         Phase::Playing => {
+            pick_controls(app);
             replay_controls(app);
             let ui_click = ui_clicks(app);
             if !ui_click {
@@ -203,13 +204,51 @@ fn selection_clicks(app: &mut App) {
     app.selection = match hit {
         None => Selection::Own,
         Some(id) => {
-            let owner = view.units.iter().find(|u| u.id == id).and_then(|u| u.owner);
-            match owner {
+            // A seat is picked by clicking the hero that holds it. Anything
+            // else a seat owns — a courier, and whatever comes after it — is
+            // picked as itself.
+            let unit = view.units.iter().find(|unit| unit.id == id);
+            match unit.and_then(|unit| {
+                unit.owner
+                    .filter(|_| unit.kind == bota_proto::UnitKind::Hero)
+            }) {
                 Some(slot) => Selection::Seat(slot),
                 None => Selection::Unit(id),
             }
         }
     };
+}
+
+/// Which ability of a courier fetches the stash.
+const TAKE_STASH: u16 = 10;
+
+/// F1 picks one's own hero, F2 one's own courier, F3 sends that courier for
+/// the stash without looking away from the fight.
+fn pick_controls(app: &mut App) {
+    if is_key_pressed(KeyCode::F1) {
+        app.selection = crate::state::Selection::Own;
+        app.pending_ability = None;
+        app.pending_item = None;
+    }
+    if is_key_pressed(KeyCode::F2)
+        && let Some(courier) = app.my_courier()
+    {
+        app.selection = crate::state::Selection::Unit(courier);
+        app.pending_ability = None;
+        app.pending_item = None;
+    }
+    if is_key_pressed(KeyCode::F3)
+        && let Some(courier) = app.my_courier()
+        && let Some(slot) = app.courier_slot(TAKE_STASH)
+    {
+        app.send_order_to(
+            Some(courier),
+            Order::CastAbility {
+                slot: AbilitySlot(slot),
+                target: OrderTarget::None,
+            },
+        );
+    }
 }
 
 fn lobby_controls(app: &mut App) {
@@ -440,15 +479,23 @@ fn use_or_aim(app: &mut App, slot: u8) {
     }
 }
 
-/// Q, W, E and R cast the four slots; with Control held they spend a skill
-/// point instead. One that is aimed arms and waits for a click.
+/// Q, W, E, R, T and G cast the slots of whatever is selected; with Control
+/// held they spend a skill point instead. One that is aimed arms and waits
+/// for a click. Nothing is sent for a unit this seat does not drive.
 fn ability_keys(app: &mut App) {
     let keys = [
         (KeyCode::Q, 0u8),
         (KeyCode::W, 1),
         (KeyCode::E, 2),
         (KeyCode::R, 3),
+        (KeyCode::T, 4),
+        (KeyCode::G, 5),
     ];
+    // What is selected may be looked at whatever it is; the keys answer only
+    // for what this seat drives.
+    if !app.commanded().is_some_and(|unit| app.drives(unit)) {
+        return;
+    }
     let ctrl = is_key_down(KeyCode::LeftControl) || is_key_down(KeyCode::RightControl);
     for (key, slot) in keys {
         if !is_key_pressed(key) {

@@ -1,6 +1,6 @@
 //! The messages themselves, and the lobby types they carry.
 
-use crate::{EventKind, HeroId, MapId, Order, PlayerId, SlotId, Team, Vec2, WorldView};
+use crate::{EntityId, EventKind, HeroId, MapId, Order, PlayerId, SlotId, Team, Vec2, WorldView};
 use serde::{Deserialize, Serialize};
 
 /// Why a participant connected.
@@ -110,6 +110,12 @@ pub enum RejectReason {
     NotEnoughGold,
     /// The referenced ability or inventory slot is empty.
     EmptySlot,
+    /// The ability works on its own and is never cast.
+    NotCastable,
+    /// The ability has no points in it yet.
+    NotLearned,
+    /// The order named a unit this seat does not drive.
+    NotYourUnit,
     /// No item with this id is sold.
     UnknownItem,
     /// No skill point is available, or the ability is already at its cap.
@@ -174,7 +180,7 @@ pub enum ClientMsg {
     /// Declare readiness, or withdraw it. The match starts when every seat is
     /// filled and ready.
     SetReady(bool),
-    /// Tell the hero what to do.
+    /// Tell one of the units this seat drives what to do.
     ///
     /// At most one order per seat survives per tick and the last one wins, so
     /// re-sending is harmless.
@@ -182,6 +188,9 @@ pub enum ClientMsg {
         /// Sequence number, unique per connection and increasing. A
         /// [`ServerMsg::OrderRejected`] names the order by this.
         seq: u32,
+        /// Which unit it is for. Absent means the seat's own hero, which is
+        /// what most orders are for.
+        unit: Option<EntityId>,
         /// What to do.
         order: Order,
     },

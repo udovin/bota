@@ -28,6 +28,9 @@ impl World {
             seat.unit = Some(hero);
             world.seats.push(seat);
         }
+        for seat in 0..world.seats.len() {
+            world.stand_up_courier(seat);
+        }
         world.settle();
         world
     }
@@ -45,12 +48,7 @@ impl World {
 
     /// Hands one order to the body of the seat that gave it.
     fn take_order(&mut self, cmd: &Command) {
-        let Some(unit) = self
-            .seats
-            .iter()
-            .find(|s| s.slot == cmd.slot)
-            .and_then(|s| s.unit)
-        else {
+        let Some(unit) = self.driven_by(cmd.slot, cmd.unit) else {
             return;
         };
         // An order is an animation cancel: the recovery after a swing ends
@@ -59,10 +57,13 @@ impl World {
         if let Some(state) = self.attacking.get_mut(unit) {
             state.recovering = 0;
         }
-        // An order also takes a channel away, before whatever the order
-        // itself does gets a chance to start another.
+        // An order also takes a channel away, and an errand with it, before
+        // whatever the order itself does gets a chance to start another.
         self.teleport.remove(unit);
         self.dismember.remove(unit);
+        if self.errand.get(unit).is_some() {
+            self.errand.insert(unit, crate::game::Errand::None);
+        }
         let wanted = match cmd.order {
             Order::Move { pos } => UnitOrder::Move { pos },
             Order::AttackMove { pos } => UnitOrder::AttackMove { pos },
@@ -103,11 +104,11 @@ impl World {
                 return;
             }
             Order::MoveItem { from, to } => {
-                self.move_item(cmd.slot, usize::from(from.0), usize::from(to.0));
+                self.move_item(cmd.slot, unit, usize::from(from.0), usize::from(to.0));
                 return;
             }
             Order::SellItem { slot: at } => {
-                self.sell_item(cmd.slot, usize::from(at.0));
+                self.sell_item(cmd.slot, unit, usize::from(at.0));
                 return;
             }
             Order::BuyItem { item } => {
@@ -117,6 +118,19 @@ impl World {
             }
         };
         self.set_order(unit, wanted);
+    }
+
+    /// The unit an order is for, if the seat drives it.
+    ///
+    /// Naming nobody means the seat's own hero, which is what most orders
+    /// are for. Naming anything a seat does not drive is nobody at all.
+    pub fn driven_by(&self, slot: SlotId, named: Option<bota_proto::EntityId>) -> Option<Entity> {
+        let seat = self.seats.iter().find(|seat| seat.slot == slot)?;
+        let Some(named) = named else {
+            return seat.unit;
+        };
+        let unit = self.of_wire(named)?;
+        (self.owner.get(unit) == Some(&slot)).then_some(unit)
     }
 
     /// The seat at a slot, if that slot is in the match.
@@ -129,12 +143,22 @@ impl World {
     /// A seat with no body standing may order nothing, and a target it cannot
     /// see may as well not exist. Everything else is allowed to be asked for,
     /// whether or not it can be carried out.
-    pub fn validate_order(&self, slot: SlotId, order: &Order) -> Result<(), RejectReason> {
+    pub fn validate_order(
+        &self,
+        slot: SlotId,
+        named: Option<bota_proto::EntityId>,
+        order: &Order,
+    ) -> Result<(), RejectReason> {
         let Some(seat) = self.seats.iter().find(|s| s.slot == slot) else {
             return Err(RejectReason::HeroDead);
         };
-        let Some(unit) = seat.unit else {
-            return Err(RejectReason::HeroDead);
+        // A named unit has to be one this seat drives; naming nobody means
+        // its hero, and a seat with no hero standing drives nothing.
+        let unit = match named {
+            None => seat.unit.ok_or(RejectReason::HeroDead)?,
+            Some(named) => self
+                .driven_by(slot, Some(named))
+                .ok_or(RejectReason::NotYourUnit)?,
         };
         if !self.alive(unit) {
             return Err(RejectReason::HeroDead);
@@ -165,8 +189,11 @@ impl World {
                 let Some(def) = crate::game::ability_def(held.id) else {
                     return Err(RejectReason::EmptySlot);
                 };
-                if def.passive || held.level == 0 {
-                    return Err(RejectReason::EmptySlot);
+                if def.passive {
+                    return Err(RejectReason::NotCastable);
+                }
+                if held.level == 0 {
+                    return Err(RejectReason::NotLearned);
                 }
                 if held.cooldown > 0 {
                     return Err(RejectReason::OnCooldown);
@@ -179,10 +206,13 @@ impl World {
                 if !aimed_right {
                     return Err(RejectReason::WrongTargetKind);
                 }
-                if let OrderTarget::Unit { target } = target
-                    && self.of_wire(*target).is_none()
-                {
-                    return Err(RejectReason::UnknownTarget);
+                if let OrderTarget::Unit { target } = target {
+                    let Some(mark) = self.of_wire(*target) else {
+                        return Err(RejectReason::UnknownTarget);
+                    };
+                    if def.at_an_enemy && !self.hostile(unit, mark) {
+                        return Err(RejectReason::WrongTargetKind);
+                    }
                 }
                 let held_mana = self.mana.get(unit).map_or(0, |mana| mana.mana.to_int());
                 if held_mana < crate::game::ability_mana_cost(held.id, held.level) {
@@ -208,10 +238,11 @@ impl World {
                 Ok(())
             }
             Order::SellItem { slot } => {
-                if !self.holds(unit, seat, usize::from(slot.0)) {
+                let at = usize::from(slot.0);
+                if !self.holds(unit, seat, at) {
                     return Err(RejectReason::EmptySlot);
                 }
-                if !self.at_shop(unit) {
+                if !in_stash(at) && !self.at_shop(unit) {
                     return Err(RejectReason::NotAtShop);
                 }
                 Ok(())

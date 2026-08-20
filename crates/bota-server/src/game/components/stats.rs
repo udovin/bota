@@ -47,6 +47,8 @@ pub struct Stats {
     pub true_sight: Fixed,
     /// Whether the other side sees it only through true sight.
     pub hides: bool,
+    /// Whether it flies: closed ground is nothing to it.
+    pub flies: bool,
     /// Whether damage passes it by.
     pub invulnerable: bool,
 }

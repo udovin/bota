@@ -49,7 +49,11 @@ fn a_1v1_snapshot_fits_in_a_tcp_burst() {
 #[test]
 fn an_order_stays_small() {
     for order in all_orders() {
-        let msg = ClientMsg::Order { seq: 12345, order };
+        let msg = ClientMsg::Order {
+            seq: 12345,
+            unit: None,
+            order,
+        };
         let len = encoded_len(&msg);
         assert!(len <= 32, "order encoded to {len} bytes: {msg:?}");
     }

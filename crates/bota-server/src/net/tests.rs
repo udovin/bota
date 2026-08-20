@@ -117,12 +117,14 @@ fn a_realtime_match_reaches_two_clients() {
     // A legal order passes silently; an impossible one is named and refused.
     c1.send(&ClientMsg::Order {
         seq: 1,
+        unit: None,
         order: Order::Move {
             pos: Vec2::from_ints(1000, 1000),
         },
     });
     c1.send(&ClientMsg::Order {
         seq: 2,
+        unit: None,
         order: Order::BuyItem {
             item: bota_proto::ItemId(999),
         },

@@ -51,7 +51,7 @@ impl World {
         }
         for (from, on, amount, kind) in struck {
             if self.health.get(on).is_some_and(|h| h.hp > Fixed::ZERO) {
-                self.spawn_hit(from, on, amount, kind);
+                self.push_hit(from, on, amount, kind);
             }
         }
     }

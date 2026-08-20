@@ -1,14 +1,16 @@
 //! The world: one table per component, and the order a tick runs in.
 
+use std::collections::VecDeque;
+
 use bota_proto::{HeroId, SlotId, Team, UnitKind};
 
 use crate::game::{
     AbilityBook, AttackCx, Attacking, AuraCx, Auras, Bounty, CampHome, Def, Dismembering, Entity,
-    EntityAllocator, Expiry, FleshHeap, Forest, Health, Hit, Hook, Hull, Inventory, Lane, LaneAi,
-    Level, Mana, March, NeutralAi, Orders, PendingCast, Projectile, Rotting, Route, Seat, SightCx,
-    Stats, StatsCx, Statuses, Table, Target, Teleport, Tier, Transform, UnitOrder, Upgrades,
-    Visibility, attacking_system, aura_system, derive_stats, hitting_system, missile_system,
-    regenerate, visibility_system,
+    EntityAllocator, Errand, Expiry, FleshHeap, Forest, Health, Hit, Hook, Hull, Inventory, Landed,
+    Lane, LaneAi, Level, Mana, March, NeutralAi, Orders, PendingCast, Projectile, Rotting, Route,
+    Seat, SightCx, Stats, StatsCx, Statuses, Table, Target, Teleport, Tier, Transform, UnitOrder,
+    Upgrades, Visibility, attacking_system, aura_system, derive_stats, hitting_system,
+    missile_system, regenerate, visibility_system,
 };
 use crate::game::{HitCx, MissileCx};
 
@@ -39,6 +41,13 @@ pub struct World {
     pub sight_block: crate::game::PassGrid,
     /// The forest as it stands: what is down, and what has been put up.
     pub trees: Forest,
+    /// Blows dealt and not yet felt. Filled and emptied inside one tick.
+    pub hits: VecDeque<Hit>,
+    /// Blows felt this tick, for whatever answers to them.
+    pub landed: VecDeque<Landed>,
+    /// Missiles that arrived with a bounce still in them, beside what they
+    /// arrived on.
+    pub bounced: VecDeque<(Entity, Entity)>,
     /// Which entities exist.
     pub entities: EntityAllocator,
 
@@ -50,8 +59,6 @@ pub struct World {
     pub kind: Table<UnitKind>,
     /// Which side each entity is on.
     pub team: Table<Team>,
-    /// Blows waiting to be felt.
-    pub hit: Table<Hit>,
 
     /// Health, for whatever can be hurt.
     pub health: Table<Health>,
@@ -78,6 +85,8 @@ pub struct World {
     pub dismember: Table<Dismembering>,
     /// What each entity has kept of the deaths around it.
     pub flesh_heap: Table<FleshHeap>,
+    /// The errand each courier is on.
+    pub errand: Table<Errand>,
     /// How long each entity that stands for a time has left.
     pub expiry: Table<Expiry>,
     /// The teleport each entity is channelling.
@@ -146,12 +155,14 @@ impl World {
             ground: crate::game::Ground::of(crate::game::map_of(bota_proto::MapId(0))),
             sight_block: crate::game::PassGrid::open(),
             trees: Forest::default(),
+            hits: VecDeque::new(),
+            landed: VecDeque::new(),
+            bounced: VecDeque::new(),
             entities: EntityAllocator::new(),
             transform: Table::new(),
             hull: Table::new(),
             kind: Table::new(),
             team: Table::new(),
-            hit: Table::new(),
             health: Table::new(),
             mana: Table::new(),
             def: Table::new(),
@@ -164,6 +175,7 @@ impl World {
             rotting: Table::new(),
             dismember: Table::new(),
             flesh_heap: Table::new(),
+            errand: Table::new(),
             expiry: Table::new(),
             teleport: Table::new(),
             auras: Table::new(),
@@ -204,26 +216,24 @@ impl World {
 
     /// Leaves a blow for the next tick of resolving to take off somebody.
     ///
-    /// What an ability deals goes through the same door as what a swing does.
-    pub fn spawn_hit(
+    /// Lays a blow on the queue for this tick.
+    ///
+    /// A blow is a message rather than a thing standing on the map: it is
+    /// felt and forgotten inside the tick that dealt it.
+    pub fn push_hit(
         &mut self,
         source: Option<Entity>,
         target: Entity,
         amount: i32,
         kind: bota_proto::DamageKind,
-    ) -> Entity {
-        let blow = self.spawn();
-        self.hit.insert(
-            blow,
-            Hit {
-                source,
-                target,
-                amount,
-                kind,
-                crit: false,
-            },
-        );
-        blow
+    ) {
+        self.hits.push_back(Hit {
+            source,
+            target,
+            amount,
+            kind,
+            crit: false,
+        });
     }
 
     /// Tells an entity what to do, leaving what it is waiting on alone.
@@ -365,6 +375,7 @@ impl World {
         self.tick_gear();
         self.passive_gold();
         self.tick_respawns();
+        self.tick_couriers();
         self.tick_teleports();
         self.tick_expiries();
         self.tick_burning();
@@ -427,7 +438,7 @@ impl World {
             target: &self.target,
             statuses: &self.statuses,
             attacking: &mut self.attacking,
-            hit: &mut self.hit,
+            hits: &mut self.hits,
             projectile: &mut self.projectile,
         });
         missile_system(MissileCx {
@@ -437,17 +448,20 @@ impl World {
             team: &mut self.team,
             visibility: &mut self.visibility,
             health: &self.health,
-            hit: &mut self.hit,
+            hits: &mut self.hits,
+            bounced: &mut self.bounced,
         });
+        self.bounce_missiles();
         self.run_casts(&mut events);
-        let felt = hitting_system(HitCx {
-            entities: &mut self.entities,
-            hit: &mut self.hit,
+        hitting_system(HitCx {
+            hits: &mut self.hits,
+            landed: &mut self.landed,
             transform: &self.transform,
             team: &self.team,
             stats: &self.stats,
             health: &mut self.health,
         });
+        let felt: Vec<Landed> = self.landed.drain(..).collect();
         self.break_drinks(&felt);
         self.rouse_camps(&felt);
         self.tell_of(&felt, &mut events);

@@ -31,6 +31,8 @@ pub struct AbilityDef {
     pub passive: bool,
     /// Whether it is the ultimate, which waits on higher hero levels.
     pub ultimate: bool,
+    /// Whether what it is aimed at has to be something its caster fights.
+    pub at_an_enemy: bool,
     /// Mana each level costs.
     pub mana: &'static [i32],
     /// Ticks between casts, by level.
@@ -55,15 +57,26 @@ pub const ROT: AbilityId = AbilityId(5);
 pub const FLESH_HEAP: AbilityId = AbilityId(6);
 /// Pudge's dismember: a channel that holds one unit and eats it.
 pub const DISMEMBER: AbilityId = AbilityId(7);
+/// A courier's burst of speed.
+pub const BURST: AbilityId = AbilityId(8);
+/// A courier putting back what it carries.
+pub const RETURN_ITEMS: AbilityId = AbilityId(9);
+/// A courier taking what waits in the stash.
+pub const TAKE_STASH: AbilityId = AbilityId(10);
+/// A courier handing over what it carries.
+pub const DELIVER: AbilityId = AbilityId(11);
+/// A courier's shield, which nothing gets through.
+pub const SHIELD: AbilityId = AbilityId(12);
 
 /// Every ability, indexed by [`AbilityId`].
-pub const ABILITIES: [AbilityDef; 8] = [
+pub const ABILITIES: [AbilityDef; 13] = [
     AbilityDef {
         name: "Crit",
         aim: Aim::Own,
         max_level: rules::ABILITY_MAX_LEVEL,
         passive: true,
         ultimate: false,
+        at_an_enemy: false,
         mana: &[],
         cooldown: &[],
         range: 0,
@@ -74,6 +87,7 @@ pub const ABILITIES: [AbilityDef; 8] = [
         max_level: rules::ABILITY_MAX_LEVEL,
         passive: false,
         ultimate: false,
+        at_an_enemy: false,
         mana: &rules::SYLLA_FRENZY_MANA,
         cooldown: &rules::SYLLA_FRENZY_COOLDOWN,
         range: 0,
@@ -84,6 +98,7 @@ pub const ABILITIES: [AbilityDef; 8] = [
         max_level: rules::ABILITY_MAX_LEVEL,
         passive: false,
         ultimate: false,
+        at_an_enemy: true,
         mana: &rules::SYLLA_BOUNCE_MANA,
         cooldown: &rules::SYLLA_BOUNCE_COOLDOWN,
         range: rules::SYLLA_BOUNCE_CAST_RANGE,
@@ -94,6 +109,7 @@ pub const ABILITIES: [AbilityDef; 8] = [
         max_level: rules::ULT_MAX_LEVEL,
         passive: false,
         ultimate: true,
+        at_an_enemy: false,
         mana: &rules::SYLLA_MULTI_MANA,
         cooldown: &rules::SYLLA_MULTI_COOLDOWN,
         range: rules::SYLLA_MULTI_RADIUS,
@@ -104,6 +120,7 @@ pub const ABILITIES: [AbilityDef; 8] = [
         max_level: rules::ABILITY_MAX_LEVEL,
         passive: false,
         ultimate: false,
+        at_an_enemy: false,
         mana: &rules::HOOK_MANA,
         cooldown: &rules::HOOK_COOLDOWN,
         range: rules::HOOK_RANGE,
@@ -114,6 +131,7 @@ pub const ABILITIES: [AbilityDef; 8] = [
         max_level: rules::ABILITY_MAX_LEVEL,
         passive: false,
         ultimate: false,
+        at_an_enemy: false,
         mana: &[0, 0, 0, 0],
         cooldown: &[0, 0, 0, 0],
         range: rules::ROT_RADIUS,
@@ -124,6 +142,7 @@ pub const ABILITIES: [AbilityDef; 8] = [
         max_level: rules::ABILITY_MAX_LEVEL,
         passive: true,
         ultimate: false,
+        at_an_enemy: false,
         mana: &[],
         cooldown: &[],
         range: rules::FLESH_HEAP_RANGE,
@@ -134,9 +153,65 @@ pub const ABILITIES: [AbilityDef; 8] = [
         max_level: rules::ULT_MAX_LEVEL,
         passive: false,
         ultimate: true,
+        at_an_enemy: true,
         mana: &rules::DISMEMBER_MANA,
         cooldown: &rules::DISMEMBER_COOLDOWN,
         range: rules::DISMEMBER_RANGE,
+    },
+    AbilityDef {
+        name: "Burst",
+        aim: Aim::Own,
+        max_level: 1,
+        passive: false,
+        ultimate: false,
+        at_an_enemy: false,
+        mana: &[0],
+        cooldown: &[rules::COURIER_BURST_COOLDOWN],
+        range: 0,
+    },
+    AbilityDef {
+        name: "Return",
+        aim: Aim::Own,
+        max_level: 1,
+        passive: false,
+        ultimate: false,
+        at_an_enemy: false,
+        mana: &[0],
+        cooldown: &[0],
+        range: 0,
+    },
+    AbilityDef {
+        name: "Take Stash",
+        aim: Aim::Own,
+        max_level: 1,
+        passive: false,
+        ultimate: false,
+        at_an_enemy: false,
+        mana: &[0],
+        cooldown: &[0],
+        range: 0,
+    },
+    AbilityDef {
+        name: "Deliver",
+        aim: Aim::Own,
+        max_level: 1,
+        passive: false,
+        ultimate: false,
+        at_an_enemy: false,
+        mana: &[0],
+        cooldown: &[0],
+        range: 0,
+    },
+    AbilityDef {
+        name: "Shield",
+        aim: Aim::Own,
+        max_level: 1,
+        passive: false,
+        ultimate: false,
+        at_an_enemy: false,
+        mana: &[0],
+        cooldown: &[rules::COURIER_SHIELD_COOLDOWN],
+        range: 0,
     },
 ];
 

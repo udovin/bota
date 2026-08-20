@@ -2,6 +2,7 @@ mod attacking;
 mod aura;
 mod cast;
 mod control;
+mod courier;
 mod econ;
 mod fight;
 mod gear;

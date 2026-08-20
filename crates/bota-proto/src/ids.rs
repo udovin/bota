@@ -102,4 +102,6 @@ pub enum UnitKind {
     Fountain,
     /// An observer ward placed by a hero.
     Ward,
+    /// A courier, one to a seat, that carries what its owner bought.
+    Courier,
 }

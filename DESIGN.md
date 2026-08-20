@@ -676,18 +676,150 @@ Fixed. Changing it invalidates every recorded replay and every hash baseline.
 
 ```rust
 pub trait Bot {
-    fn on_match_start(&mut self, info: &MatchInfo, me: SlotId) -> HeroId;
-    fn on_tick(&mut self, view: &WorldView, me: EntityId) -> Option<Order>;
-    fn on_events(&mut self, _events: &[EventKind]) {}
+    fn seated(&mut self, slot: Option<SlotId>);
+    fn match_started(&mut self, info: &MatchInfo);
+    fn on_tick(&mut self, view: &WorldView) -> Option<Order>;
+    fn on_events(&mut self, _tick: u32, _events: &[EventKind]) {}
+    fn on_reject(&mut self, _seq: u32, _reason: RejectReason) {}
+    fn finished(&mut self, _winner: Team, _stats: &MatchStats) {}
 }
 
-pub fn run<B: Bot>(bot: B, addr: &str) -> io::Result<()>;
+pub fn play<B: Bot>(bot: &mut B, seat: &Seat) -> io::Result<Outcome>;
 ```
 
-The first bot is a state machine: `Farm` (last hit when hp < threshold) → `Retreat`
-(hp < 35% or under a tower) → `Fight` (enemy in range and we are stronger) → `Push`.
-The server's `--headless` mode runs a match of N bots without a client — the basis for
-self-play.
+The hero is picked when the connection is made rather than returned from a callback:
+picking happens in the lobby, before there is a `MatchInfo` to decide from.
+
+`on_events` earns its place. The attack cycle is not on the wire — a `UnitView` carries
+`attack_interval` but not where in the interval a unit stands — so a bot cannot tell
+whether it may swing now or in forty ticks. What is on the wire is every blow that
+lands: one of the bot's own says the cycle began a wind-up ago and comes round again an
+interval after that. Without this the bot orders last hits it cannot take for another
+second and loses them all.
+
+### One order a tick, and saying nothing
+
+The server keeps one order per seat per tick and the last one wins, so a want is a
+single `Order` and the policy ranks its wants rather than queueing them. Re-sending the
+want already standing is not free: an order cancels the recovery after a swing and calls
+the creeps onto whoever gave it. So a want equal to the one in hand is not sent again
+for `resend_ticks`, and two walks to spots less than `resend_drift` apart count as one
+want — otherwise following a moving wave throws away the route the server laid every
+tick.
+
+### The courier
+
+A courier is what makes the shopping list past the first trip worth having: anything
+bought away from the shop falls into a stash the hero cannot reach from the lane, so
+without one the only way to spend gold is to walk home for it. With one, the bot buys
+wherever it stands — and only while a courier of its own is standing, because gold in
+hand is worth more than an item in a stash nothing is coming for.
+
+The errands are abilities the courier carries, so an order for one names the courier in
+`ClientMsg::Order`'s `unit` and casts the slot the errand sits in. Which slot that is, is
+read off the courier rather than assumed: the order the server fills its book in is the
+server's business. A `Want` therefore carries whom it is for, and what the bot answers
+with each tick is an `Ask` — an order and a unit — rather than an order alone.
+
+An errand outlives the tick it was given in. Saying it again changes nothing about what
+the courier does and costs the one order the seat has that tick, which is an order the
+hero did not get to give: the first cut of this sent five hundred and thirty-six errands
+in one match, and the hero took a quarter more damage for want of the ticks. So an errand
+already under way is not repeated until `courier_repeat` ticks have passed, which is a
+safety net for an order that never arrived rather than a schedule.
+
+A trip is not made for one item: it waits until `courier_batch` of them have piled up or
+the first has waited `courier_patience` ticks. And it is held back entirely while the bot
+is being shot at — a courier walks to where its owner stands, and where its owner stands
+is what is shooting.
+
+### The numbers held apart from the decisions
+
+Every threshold the policy weighs — how low is low, how far is far, how many ticks a
+swing takes to land — is a field of `Params` with a range, not a constant at the place
+that reads it. Three things follow: a run can be handed a set from a file, a search can
+walk over the set, and the numbers standing for what the wire does not carry (the wind-up,
+the arrow's speed, what an ability reaches) are tuned the same way as the numbers standing
+for taste. `Params` is `f32` throughout: the bot is allowed float, and uniform fields are
+what let a search treat the set as a vector without a case per field.
+
+`crates/bota-bot/params.txt` is where a trained set lives and the one thing training
+writes. It is committed, and it is **baked into the binary** with `include_str!`: a bot
+that had to find a file beside itself would play differently depending on where it was
+copied to. `Params::PATH` is the same file as a path, from `CARGO_MANIFEST_DIR`, and only
+training uses it — it reads that file to carry on from where the last run stopped and
+writes it when it improves. So a run that improves the numbers takes a rebuild before
+anything plays by them.
+
+Three sets, and the difference matters:
+
+| | What it is | Who plays by it |
+|---|---|---|
+| `Params::default()` | the numbers the code was written with | the tests, and `--plain` |
+| `Params::learned()` | `params.txt` as baked in at build time | `Brain::new()`, and `play` |
+| the file at `Params::PATH` | `params.txt` as it is on disk now | `train`, as its starting point |
+
+The tests pin the policy against `default()`, never against the learned set: what a test
+measures is the decision, and a trained set is data that moves under it. A test does
+check that the committed file reads back, so a knob renamed or taken away fails the build
+rather than silently dropping the bot to the plain numbers.
+
+### Self-play
+
+Training is `bota-bot train`, and it needs nothing the server does not already do. A
+server plays one match and exits, so a bout starts one on a port the system picks, joins
+both seats, and kills it with the bout. Joining waits for the seat: seats go out in the
+order the server sees connections arrive, two connections made back to back arrive in
+whichever order the threads behind them run, and a set that played the same side twice is
+measured against a side rather than against an opponent. That was a real bug and it made
+every measurement bimodal. Lockstep is what makes it
+worth doing: the server advances as soon as every seat has acknowledged the tick, so a
+match runs as fast as the two brains think — twelve thousand ticks, a little under seven
+minutes of game, in about three seconds. A bot that does **not** acknowledge holds the
+match at the straggler timeout, one tick at a time.
+
+The search is a (1+λ). A round breeds several challengers out of the set in hand, each
+differing in a few numbers, and measures every one of them the same way: two matches
+against a champion, one from each side. Whichever came out furthest ahead of the champion
+takes the set in hand, if it came out further ahead than that set did. Both sides are
+played because the map is not symmetric to a search: left to one side it would learn the
+side rather than the game. The matches of a round are independent, so they run at once — a
+round costs two matches of wall clock, not fourteen.
+
+Measuring against a champion rather than head to head against the set in hand is what
+makes a round mean something. Head to head, the thing being climbed moves under the search
+every time it takes a step: a challenger that beat the set in hand says nothing about the
+round before it, the number in the journal drifts, and a run of them walks rather than
+climbs. That was tried first and it is what it did — twenty rounds of taking challengers
+left the set no better against a fixed opponent than it started. Against something frozen,
+better is one number that means the same in the first round and the hundredth.
+
+The champion is frozen, not fixed: it starts as the numbers the code was written with and
+the best set replaces it every `champion_every` rounds, so the bar rises. A search
+measured against one weak opponent forever learns to beat that opponent.
+
+How far a nudge reaches is not fixed either. It widens while more than a fifth of the
+challengers beat the set in hand and narrows while fewer do: a search that keeps failing
+is reaching too far, and one that nearly always succeeds is not reaching far enough. A
+fifth is the old rule of thumb. What matters about it is that both halves happen —
+widening on any success at all only ever widens, which is the same as not adapting.
+
+What is scored is mostly what the seat did — creeps taken, creeps denied, levels, gold,
+damage put on the other hero and damage taken — because two even bots farm for twenty
+minutes and neither Ancient falls; the win itself outweighs any of it when it does come.
+The damage is counted from `EventKind::Damaged` rather than read from `MatchStats`: the
+final numbers arrive only when a match runs to its end, a match played for a fixed span
+never does, and the server reports `hero_damage` as zero besides. Without those two columns
+the whole fighting half of the policy is unconstrained — every match ends nought kills to
+nought, so nothing else in the score can tell a bot that harasses from a bot that does not.
+
+Nothing about this reaches into `bota-server`: the trainer is a process that starts other
+processes, and the bot still sees only what its own side may see. A search that could see
+through the fog would learn to.
+
+`Watched` writes a line a tick — where it stood, what it had, what was near, and the order
+it gave. It is what a match is read back from without watching it, and it is the shape a
+policy learned from recorded play would be trained on.
 
 A forward model (rolling out hypothetical futures for planning) is not supported and
 not needed now: the bot has no hidden state, so it could not roll forward with the
@@ -707,5 +839,5 @@ dependencies on the network layer.
 | 5 | ✅ `World` ticks | arenas, units, movement, orders, creeps, towers, Ancient; `rng.rs` with streams and Ratio/Chance |
 | 6 | ✅ combat | attacks, projectiles, damage, deaths, gold/xp, victory |
 | 7 | ✅ server networking | lobby, both tick modes, snapshot broadcast, replay recording |
-| 8 | 🔄 `bota-bot` and `bota-client` | SDK + FSM bot, bot-vs-bot match. Done: the client — macroquad: map, units, HP bars, orders, lobby, spectating, replay playback |
+| 8 | 🔄 `bota-bot` and `bota-client` | SDK + bot, bot-vs-bot match, self-play. Done: the client — macroquad: map, units, HP bars, orders, lobby, spectating, replay playback; the bot — lane policy over tunable numbers, lockstep acks, hill-climbing trainer |
 | 9 | hero Sylla complete and determinism test | abilities, levels, items, shop; 20 000-tick hash baseline, run on musl/wasm32; mirror test: a diagonally mirrored match ends in the mirrored outcome |

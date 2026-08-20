@@ -30,6 +30,8 @@ pub struct Projectile {
     pub crit: bool,
     /// Bounces it has left.
     pub bounces_left: u8,
+    /// How far it may look for that next mark, in world units.
+    pub bounce_range: i32,
     /// Who it has already struck, so it does not strike them twice.
     pub bounced: Vec<Entity>,
 }

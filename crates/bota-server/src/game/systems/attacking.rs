@@ -6,6 +6,8 @@
 //! things hold at the same time: the target can be seen, it is in reach, and
 //! the attacker is looking near enough at it.
 
+use std::collections::VecDeque;
+
 use bota_proto::{DamageKind, Fixed, Team, UnitKind};
 
 use crate::game::{
@@ -40,7 +42,7 @@ pub struct AttackCx<'a> {
     /// The cycle itself.
     pub attacking: &'a mut Table<Attacking>,
     /// Where a melee swing leaves its blow.
-    pub hit: &'a mut Table<Hit>,
+    pub hits: &'a mut VecDeque<Hit>,
     /// Where a ranged swing leaves its missile.
     pub projectile: &'a mut Table<Projectile>,
 }
@@ -63,7 +65,7 @@ pub fn attacking_system(cx: AttackCx<'_>) {
         target,
         statuses,
         attacking,
-        hit,
+        hits,
         projectile,
     } = cx;
     for entity in entities.iter().collect::<Vec<_>>() {
@@ -121,7 +123,7 @@ pub fn attacking_system(cx: AttackCx<'_>) {
                         transform,
                         team,
                         visibility,
-                        hit,
+                        hits,
                         projectile,
                     );
                 }
@@ -157,7 +159,7 @@ fn strike(
     transform: &mut Table<Transform>,
     team: &mut Table<Team>,
     visibility: &mut Table<Visibility>,
-    hit: &mut Table<Hit>,
+    hits: &mut VecDeque<Hit>,
     projectile: &mut Table<Projectile>,
 ) {
     let side = team.get(attacker).copied().unwrap_or(Team::Neutral);
@@ -169,19 +171,13 @@ fn strike(
             0
         };
     match stats.projectile_speed {
-        None => {
-            let blow = entities.alloc();
-            hit.insert(
-                blow,
-                Hit {
-                    source: Some(attacker),
-                    target: on,
-                    amount: damage,
-                    kind: DamageKind::Physical,
-                    crit: false,
-                },
-            );
-        }
+        None => hits.push_back(Hit {
+            source: Some(attacker),
+            target: on,
+            amount: damage,
+            kind: DamageKind::Physical,
+            crit: false,
+        }),
         Some(speed) => {
             let Some(at) = transform.get(attacker).copied() else {
                 return;
@@ -204,6 +200,7 @@ fn strike(
                     launch_tier: 0,
                     crit: false,
                     bounces_left: 0,
+                    bounce_range: 0,
                     bounced: Vec::new(),
                 },
             );

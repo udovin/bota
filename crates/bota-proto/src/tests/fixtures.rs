@@ -321,6 +321,7 @@ pub fn all_client_msgs() -> Vec<ClientMsg> {
         ClientMsg::PickHero { hero: HeroId(0) },
         ClientMsg::SetReady(true),
         ClientMsg::Order {
+            unit: None,
             seq: 12345,
             order: Order::AttackUnit { target: entity(7) },
         },

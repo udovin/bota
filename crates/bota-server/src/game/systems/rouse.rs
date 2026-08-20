@@ -31,12 +31,17 @@ impl World {
         self.rouse_with(orderer, call);
     }
 
-    /// Wakes the creeps onto whoever aimed a spell at somebody.
+    /// Wakes the creeps onto whoever aimed a spell at an enemy hero.
     ///
-    /// A spell is not a last hit: it is plain who threw it and at whom, so it
-    /// calls them on whether it was aimed at one of your own or not.
+    /// A spell answers the same as a swing, less the letting go: at an enemy
+    /// hero it calls them on, at an enemy creep it is a spell like any other
+    /// and moves nobody, and at one of your own it is not their business at
+    /// all.
     pub fn rouse_by_cast(&mut self, orderer: Entity, mark: Entity) {
-        if self.team.get(mark).is_none() {
+        let Some(side) = self.team.get(orderer).copied() else {
+            return;
+        };
+        if self.call_of(side, mark) != Some(Call::On) {
             return;
         }
         self.rouse_with(orderer, Call::On);

@@ -66,7 +66,7 @@ pub fn derive_stats(cx: StatsCx<'_>) {
         let levels = level.get(entity).map_or(0, |l| i32::from(l.0.max(1) - 1));
         let steps = upgrades.get(entity).map_or(0, |u| u.0 as i32);
         let mut now = raised(kind, levels, steps);
-        if let Some(bag) = inventory.get(entity) {
+        if let Some(bag) = inventory.get(entity).filter(|_| !kind.porter) {
             let carried = crate::game::carried_bonus(bag);
             now.max_hp += Fixed::from_int(carried.hp);
             now.max_mana += Fixed::from_int(carried.mana);
@@ -110,11 +110,12 @@ pub fn derive_stats(cx: StatsCx<'_>) {
                         now.mana_regen += Fixed::from_ratio(mana_per_tick, 100);
                     }
                     StatusKind::Slowed { pct } => {
-                        let kept = (100 - pct).clamp(0, 100);
-                        now.move_speed = Fixed {
-                            raw: now.move_speed.raw * kept / 100,
-                        };
+                        now.move_speed = scaled(now.move_speed, (100 - pct).clamp(0, 100));
                     }
+                    StatusKind::Hastened { pct } => {
+                        now.move_speed = scaled(now.move_speed, 100 + pct.max(0));
+                    }
+                    StatusKind::Shielded => now.invulnerable = true,
                     // What holds a unit still and what burns it are read
                     // where they are acted on, not here.
                     StatusKind::Stunned | StatusKind::Burning { .. } => {}
@@ -169,6 +170,7 @@ fn raised(kind: &UnitDef, levels: i32, steps: i32) -> Stats {
         vision: Fixed::from_int(kind.vision),
         true_sight: Fixed::from_int(kind.true_sight),
         hides: kind.hides,
+        flies: kind.flies,
         invulnerable: kind.invulnerable,
     }
 }
@@ -177,4 +179,15 @@ fn raised(kind: &UnitDef, levels: i32, steps: i32) -> Stats {
 fn follow(held: Fixed, was: Fixed, now: Fixed) -> Fixed {
     let grown = if now > was { held + (now - was) } else { held };
     grown.min(now)
+}
+
+/// A speed taken to a percent of itself.
+///
+/// Worked out wide: a speed in fixed point is already millions of raw units,
+/// and a hundredth of it would overflow the width it is kept in.
+fn scaled(speed: Fixed, pct: i32) -> Fixed {
+    let raw = i64::from(speed.raw) * i64::from(pct) / 100;
+    Fixed {
+        raw: raw.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
+    }
 }

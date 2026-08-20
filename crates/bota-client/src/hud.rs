@@ -84,8 +84,12 @@ pub fn bottom_panel(screen_w: f32, screen_h: f32) -> UiRect {
 }
 
 /// The four ability boxes of the bottom panel.
+/// How many ability boxes the panel has room for. A hero carries four; a
+/// courier carries more.
+pub const ABILITY_BOXES: u8 = 6;
+
 pub fn ability_boxes(panel: &UiRect) -> Vec<(u8, UiRect)> {
-    (0..4u8)
+    (0..ABILITY_BOXES)
         .map(|i| {
             (
                 i,
