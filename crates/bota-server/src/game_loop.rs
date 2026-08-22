@@ -333,8 +333,8 @@ impl Server {
             }
         }
         replay.finish();
-        for conn in &self.conns {
-            conn.close();
+        for conn in &mut self.conns {
+            conn.close_and_wait();
         }
     }
 

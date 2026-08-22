@@ -6,7 +6,7 @@
 //!
 //! [`Stats`]: crate::game::Stats
 
-use bota_proto::{Fixed, UnitKind};
+use bota_proto::{Attribute, Attributes, Fixed, UnitKind};
 
 use crate::game::rules;
 use crate::game::{Aura, StatusKind};
@@ -15,6 +15,8 @@ use crate::game::{Aura, StatusKind};
 /// first, or an upgrade interval.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Growth {
+    /// Attributes added.
+    pub attributes: Attributes,
     /// Health added.
     pub hp: i32,
     /// Mana added.
@@ -34,21 +36,27 @@ pub struct Growth {
 pub struct UnitDef {
     /// What kind of thing it is.
     pub kind: UnitKind,
-    /// Health it spawns with.
+    /// Attributes it spawns with. All zero for whatever has none.
+    pub attributes: Attributes,
+    /// Which attribute pays its attack damage. Absent for whatever has none.
+    pub primary: Option<Attribute>,
+    /// Health it spawns with, before strength.
     pub max_hp: i32,
-    /// Mana it spawns with. Zero for whatever casts nothing.
+    /// Mana it spawns with, before intelligence. Zero for whatever casts
+    /// nothing.
     pub max_mana: i32,
     /// Health mended each tick.
     pub hp_regen: Fixed,
     /// Mana mended each tick.
     pub mana_regen: Fixed,
-    /// Damage one attack deals. Zero for whatever does not attack.
+    /// Damage one attack deals, before the primary attribute. Zero for
+    /// whatever does not attack.
     pub damage: i32,
     /// How far it reaches, edge to edge, in world units.
     pub attack_range: i32,
     /// How far it looks for something to attack, in world units.
     pub acquisition: i32,
-    /// Ticks between the starts of two attacks.
+    /// Ticks between the starts of two attacks at [`rules::BASE_ATTACK_SPEED`].
     pub attack_interval: u32,
     /// Ticks from the start of an attack to the hit.
     pub attack_point: u32,
@@ -57,7 +65,7 @@ pub struct UnitDef {
     /// Speed of the missile it throws, in world units per second. Absent for a
     /// melee attack.
     pub projectile_speed: Option<i32>,
-    /// Armor, reducing physical damage.
+    /// Armor, reducing physical damage, before agility.
     pub armor: i32,
     /// Magic resistance, percent.
     pub magic_resist_pct: i32,
@@ -97,6 +105,7 @@ pub struct UnitDef {
 
 /// No gain at all.
 const NO_GROWTH: Growth = Growth {
+    attributes: Attributes::ZERO,
     hp: 0,
     mana: 0,
     damage: 0,
@@ -108,6 +117,8 @@ const NO_GROWTH: Growth = Growth {
 /// Nothing at all, so a definition names only the fields that differ.
 const NOTHING: UnitDef = UnitDef {
     kind: UnitKind::Ward,
+    attributes: Attributes::ZERO,
+    primary: None,
     max_hp: 0,
     max_mana: 0,
     hp_regen: Fixed::ZERO,
@@ -220,10 +231,12 @@ pub const SIEGE_CREEP: UnitDef = UnitDef {
 /// A hero at level one.
 pub const HERO: UnitDef = UnitDef {
     kind: UnitKind::Hero,
+    attributes: rules::HERO_ATTRIBUTES,
+    primary: Some(Attribute::Agility),
     max_hp: rules::HERO_HP,
     max_mana: rules::HERO_MANA,
-    hp_regen: Fixed::from_ratio(1, rules::HERO_HP_REGEN_PERIOD as i32),
-    mana_regen: Fixed::from_ratio(1, rules::HERO_MANA_REGEN_PERIOD as i32),
+    hp_regen: rules::HERO_HP_REGEN,
+    mana_regen: rules::HERO_MANA_REGEN,
     damage: rules::HERO_ATTACK_DAMAGE,
     attack_range: rules::HERO_ATTACK_RANGE,
     acquisition: rules::ACQUISITION_RANGE,
@@ -238,6 +251,7 @@ pub const HERO: UnitDef = UnitDef {
     vision: rules::HERO_VISION,
     radius: rules::HERO_RADIUS,
     per_level: Growth {
+        attributes: rules::HERO_ATTRIBUTES_PER_LEVEL,
         hp: rules::HERO_HP_PER_LEVEL,
         mana: rules::HERO_MANA_PER_LEVEL,
         damage: rules::HERO_ATTACK_DAMAGE_PER_LEVEL,
@@ -248,19 +262,30 @@ pub const HERO: UnitDef = UnitDef {
 
 /// Pudge: heavy, slow, and swings by hand.
 pub const PUDGE: UnitDef = UnitDef {
-    max_hp: 700,
-    max_mana: 250,
-    damage: 46,
+    attributes: Attributes {
+        strength: Fixed::from_int(25),
+        agility: Fixed::from_int(14),
+        intelligence: Fixed::from_int(14),
+    },
+    primary: Some(Attribute::Strength),
+    max_hp: 150,
+    max_mana: 82,
+    damage: 21,
     attack_range: 150,
-    attack_interval: 51,
+    attack_interval: 58,
     attack_point: 15,
     projectile_speed: None,
-    armor: 1,
+    armor: -1,
     move_speed: 280,
     per_level: Growth {
-        hp: 120,
-        mana: 24,
-        damage: 5,
+        attributes: Attributes {
+            strength: Fixed::from_ratio(35, 10),
+            agility: Fixed::from_ratio(15, 10),
+            intelligence: Fixed::from_ratio(16, 10),
+        },
+        hp: 43,
+        mana: 5,
+        damage: 1,
         ..NO_GROWTH
     },
     ..HERO

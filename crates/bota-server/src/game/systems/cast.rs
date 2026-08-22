@@ -80,6 +80,7 @@ impl World {
             if !went {
                 continue;
             }
+            self.charge_nearby_items(entity);
             if let Some(mana) = self.mana.get_mut(entity) {
                 mana.mana -= Fixed::from_int(cost);
             }
@@ -103,12 +104,51 @@ impl World {
         }
     }
 
+    /// Gives every enemy item near a cast one charge of what it may hold.
+    ///
+    /// Only a cast by a hero is worth a charge, and only a hero standing
+    /// within [`rules::MAGIC_CHARGE_RANGE`] of it takes one.
+    fn charge_nearby_items(&mut self, caster: Entity) {
+        if self.kind.get(caster).copied() != Some(bota_proto::UnitKind::Hero) {
+            return;
+        }
+        let (Some(at), Some(side)) = (
+            self.transform.get(caster).map(|t| t.pos),
+            self.team.get(caster).copied(),
+        ) else {
+            return;
+        };
+        let reach = rules::units(rules::MAGIC_CHARGE_RANGE);
+        for other in self.entities.iter().collect::<Vec<_>>() {
+            if self.team.get(other).copied() == Some(side)
+                || self.kind.get(other).copied() != Some(bota_proto::UnitKind::Hero)
+                || !self
+                    .transform
+                    .get(other)
+                    .is_some_and(|t| t.pos.within(at, reach))
+            {
+                continue;
+            }
+            let Some(bag) = self.inventory.get_mut(other) else {
+                continue;
+            };
+            for stack in bag.slots.iter_mut().flatten() {
+                let Some(def) = crate::game::item_def(stack.id) else {
+                    continue;
+                };
+                if def.cast_charges > 0 {
+                    stack.charges = stack.charges.saturating_add(1).min(def.cast_charges);
+                }
+            }
+        }
+    }
+
     /// Puts haste on the caster for a while.
     fn cast_frenzy(&mut self, caster: Entity, level: usize) -> bool {
         let mut on_it = self.statuses.remove(caster).unwrap_or_default();
         on_it.put(Status {
             kind: StatusKind::Haste {
-                pct: rules::SYLLA_FRENZY_HASTE_PCT[level],
+                speed: rules::SYLLA_FRENZY_ATTACK_SPEED[level],
             },
             ticks_left: rules::SYLLA_FRENZY_TICKS,
         });

@@ -1,26 +1,16 @@
-//! Command line entry point of the bot.
-//!
-//! Four things it can be asked to do: play a match, search the numbers the
-//! rule-driven bot plays by, teach a network to choose what that bot chooses,
-//! and let a network practise against itself.
+//! Command line entry point of the second bot.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
-use clap::{Args, Parser, Subcommand};
-
-use bota_bot::{
-    Adam, Bot, Brain, Dice, Ground, Net, NetBrain, Params, Practice, School, Seat, Watched,
-    journal_heading, learn_from, measure_against_rules, play, practice, practise_matches, thin_to,
-    watch_the_rules, weigh_by_worth,
+use bota_bot_v2::{
+    Adam, Chair, DEEDS, Dice, FirstAllowed, Learned, Lesson, Mind, Model, NUMBERS, Nothing, Role,
+    School, Tribe, Yard, first_crowd, gather, learn_from, measure, play, report_card,
+    teach_a_lesson,
 };
 use bota_proto::HeroId;
+use clap::{Parser, Subcommand};
 
-/// A bot that plays a hero, and what it takes to train one.
-///
-/// The numbers and the weights a trained bot plays by sit beside the
-/// repository and are read when it runs, so a training run takes effect
-/// without a rebuild. Neither is committed: they are what one machine's
-/// training arrived at.
+/// A bot that decides by naming one of a fixed list of deeds.
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 #[command(args_conflicts_with_subcommands = true)]
@@ -28,58 +18,470 @@ struct Cli {
     /// What to do. Playing, when nothing is said.
     #[command(subcommand)]
     doing: Option<Doing>,
-    /// What playing takes, for when nothing is said.
     #[command(flatten)]
     playing: Playing,
 }
 
-/// The things the bot can be asked to do.
+/// The things it can be asked to do.
 #[derive(Subcommand, Debug)]
 enum Doing {
     /// Join a server and play one match.
     Play(Playing),
-    /// Search over the numbers the rule-driven bot plays by.
-    Train(Training),
-    /// Teach a network to choose what the rule-driven bot chooses.
-    Copy(Teaching),
-    /// Let a network play itself and keep what it learns.
-    Practise(Teaching),
+    /// Say what the contract between the game and a model is.
+    Shape,
+    /// Write out a model with weights drawn at random.
+    Fresh(Fresh),
+    /// Breed a crowd of models through every lesson in turn.
+    Train(Breeding),
+    /// Teach one lesson by gradient, for comparing against.
+    Descend(Descending),
+    /// Say what a model is worth at a lesson, on the matches nothing trains on.
+    Judge(Judging),
+    /// Put two models against each other in whole matches.
+    Duel(Duelling),
 }
 
-/// Which numbers a run plays by.
-#[derive(Args, Debug, Clone)]
-struct Numbers {
-    /// Numbers to play by. The kept ones, and the plain ones when none are
-    /// kept.
+/// Two models against each other.
+#[derive(clap::Args, Debug)]
+struct Duelling {
+    /// Play matches over a socket instead of in this process.
+    #[arg(long)]
+    on_the_wire: bool,
+    /// One of them.
     #[arg(long, value_name = "FILE")]
-    params: Option<PathBuf>,
-    /// Play by the numbers the code was written with.
-    #[arg(long, conflicts_with = "params")]
-    plain: bool,
+    one: PathBuf,
+    /// The other.
+    #[arg(long, value_name = "FILE")]
+    other: PathBuf,
+    /// Matches to play. Each is played twice, once from either side.
+    #[arg(long, default_value_t = 4)]
+    matches: usize,
+    /// Ticks a match runs before it is called off.
+    #[arg(long, default_value_t = 36000)]
+    limit: u32,
+    /// What the seats are there to do, one to five.
+    #[arg(long, default_value_t = 2)]
+    role: u8,
+    /// How many matches run at once.
+    #[arg(long, default_value_t = 8)]
+    lanes: usize,
+    /// Where the matches are drawn from.
+    #[arg(long, default_value_t = 1)]
+    seed: u64,
+    /// The server to run. The one built beside this, when nothing is said.
+    #[arg(long, value_name = "PATH")]
+    server: Option<PathBuf>,
 }
 
-impl Numbers {
-    /// Reads them in.
-    fn read(&self) -> std::io::Result<Params> {
-        if self.plain {
-            return Ok(Params::default());
+/// What one model did over a set of matches.
+#[derive(Clone, Copy, Debug, Default)]
+struct Tally {
+    won: u32,
+    kills: u32,
+    deaths: u32,
+    last_hits: u32,
+    denies: u32,
+    level: u32,
+    played: u32,
+    ended: u32,
+}
+
+impl Tally {
+    /// Adds one seat's match to the tally.
+    fn add(&mut self, out: &bota_bot_v2::Outcome) {
+        self.played += 1;
+        if out.winner.is_some() {
+            self.ended += 1;
         }
-        let Some(path) = self.params.as_ref() else {
-            return Ok(Params::learned());
-        };
-        let text = std::fs::read_to_string(path)?;
-        Params::parse(&text).map_err(std::io::Error::other)
+        if let (Some(winner), Some(team)) = (out.winner, out.team)
+            && winner == team
+        {
+            self.won += 1;
+        }
+        if let Some(row) = out.mine.as_ref() {
+            self.kills += u32::from(row.kills);
+            self.deaths += u32::from(row.deaths);
+            self.last_hits += u32::from(row.last_hits);
+            self.denies += u32::from(row.denies);
+            self.level += u32::from(row.level);
+        }
+    }
+
+    /// The line it prints, per match.
+    fn line(&self, name: &str) -> String {
+        let over = self.played.max(1) as f32;
+        format!(
+            "{name:>10}: won {}, {:.1} kills, {:.1} deaths, {:.1} last hits, {:.1} denies, level {:.1}",
+            self.won,
+            self.kills as f32 / over,
+            self.deaths as f32 / over,
+            self.last_hits as f32 / over,
+            self.denies as f32 / over,
+            self.level as f32 / over,
+        )
     }
 }
 
+/// Plays two models against each other, each seed twice with the sides swapped.
+///
+/// Swapped because the two sides of a map are not the same to play, and a
+/// result read off one side is a result about the map.
+fn duel(asked: Duelling) -> std::io::Result<()> {
+    let Some(role) = Role::of(asked.role) else {
+        return Err(std::io::Error::other("roles are numbered one to five"));
+    };
+    let standing = Yard::default();
+    let yard = Yard {
+        server: asked.server.unwrap_or(standing.server),
+        builtin: !asked.on_the_wire,
+        ..standing
+    };
+    let load = |path: &PathBuf| -> std::io::Result<Vec<f32>> {
+        Model::from_file(path, 1)
+            .and_then(|model| model.pour())
+            .map_err(std::io::Error::other)
+    };
+    let bodies = [load(&asked.one)?, load(&asked.other)?];
+    let names = [
+        asked.one.file_stem().unwrap_or_default().to_string_lossy(),
+        asked
+            .other
+            .file_stem()
+            .unwrap_or_default()
+            .to_string_lossy(),
+    ];
+    println!(
+        "{} against {}, {} matches from either side, up to {} ticks each",
+        names[0], names[1], asked.matches, asked.limit
+    );
+
+    let mut dice = Dice::from_seed(asked.seed);
+    let seeds: Vec<u64> = (0..asked.matches).map(|_| dice.next_u64()).collect();
+    // Each seed twice, with which model sits first swapped the second time.
+    let jobs: Vec<(u64, bool)> = seeds
+        .iter()
+        .flat_map(|seed| [(*seed, false), (*seed, true)])
+        .collect();
+
+    let mut tally = [Tally::default(), Tally::default()];
+    for batch in jobs.chunks(asked.lanes.max(1)) {
+        let played: Vec<std::io::Result<(bool, bota_bot_v2::Outcome, bota_bot_v2::Outcome)>> =
+            std::thread::scope(|scope| {
+                let running: Vec<_> = batch
+                    .iter()
+                    .map(|(seed, swapped)| {
+                        let (seed, swapped) = (*seed, *swapped);
+                        let yard = &yard;
+                        let bodies = &bodies;
+                        scope.spawn(move || {
+                            let hatch = |body: &Vec<f32>| -> std::io::Result<Learned> {
+                                let model = Model::fresh(1).map_err(std::io::Error::other)?;
+                                model.soak(body).map_err(std::io::Error::other)?;
+                                Ok(Learned::new(model))
+                            };
+                            let first = usize::from(swapped);
+                            let mut here = hatch(&bodies[first])?;
+                            let mut there = hatch(&bodies[1 - first])?;
+                            let chair = |name: &str| Chair {
+                                addr: String::new(),
+                                name: name.to_string(),
+                                hero: yard.hero,
+                                limit: Some(asked.limit),
+                                role,
+                                lesson: Lesson::GrowRich,
+                            };
+                            let (mine, theirs) = yard.play_a_match(
+                                seed,
+                                &mut here,
+                                &mut there,
+                                &chair("here"),
+                                &chair("there"),
+                            )?;
+                            Ok((swapped, mine, theirs))
+                        })
+                    })
+                    .collect();
+                running
+                    .into_iter()
+                    .map(|one| {
+                        one.join()
+                            .unwrap_or_else(|_| Err(std::io::Error::other("a match gave up")))
+                    })
+                    .collect()
+            });
+        for outcome in played {
+            let (swapped, here, there) = outcome?;
+            let first = usize::from(swapped);
+            tally[first].add(&here);
+            tally[1 - first].add(&there);
+        }
+    }
+    let ended = tally[0].ended;
+    println!("{}", tally[0].line(&names[0]));
+    println!("{}", tally[1].line(&names[1]));
+    println!(
+        "{ended} of {} matches reached an ancient; the rest were called off at {} ticks",
+        tally[0].played, asked.limit
+    );
+    Ok(())
+}
+
+/// Weighing a model up.
+#[derive(clap::Args, Debug)]
+struct Judging {
+    /// Play matches over a socket instead of in this process.
+    #[arg(long)]
+    on_the_wire: bool,
+    /// Which lesson, one to seven.
+    #[arg(long, default_value_t = 7)]
+    lesson: u8,
+    /// What the seats are there to do, one to five.
+    #[arg(long, default_value_t = 2)]
+    role: u8,
+    /// How many matches run at once.
+    #[arg(long, default_value_t = 12)]
+    lanes: usize,
+    /// The model to weigh.
+    #[arg(long, value_name = "FILE")]
+    weights: Option<PathBuf>,
+    /// The server to run. The one built beside this, when nothing is said.
+    #[arg(long, value_name = "PATH")]
+    server: Option<PathBuf>,
+}
+
+/// Says what a model is worth at a lesson, on the reporting matches.
+///
+/// The same matches whatever the model and however it was taught, so that two
+/// ways of teaching can be held against each other.
+fn judge(asked: Judging) -> std::io::Result<()> {
+    let Some(lesson) = Lesson::of(asked.lesson) else {
+        return Err(std::io::Error::other("lessons are numbered one to seven"));
+    };
+    let Some(role) = Role::of(asked.role) else {
+        return Err(std::io::Error::other("roles are numbered one to five"));
+    };
+    let standing = Yard::default();
+    let tribe = Tribe {
+        yard: Yard {
+            server: asked.server.unwrap_or(standing.server),
+            builtin: !asked.on_the_wire,
+            ..standing
+        },
+        role,
+        lanes: asked.lanes,
+        ..Tribe::new(1, 1)
+    };
+    let weights = asked.weights.unwrap_or_else(Model::path);
+    let body = Model::from_file(&weights, 1)
+        .and_then(|model| model.pour())
+        .map_err(std::io::Error::other)?;
+    let card = report_card(&tribe, &body)?;
+    println!(
+        "{}, over {} matches it never trained on",
+        weights.display(),
+        bota_bot_v2::REPORTED_ON
+    );
+    for line in card.lines() {
+        println!("  {line}");
+    }
+    let _ = lesson;
+    Ok(())
+}
+
+/// Breeding a crowd through the lessons.
+#[derive(clap::Args, Debug)]
+struct Breeding {
+    /// Play matches over a socket instead of in this process.
+    #[arg(long)]
+    on_the_wire: bool,
+    /// How many models there are. Below ten the ladder often fails to start:
+    /// nothing is paid until one of them stumbles into buying.
+    #[arg(long, default_value_t = 10)]
+    folk: usize,
+    /// Matches each model plays a generation.
+    #[arg(long, default_value_t = 1)]
+    trials: usize,
+    /// Generations a lesson runs for.
+    #[arg(long, default_value_t = 30)]
+    lives: u32,
+    /// How many of the crowd survive a generation. A quarter of it by default.
+    #[arg(long)]
+    keep: Option<usize>,
+    /// How far a child is moved from its parent.
+    #[arg(long, default_value_t = 0.02)]
+    spread: f32,
+    /// How many matches run at once.
+    #[arg(long, default_value_t = 12)]
+    lanes: usize,
+    /// What the seats are there to do, one to five.
+    #[arg(long, default_value_t = 2)]
+    role: u8,
+    /// Where the whole run is seeded from.
+    #[arg(long, default_value_t = 1)]
+    seed: u64,
+    /// Where the best model is written.
+    #[arg(long, value_name = "FILE")]
+    weights: Option<PathBuf>,
+    /// The server to run. The one built beside this, when nothing is said.
+    #[arg(long, value_name = "PATH")]
+    server: Option<PathBuf>,
+}
+
+/// Breeds a crowd through every lesson in turn, best first.
+fn breed(asked: Breeding) -> std::io::Result<()> {
+    let Some(role) = Role::of(asked.role) else {
+        return Err(std::io::Error::other("roles are numbered one to five"));
+    };
+    // Refused rather than quietly rounded up: a crowd of one is a crowd that
+    // cannot be sorted, and being handed two when two were not asked for is
+    // worse than being told.
+    if asked.folk < 2 {
+        return Err(std::io::Error::other(
+            "a crowd is two models or more; one has nothing to be chosen over",
+        ));
+    }
+    let weights = asked.weights.unwrap_or_else(Model::path);
+    let standing = Yard::default();
+    let plain = Tribe::new(asked.folk, asked.trials);
+    let tribe = Tribe {
+        yard: Yard {
+            server: asked.server.unwrap_or(standing.server),
+            builtin: !asked.on_the_wire,
+            ..standing
+        },
+        role,
+        lives: asked.lives,
+        keep: asked.keep.unwrap_or(plain.keep),
+        spread: asked.spread,
+        lanes: asked.lanes,
+        seed: asked.seed,
+        ..plain
+    };
+    println!(
+        "breeding {} models on {} matches each, {} generations a lesson, keeping {}, played by {}",
+        tribe.folk,
+        tribe.trials,
+        tribe.lives,
+        tribe.keep,
+        tribe.yard.server.display()
+    );
+    let mut crowd = first_crowd(&tribe).map_err(std::io::Error::other)?;
+    for rung in &bota_bot_v2::LADDER {
+        println!(
+            "
+{} — {} ticks a match, scored in {}",
+            rung.name, rung.ticks, rung.scored_in
+        );
+        crowd = teach_a_lesson(&tribe, crowd, rung.lesson, |life| {
+            // Matches that never finished are said out loud. A generation
+            // quietly judged on half its matches is a generation judged on
+            // luck, and a run that says nothing about it looks like one that
+            // went well.
+            let lost = if life.failed == 0 {
+                String::new()
+            } else {
+                format!(", {} matches lost", life.failed)
+            };
+            println!(
+                "  generation {}: best {:.1}, middling {:.1}{lost}",
+                life.number, life.best, life.middling
+            );
+        })?;
+        // Written now rather than at the end of the ladder: a lesson of the
+        // last rung is hours, and losing five learned rungs to whatever goes
+        // wrong on the sixth is losing them for nothing.
+        keep_the_best(&crowd, &weights)?;
+        println!(
+            "  learned, and the best of the crowd kept in {}",
+            weights.display()
+        );
+    }
+    // One match, run to the longest lesson's clock, scored by every lesson at
+    // once: one card about one game rather than a number from each of seven.
+    println!(
+        "
+the best of them, over {} matches it never trained on:",
+        bota_bot_v2::REPORTED_ON
+    );
+    for line in report_card(&tribe, &crowd[0])?.lines() {
+        println!("  {line}");
+    }
+    println!(
+        "
+the best of them is in {}",
+        weights.display()
+    );
+    Ok(())
+}
+
+/// Writes the head of the crowd out.
+fn keep_the_best(crowd: &[Vec<f32>], weights: &std::path::Path) -> std::io::Result<()> {
+    let Some(body) = crowd.first() else {
+        return Err(std::io::Error::other("an empty crowd has no best"));
+    };
+    let best = Model::fresh(1).map_err(std::io::Error::other)?;
+    best.soak(body).map_err(std::io::Error::other)?;
+    best.save(weights).map_err(std::io::Error::other)
+}
+
+/// Teaching one lesson by gradient.
+#[derive(clap::Args, Debug)]
+struct Descending {
+    /// Play matches over a socket instead of in this process.
+    #[arg(long)]
+    on_the_wire: bool,
+    /// Which lesson, one to seven: stock up, find the lane, hold it, meet the
+    /// wave, work the lane, take the towers, grow rich. Every one in turn, when
+    /// nothing is said.
+    #[arg(long)]
+    lesson: Option<u8>,
+    /// What the seats are there to do, one to five.
+    #[arg(long, default_value_t = 2)]
+    role: u8,
+    /// Rounds to run.
+    #[arg(long, default_value_t = 20)]
+    rounds: u32,
+    /// Matches a round.
+    #[arg(long, default_value_t = 8)]
+    matches: usize,
+    /// Matches played at once.
+    #[arg(long, default_value_t = 8)]
+    lanes: usize,
+    /// How loosely it chooses while learning.
+    #[arg(long, default_value_t = 1.0)]
+    heat: f32,
+    /// How far a step goes.
+    #[arg(long, default_value_t = 3e-4)]
+    rate: f32,
+    /// Decisions added up before the weights move.
+    #[arg(long, default_value_t = 64)]
+    batch: usize,
+    /// The most decisions of one round the weights are moved by. A round
+    /// usually plays more than this; the rest are thrown away.
+    #[arg(long, default_value_t = 8000)]
+    frames: usize,
+    /// Rounds between measuring.
+    #[arg(long, default_value_t = 5)]
+    measure_every: u32,
+    /// Where the run is seeded from.
+    #[arg(long, default_value_t = 1)]
+    seed: u64,
+    /// Where the model is kept.
+    #[arg(long, value_name = "FILE")]
+    weights: Option<PathBuf>,
+    /// The server to run. The one built beside this, when nothing is said.
+    #[arg(long, value_name = "PATH")]
+    server: Option<PathBuf>,
+}
+
 /// Joining a server and playing.
-#[derive(Args, Debug)]
+#[derive(clap::Args, Debug)]
 struct Playing {
     /// Where the server listens.
     #[arg(long, default_value = "127.0.0.1:4455")]
     addr: String,
     /// What the lobby shows.
-    #[arg(long, default_value = "bot")]
+    #[arg(long, default_value = "bot-v2")]
     name: String,
     /// Which hero to ask for.
     #[arg(long, default_value_t = 0)]
@@ -87,144 +489,41 @@ struct Playing {
     /// Leave after this many ticks.
     #[arg(long, value_name = "TICKS")]
     limit: Option<u32>,
-    /// Write a line a tick about what it saw and did.
+    /// Which model to play by. The kept one, when nothing is said.
     #[arg(long, value_name = "FILE")]
-    trace: Option<PathBuf>,
-    /// Play by the network rather than by the rules.
+    weights: Option<PathBuf>,
+    /// Play by the first thing it is allowed rather than by a model, which is
+    /// the floor anything trained has to clear.
     #[arg(long)]
-    net: bool,
-    /// Which network to play by.
-    #[arg(long, value_name = "FILE", default_value_os_t = Net::path())]
-    weights: PathBuf,
-    #[command(flatten)]
-    numbers: Numbers,
+    floor: bool,
+    /// Do nothing at all, for seeing what a match looks like with a seat that
+    /// gives no orders.
+    #[arg(long, conflicts_with = "floor")]
+    idle: bool,
+    /// How loosely it chooses. Nought takes what it likes best.
+    #[arg(long, default_value_t = 0.0)]
+    heat: f32,
+    /// What the seat is there to do, one to five.
+    #[arg(long, default_value_t = 2)]
+    role: u8,
 }
 
-/// Where matches are played, for anything that plays them.
-#[derive(Args, Debug, Clone)]
-struct Field {
-    /// The server to run. The one built beside this, when nothing is said.
-    #[arg(long, value_name = "PATH")]
-    server: Option<PathBuf>,
-    /// Which map.
-    #[arg(long, default_value_t = 0)]
-    map: u16,
-    /// Which hero both seats play.
-    #[arg(long, default_value_t = 0)]
-    hero: u16,
-    /// Ticks one match is played for.
-    #[arg(long, default_value_t = 9000)]
-    ticks: u32,
-    /// Ticks a second, which in lockstep only sets the straggler timeout.
-    #[arg(long, default_value_t = 30)]
-    tick_rate: u16,
-    /// Matches played at once.
-    #[arg(long, default_value_t = 8)]
-    lanes: usize,
-    /// Where the search and the matches are seeded from.
+/// Writing out a fresh model.
+#[derive(clap::Args, Debug)]
+struct Fresh {
+    /// Where to write it.
+    #[arg(long, value_name = "FILE")]
+    weights: Option<PathBuf>,
+    /// What to draw the weights from.
     #[arg(long, default_value_t = 1)]
     seed: u64,
-}
-
-impl Field {
-    /// The ground these matches are played on.
-    fn ground(&self) -> Ground {
-        let standing = Ground::default();
-        Ground {
-            server: self.server.clone().unwrap_or(standing.server),
-            map: self.map,
-            hero: HeroId(self.hero),
-            ticks: self.ticks,
-            tick_rate: self.tick_rate,
-            ..standing
-        }
-    }
-}
-
-/// Searching over the numbers.
-#[derive(Args, Debug)]
-struct Training {
-    /// Rounds to run.
-    #[arg(long, default_value_t = 20)]
-    rounds: u32,
-    /// Challengers a round breeds.
-    #[arg(long, default_value_t = 4)]
-    challengers: usize,
-    /// Numbers one challenger differs in.
-    #[arg(long, default_value_t = 3)]
-    nudges: usize,
-    /// How far one nudge moves a number to begin with.
-    #[arg(long, default_value_t = 0.15)]
-    reach: f32,
-    /// Rounds the champion stands for before the best set replaces it. Zero
-    /// measures the whole run against the numbers the code was written with.
-    #[arg(long, default_value_t = 25)]
-    champion_every: u32,
-    /// Where to write the numbers that play best.
-    #[arg(long, value_name = "FILE", default_value_os_t = Params::path())]
-    keep: PathBuf,
-    /// Where to write a line about every round.
-    #[arg(long, value_name = "FILE")]
-    journal: Option<PathBuf>,
-    #[command(flatten)]
-    field: Field,
-    #[command(flatten)]
-    numbers: Numbers,
-}
-
-/// Teaching a network, either half of it.
-#[derive(Args, Debug)]
-struct Teaching {
-    /// Where the network is kept.
-    #[arg(long, value_name = "FILE", default_value_os_t = Net::path())]
-    weights: PathBuf,
-    /// Matches gathered a round.
-    #[arg(long, default_value_t = 6)]
-    matches: usize,
-    /// Times the gathered decisions are gone over.
-    #[arg(long, default_value_t = 2)]
-    passes: usize,
-    /// Decisions added up before the weights move.
-    #[arg(long, default_value_t = 32)]
-    batch: usize,
-    /// How far a step goes.
-    #[arg(long, default_value_t = 1e-3)]
-    rate: f32,
-    /// How loosely it chooses while practising. Zero is greedy.
-    #[arg(long, default_value_t = 0.7)]
-    heat: f32,
-    /// Rounds of practising.
-    #[arg(long, default_value_t = 20)]
-    rounds: u32,
-    #[command(flatten)]
-    field: Field,
-    #[command(flatten)]
-    numbers: Numbers,
-}
-
-impl Teaching {
-    /// The school these lessons are run in.
-    fn school(&self) -> School {
-        School {
-            ground: self.field.ground(),
-            matches: self.matches,
-            lanes: self.field.lanes,
-            passes: self.passes,
-            batch: self.batch,
-            rate: self.rate,
-            heat: self.heat,
-            seed: self.field.seed,
-            keep: Some(self.weights.clone()),
-            ..School::default()
-        }
-    }
 }
 
 fn main() {
     let cli = Cli::parse();
     let doing = cli.doing.unwrap_or(Doing::Play(cli.playing));
     if let Err(err) = carry_out(doing) {
-        eprintln!("bot: {err}");
+        eprintln!("bot-v2: {err}");
         std::process::exit(1);
     }
 }
@@ -232,48 +531,201 @@ fn main() {
 /// Does what was asked for.
 fn carry_out(doing: Doing) -> std::io::Result<()> {
     match doing {
+        Doing::Shape => {
+            say_the_shape();
+            Ok(())
+        }
+        Doing::Fresh(asked) => {
+            let path = asked.weights.unwrap_or_else(Model::path);
+            let model = Model::fresh(asked.seed).map_err(std::io::Error::other)?;
+            model.save(&path).map_err(std::io::Error::other)?;
+            println!(
+                "wrote {} weights to {}",
+                model.weight_count(),
+                path.display()
+            );
+            Ok(())
+        }
         Doing::Play(asked) => join_a_match(asked),
-        Doing::Train(asked) => search_the_numbers(asked),
-        Doing::Copy(asked) => copy_the_rules(asked),
-        Doing::Practise(asked) => practise_the_net(asked),
+        Doing::Train(asked) => breed(asked),
+        Doing::Descend(asked) => descend(asked),
+        Doing::Judge(asked) => judge(asked),
+        Doing::Duel(asked) => duel(asked),
+    }
+}
+
+/// Teaches the model a lesson, and keeps only what measures better.
+fn descend(asked: Descending) -> std::io::Result<()> {
+    // Named or the whole ladder, as breeding does. A ladder held together by a
+    // loop outside the program is a ladder nobody else can walk.
+    let ladder: Vec<Lesson> = match asked.lesson {
+        None => (1..=7).filter_map(Lesson::of).collect(),
+        Some(number) => match Lesson::of(number) {
+            None => return Err(std::io::Error::other("lessons are numbered one to five")),
+            Some(lesson) => vec![lesson],
+        },
+    };
+    for lesson in ladder {
+        descend_one(&asked, lesson)?;
+    }
+    Ok(())
+}
+
+/// Teaches one lesson by gradient, keeping only what measures better.
+fn descend_one(asked: &Descending, lesson: Lesson) -> std::io::Result<()> {
+    let Some(role) = Role::of(asked.role) else {
+        return Err(std::io::Error::other("roles are numbered one to five"));
+    };
+    let weights = asked.weights.clone().unwrap_or_else(Model::path);
+    let standing = Yard::default();
+    let how = School {
+        yard: Yard {
+            server: asked.server.clone().unwrap_or(standing.server),
+            builtin: !asked.on_the_wire,
+            ..standing
+        },
+        lesson,
+        role,
+        rounds: asked.rounds,
+        matches: asked.matches,
+        lanes: asked.lanes,
+        heat: asked.heat,
+        rate: asked.rate,
+        batch: asked.batch,
+        most_frames: asked.frames,
+        seed: asked.seed,
+        weights: weights.clone(),
+        ..School::for_lesson(lesson)
+    };
+    let model = if weights.exists() {
+        Model::from_file(&weights, asked.seed).map_err(std::io::Error::other)?
+    } else {
+        println!("no weights at {}, starting fresh", weights.display());
+        Model::fresh(asked.seed).map_err(std::io::Error::other)?
+    };
+    let mut adam = Adam::new(&model, how.rate).map_err(std::io::Error::other)?;
+    let mut dice = Dice::from_seed(how.seed ^ 0x51ed_2701);
+    // Which server, because it is found beside this binary rather than named,
+    // and a stale one next to a fresh bot trains against a different game.
+    println!(
+        "teaching {} to a model of {} weights, matches of {} ticks, played by {}",
+        lesson.name(),
+        model.weight_count(),
+        lesson.ticks(),
+        how.yard.server.display()
+    );
+
+    // What it is worth before any of this, so that a run which never improves
+    // leaves the file exactly as it found it.
+    let working = weights.with_extension("learning");
+    model.save(&working).map_err(std::io::Error::other)?;
+    let mut best = measure(&how, &std::fs::read(&working)?)?;
+    println!("starting out at {best:.1}");
+
+    for round in 1..=how.rounds {
+        model.save(&working).map_err(std::io::Error::other)?;
+        let bytes = std::fs::read(&working)?;
+        let rolls = gather(&how, &bytes, u64::from(round))?;
+        let paid = if rolls.is_empty() {
+            0.0
+        } else {
+            rolls.iter().map(|roll| roll.paid_in_all()).sum::<f32>() / rolls.len() as f32
+        };
+        let mut frames: Vec<bota_bot_v2::Frame> =
+            rolls.into_iter().flat_map(|roll| roll.frames).collect();
+        let played = frames.len();
+        thin(&mut frames, how.most_frames, &mut dice);
+        let loss = learn_from(&model, &mut adam, &frames, &how, &mut dice);
+        model.save(&working).map_err(std::io::Error::other)?;
+        let mut kept = String::new();
+        if round.is_multiple_of(how.measure_every) || round == how.rounds {
+            let now = measure(&how, &std::fs::read(&working)?)?;
+            kept = if now > best {
+                best = now;
+                model.save(&weights).map_err(std::io::Error::other)?;
+                format!(", measured {now:.1}, kept")
+            } else {
+                format!(", measured {now:.1}, best still {best:.1}")
+            };
+        }
+        // Both numbers, because the second is a cap and a cap that reported
+        // only what it let through would read as everything there was.
+        println!(
+            "round {round}: learned from {} of {played}, matches paid {paid:.1}, loss {loss:.3}{kept}",
+            frames.len()
+        );
+    }
+    let _ = std::fs::remove_file(&working);
+    println!("the best it managed was {best:.1}");
+    Ok(())
+}
+
+/// Keeps a heap of frames down to the most the weights are moved by, taking
+/// those it keeps at random.
+fn thin(frames: &mut Vec<bota_bot_v2::Frame>, most: usize, dice: &mut Dice) {
+    if frames.len() <= most || most == 0 {
+        return;
+    }
+    let mut order: Vec<usize> = (0..frames.len()).collect();
+    for at in (1..order.len()).rev() {
+        order.swap(at, (dice.next_u64() % (at as u64 + 1)) as usize);
+    }
+    order.truncate(most);
+    order.sort_unstable();
+    *frames = order.into_iter().map(|at| frames[at].clone()).collect();
+}
+
+/// Says what a model is shown and what it may choose.
+fn say_the_shape() {
+    println!(
+        "shown: {NUMBERS} numbers a tick, {} in all",
+        bota_bot_v2::INPUT
+    );
+    for (name, size) in bota_bot_v2::LAYOUT {
+        println!("  {size:4}  {name}");
+    }
+    println!("deeds: {DEEDS}");
+    for (name, size) in bota_bot_v2::BLOCKS {
+        println!("  {size:4}  {name}");
     }
 }
 
 /// Joins a server and plays one match.
 fn join_a_match(asked: Playing) -> std::io::Result<()> {
-    let params = asked.numbers.read()?;
-    let seat = Seat {
+    let Some(role) = Role::of(asked.role) else {
+        return Err(std::io::Error::other(format!(
+            "there is no role {}: they are numbered one to five",
+            asked.role
+        )));
+    };
+    let chair = Chair {
         addr: asked.addr,
         name: asked.name,
         hero: HeroId(asked.hero),
         limit: asked.limit,
+        role,
+        lesson: Lesson::GrowRich,
     };
-    let mut rules = Brain::with(params);
-    let mut learned = if asked.net {
-        if !asked.weights.exists() {
+    let mut idle = Nothing;
+    let mut floor = FirstAllowed;
+    let mut learned;
+    let mind: &mut (dyn Mind + Send) = if asked.idle {
+        &mut idle
+    } else if asked.floor {
+        &mut floor
+    } else {
+        let path = asked.weights.unwrap_or_else(Model::path);
+        if !path.exists() {
             return Err(std::io::Error::other(format!(
-                "no weights at {}: teach some with `bota-bot copy` first",
-                asked.weights.display()
+                "no weights at {}: write some with `bota-bot-v2 fresh` first",
+                path.display()
             )));
         }
-        Some(NetBrain::new(
-            Net::from_file(&asked.weights, 1).map_err(std::io::Error::other)?,
-            params,
-        ))
-    } else {
-        None
+        let model = Model::from_file(&path, 1).map_err(std::io::Error::other)?;
+        learned = Learned::loosely(model, asked.heat, 1);
+        &mut learned
     };
-    let bot: &mut dyn Bot = match learned.as_mut() {
-        Some(net) => net,
-        None => &mut rules,
-    };
-    let out = match asked.trace {
-        None => play(bot, &seat)?,
-        Some(path) => {
-            let mut watched = Watched::writing_to(bot, &path)?;
-            play(&mut watched, &seat)?
-        }
-    };
+    let out = play(mind, &chair)?;
     let mine = out.mine.as_ref();
     println!(
         "played {} ticks: {} last hits, {} denies, {} kills, {} deaths",
@@ -284,143 +736,16 @@ fn join_a_match(asked: Playing) -> std::io::Result<()> {
         mine.map_or(0, |row| row.deaths),
     );
     println!(
-        "damage: {} to heroes, {} to what they built, {} taken",
-        out.hero_damage, out.structure_damage, out.damage_taken,
+        "chose on {} ticks, {} of them something it had been told it could not do, \
+         {} orders refused",
+        out.chose, out.refused, out.rejected
     );
-    Ok(())
-}
-
-/// Searches over the numbers the rule-driven bot plays by.
-fn search_the_numbers(asked: Training) -> std::io::Result<()> {
-    let how = Practice {
-        ground: asked.field.ground(),
-        rounds: asked.rounds,
-        seed: asked.field.seed,
-        reach: asked.reach,
-        nudges: asked.nudges,
-        challengers: asked.challengers,
-        lanes: asked.field.lanes,
-        champion_every: asked.champion_every,
-        keep: Some(asked.keep.clone()),
-        journal: asked.journal.clone(),
-        ..Practice::default()
-    };
-    if let Some(path) = how.journal.as_ref()
-        && !path.exists()
-    {
-        std::fs::write(path, format!("{}\n", journal_heading()))?;
+    for (reason, many) in &out.refusals {
+        println!("  {many} orders refused: {reason:?}");
     }
-    println!("keeping the best numbers in {}", asked.keep.display());
-    let best = practice(asked.numbers.read()?, &how)?;
-    print!("{}", best.to_text());
-    Ok(())
-}
-
-/// Teaches a network to choose what the rule-driven bot chooses.
-fn copy_the_rules(asked: Teaching) -> std::io::Result<()> {
-    let how = asked.school();
-    let params = asked.numbers.read()?;
-    let net = open_the_net(&asked.weights, how.seed)?;
-    let mut adam = Adam::new(&net, how.rate).map_err(std::io::Error::other)?;
-    let mut dice = Dice::from_seed(how.seed ^ 0x51ed_2701);
-    println!("network of {} weights", net.weight_count());
-    let (frames, covered) = watch_the_rules(&how, &params)?;
-    println!(
-        "watched {} decisions, {:.1}% of them candidates the network could pick",
-        frames.len(),
-        covered * 100.0
-    );
-    let all_the_same = vec![1.0; frames.len()];
-    let lesson = learn_from(&net, &mut adam, &frames, &all_the_same, &how, &mut dice);
-    println!(
-        "loss {:.3}, agreeing with the rules {:.1}% of the time",
-        lesson.loss,
-        lesson.agreement * 100.0
-    );
-    net.save(&asked.weights).map_err(std::io::Error::other)?;
-    println!("kept the weights in {}", asked.weights.display());
-    Ok(())
-}
-
-/// Lets a network wander against a steady copy of itself, and moves it towards
-/// what wandering was worth.
-///
-/// Some of what it copied is kept back and gone over again every round. A
-/// policy taught only from its own recent matches forgets the parts of the
-/// game those matches did not visit, and there is nothing in a lane to remind
-/// it.
-fn practise_the_net(asked: Teaching) -> std::io::Result<()> {
-    let how = asked.school();
-    let params = asked.numbers.read()?;
-    let weights = asked.weights.clone();
-    let net = open_the_net(&weights, how.seed)?;
-    let mut adam = Adam::new(&net, how.rate).map_err(std::io::Error::other)?;
-    let mut dice = Dice::from_seed(how.seed ^ 0x2545_f491);
-    println!("gathering what it was taught, to go over again as it practises");
-    let (mut rehearse, _) = watch_the_rules(&how, &params)?;
-    thin_to(&mut rehearse, REHEARSED, &mut dice);
-    // What the weights were worth before any of this. A run that never beats
-    // it leaves the file exactly as it found it.
-    let working = weights.with_extension("practising");
-    net.save(&working).map_err(std::io::Error::other)?;
-    let mut best = measure_against_rules(&how, &params, &std::fs::read(&working)?)?;
-    println!("starting out ahead of the rules by {best:.1}");
-    for round in 1..=asked.rounds {
-        net.save(&working).map_err(std::io::Error::other)?;
-        let bytes = std::fs::read(&working)?;
-        let (mut frames, steady) = practise_matches(&how, &params, &bytes, u64::from(round))?;
-        thin_to(&mut frames, GATHERED, &mut dice);
-        let mut weighed = weigh_by_worth(&frames, 1.0);
-        let paid = weighed.iter().filter(|weight| **weight > 0.0).count();
-        // What it was taught counts for something on every round, so that a
-        // run of odd matches cannot talk it out of the whole game.
-        frames.frames.extend(rehearse.frames.iter().cloned());
-        weighed.extend(std::iter::repeat_n(REHEARSAL_WEIGHT, rehearse.len()));
-        let lesson = learn_from(&net, &mut adam, &frames, &weighed, &how, &mut dice);
-        net.save(&working).map_err(std::io::Error::other)?;
-        let mut kept = String::new();
-        if round.is_multiple_of(MEASURE_EVERY) || round == asked.rounds {
-            let edge = measure_against_rules(&how, &params, &std::fs::read(&working)?)?;
-            // Only what measures better is kept. Practising wanders as much as
-            // it climbs — it went twenty-six points ahead by the tenth round of
-            // one run and fifteen behind by the thirtieth — and a run that
-            // writes out its last weights rather than its best throws away the
-            // good ones on the way past.
-            kept = if edge > best {
-                best = edge;
-                net.save(&weights).map_err(std::io::Error::other)?;
-                format!(", ahead by {edge:.1}, kept")
-            } else {
-                format!(", ahead by {edge:.1}, best still {best:.1}")
-            };
-        }
-        println!(
-            "round {round}: this round's matches worth {steady:.1}, {paid} of {} \
-             wandering decisions paid, loss {:.3}{kept}",
-            lesson.frames - rehearse.len(),
-            lesson.loss
-        );
+    println!("what the lessons paid it:");
+    for line in out.card.lines() {
+        println!("  {line}");
     }
-    let _ = std::fs::remove_file(&working);
-    println!("the best it managed was {best:.1} ahead of the rules");
     Ok(())
-}
-
-/// Rounds between measuring against something that does not move.
-const MEASURE_EVERY: u32 = 5;
-/// Decisions kept back from what was copied, to go over again each round.
-const REHEARSED: usize = 6000;
-/// How much one of those counts against a decision that paid.
-const REHEARSAL_WEIGHT: f32 = 0.3;
-/// Decisions of one round's wandering that are gone over.
-const GATHERED: usize = 12000;
-
-/// The network a file holds, or a fresh one when it holds none.
-fn open_the_net(weights: &Path, seed: u64) -> std::io::Result<Net> {
-    if weights.exists() {
-        Net::from_file(weights, seed).map_err(std::io::Error::other)
-    } else {
-        println!("no weights at {}, starting fresh", weights.display());
-        Net::fresh(seed).map_err(std::io::Error::other)
-    }
 }

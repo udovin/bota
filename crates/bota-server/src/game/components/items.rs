@@ -1,6 +1,6 @@
 //! What an entity carries.
 
-use bota_proto::ItemId;
+use bota_proto::{Attribute, ItemId};
 
 /// One item in a slot.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -14,6 +14,8 @@ pub struct ItemStack {
     /// Ticks it stays inert for having come out of the backpack: it carries
     /// nothing and cannot be used until this runs out.
     pub mute: u32,
+    /// Which attribute it is set to. Absent for one that is set to none.
+    pub mode: Option<Attribute>,
     /// The tick it was bought, for the window in which it refunds in full.
     pub bought_tick: u32,
     /// Whether it has been used or moved since it was bought.

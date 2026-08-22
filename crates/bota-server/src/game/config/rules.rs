@@ -4,7 +4,7 @@
 //! constants assume [`TICKS_PER_SECOND`]; the wall-clock pace of a match is a
 //! server option and does not change them.
 
-use bota_proto::{Fixed, Vec2};
+use bota_proto::{Attributes, Fixed, Vec2};
 
 use crate::game::Ratio;
 
@@ -246,42 +246,82 @@ pub const WAVE_SPAWN_RANK: i32 = 96;
 /// Flagbearer magic resistance, percent.
 pub const FLAGBEARER_MAGIC_RESIST_PCT: i32 = 40;
 
+// What the three attributes are worth. Every one of them is read once, by the
+// system that works out stats, and applies to whatever holds attributes at all.
+
+/// Health one point of strength adds.
+pub const HP_PER_STRENGTH: i32 = 22;
+/// Health per tick one point of strength mends.
+pub const HP_REGEN_PER_STRENGTH: Fixed = Fixed::from_ratio(1, 10 * TICKS_PER_SECOND as i32);
+/// Armor one point of agility adds.
+pub const ARMOR_PER_AGILITY: Fixed = Fixed::from_ratio(1, 6);
+/// Attack speed one point of agility adds.
+pub const ATTACK_SPEED_PER_AGILITY: i32 = 1;
+/// Mana one point of intelligence adds.
+pub const MANA_PER_INTELLIGENCE: i32 = 12;
+/// Mana per tick one point of intelligence mends.
+pub const MANA_REGEN_PER_INTELLIGENCE: Fixed = Fixed::from_ratio(1, 20 * TICKS_PER_SECOND as i32);
+/// Attack damage one point of the primary attribute adds.
+pub const DAMAGE_PER_PRIMARY: i32 = 1;
+
+// Attack speed. A unit swings at its own pace at [`BASE_ATTACK_SPEED`], and
+// twice that pace at twice the number.
+
+/// Attack speed with nothing added to it.
+pub const BASE_ATTACK_SPEED: i32 = 100;
+/// Slowest a unit may be brought to swing.
+pub const MIN_ATTACK_SPEED: i32 = 20;
+/// Fastest a unit may be brought to swing.
+pub const MAX_ATTACK_SPEED: i32 = 700;
+
 // Generic hero stats. Per-hero data replaces these when heroes arrive.
 
-/// Hero health at level one.
-pub const HERO_HP: i32 = 620;
-/// Hero mana at level one.
-pub const HERO_MANA: i32 = 300;
+/// Hero health at level one, before strength.
+pub const HERO_HP: i32 = 180;
+/// Hero mana at level one, before intelligence.
+pub const HERO_MANA: i32 = 84;
 /// Hero movement speed, world units per second.
 pub const HERO_MOVE_SPEED: i32 = 300;
-/// Hero attack damage at level one.
-pub const HERO_ATTACK_DAMAGE: i32 = 55;
+/// Hero attack damage at level one, before the primary attribute.
+pub const HERO_ATTACK_DAMAGE: i32 = 31;
 /// Hero attack range.
 pub const HERO_ATTACK_RANGE: i32 = 600;
-/// Ticks between hero attack starts.
-pub const HERO_ATTACK_INTERVAL: u32 = 51;
+/// Ticks between hero attack starts at [`BASE_ATTACK_SPEED`].
+pub const HERO_ATTACK_INTERVAL: u32 = 63;
 /// Ticks from attack start to the projectile leaving.
 pub const HERO_ATTACK_POINT: u32 = 9;
 /// Hero attack projectile speed, world units per second.
 pub const HERO_PROJECTILE_SPEED: i32 = 900;
-/// Hero armor.
-pub const HERO_ARMOR: i32 = 3;
+/// Hero armor, before agility.
+pub const HERO_ARMOR: i32 = -1;
 /// Hero magic resistance, percent.
 pub const HERO_MAGIC_RESIST_PCT: i32 = 25;
 /// Hero collision radius, the Dota hero hull.
 pub const HERO_RADIUS: i32 = 24;
 /// Hero fog light radius.
 pub const HERO_VISION: i32 = 1800;
-/// Extra health per level past the first.
-pub const HERO_HP_PER_LEVEL: i32 = 90;
-/// Extra mana per level past the first.
-pub const HERO_MANA_PER_LEVEL: i32 = 30;
-/// Extra attack damage per level past the first.
-pub const HERO_ATTACK_DAMAGE_PER_LEVEL: i32 = 6;
-/// A hero regains one health point every this many ticks.
-pub const HERO_HP_REGEN_PERIOD: u32 = 20;
-/// A hero regains one mana point every this many ticks.
-pub const HERO_MANA_REGEN_PERIOD: u32 = 15;
+/// Hero attributes at level one.
+pub const HERO_ATTRIBUTES: Attributes = Attributes {
+    strength: Fixed::from_int(20),
+    agility: Fixed::from_int(24),
+    intelligence: Fixed::from_int(18),
+};
+/// Attributes a hero gains per level past the first.
+pub const HERO_ATTRIBUTES_PER_LEVEL: Attributes = Attributes {
+    strength: Fixed::from_ratio(20, 10),
+    agility: Fixed::from_ratio(28, 10),
+    intelligence: Fixed::from_ratio(18, 10),
+};
+/// Extra health per level past the first, before strength.
+pub const HERO_HP_PER_LEVEL: i32 = 46;
+/// Extra mana per level past the first, before intelligence.
+pub const HERO_MANA_PER_LEVEL: i32 = 8;
+/// Extra attack damage per level past the first, before the primary attribute.
+pub const HERO_ATTACK_DAMAGE_PER_LEVEL: i32 = 3;
+/// Health per tick a hero mends before strength.
+pub const HERO_HP_REGEN: Fixed = Fixed::from_ratio(1, 4 * TICKS_PER_SECOND as i32);
+/// Mana per tick a hero mends before intelligence.
+pub const HERO_MANA_REGEN: Fixed = Fixed::from_ratio(1, 4 * TICKS_PER_SECOND as i32);
 /// Highest hero level.
 pub const HERO_MAX_LEVEL: u8 = 10;
 /// Total experience required to sit at each level, indexed by `level - 1`.
@@ -512,8 +552,8 @@ pub const SYLLA_CRIT_MULT_PCT: [i32; 4] = [175, 200, 225, 250];
 pub const SYLLA_FRENZY_MANA: [i32; 4] = [30, 40, 50, 60];
 /// Frenzy cooldown per level, ticks.
 pub const SYLLA_FRENZY_COOLDOWN: [u32; 4] = [450, 420, 390, 360];
-/// Frenzy attack interval reduction per level, percent.
-pub const SYLLA_FRENZY_HASTE_PCT: [i32; 4] = [20, 28, 36, 44];
+/// Attack speed Frenzy adds per level.
+pub const SYLLA_FRENZY_ATTACK_SPEED: [i32; 4] = [25, 39, 56, 79];
 /// Frenzy duration, ticks.
 pub const SYLLA_FRENZY_TICKS: u32 = 180;
 /// Bounce mana cost per level.
@@ -697,6 +737,12 @@ pub const SHOP_RANGE: i32 = 1000;
 pub const SELL_PCT: i32 = 50;
 /// Ticks after purchase in which an unused item refunds in full.
 pub const SELL_REFUND_TICKS: u32 = 300;
+/// How far from an enemy cast an item gains a charge from it.
+pub const MAGIC_CHARGE_RANGE: i32 = 1200;
+/// How far back along its line a blink steps looking for open ground.
+pub const BLINK_STEP_BACK: i32 = 64;
+/// Steps back a blink takes before it gives up on finding open ground.
+pub const BLINK_STEP_TRIES: u32 = 20;
 /// Denominator scale of the armor formula: each point of armor adds
 /// `ARMOR_SCALE` to a base of one hundred.
 pub const ARMOR_SCALE: i32 = 6;

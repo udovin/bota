@@ -264,3 +264,45 @@ fn every_catalog_entry_has_something_to_say() {
         assert!(!face.name.is_empty(), "{}", face.id);
     }
 }
+
+#[test]
+fn a_built_item_costs_exactly_what_its_parts_cost() {
+    for face in crate::catalog::ITEMS
+        .iter()
+        .filter(|f| !f.components.is_empty())
+    {
+        let parts: i32 = face
+            .components
+            .iter()
+            .filter_map(|part| crate::catalog::item(*part))
+            .map(|part| part.cost)
+            .sum();
+        assert_eq!(parts, face.cost, "{} is worth what went into it", face.name);
+    }
+}
+
+#[test]
+fn a_part_in_hand_comes_off_what_the_shop_asks() {
+    let treads = crate::catalog::item(29).expect("Power Treads are in the catalog");
+    let boots = crate::catalog::item(0).expect("Boots are in the catalog");
+    assert_eq!(
+        crate::catalog::price_for(treads.id, &[]),
+        treads.cost,
+        "with nothing in hand the whole is asked for"
+    );
+    assert_eq!(
+        crate::catalog::price_for(treads.id, &[boots.id]),
+        treads.cost - boots.cost,
+        "the boots already worn are not asked for twice"
+    );
+    assert_eq!(
+        crate::catalog::price_for(boots.id, &[boots.id]),
+        boots.cost,
+        "but a second of what is bought whole costs the whole of it"
+    );
+    assert_eq!(
+        crate::catalog::price_for(treads.id, &[treads.id]),
+        treads.cost,
+        "and a second built one is built out of fresh parts"
+    );
+}

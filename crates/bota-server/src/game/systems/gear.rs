@@ -1,12 +1,13 @@
 //! Items carried and abilities held: what they add, and what they cost.
 
-use bota_proto::{AbilityId, EventKind, ItemId, OrderTarget, SlotId};
+use bota_proto::{AbilityId, Attribute, EventKind, Fixed, ItemId, OrderTarget, SlotId, Vec2};
 
 use crate::game::{
     AbilityBook, AbilityState, BAG_SLOTS, Carried, Entity, Inventory, ItemStack, ItemUse, Pool,
     Status, StatusKind, World, hero_def, in_backpack, in_inventory, in_stash, item_def, wire_id,
 };
 use crate::game::{Event, EventVisibility, rules};
+use crate::game::{clamp_to_map, move_towards};
 
 /// What one drink of an item does, gathered so it travels as one thing.
 struct Mend {
@@ -22,6 +23,32 @@ struct Mend {
     eats_a_tree: bool,
     /// Whether a blow puts it out.
     breaks: bool,
+}
+
+/// How many charges one use costs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Spends {
+    /// None at all.
+    Nothing,
+    /// One of them.
+    One,
+    /// Every one it holds.
+    Everything,
+}
+
+/// Which of the slots held cover a list of parts, one slot to each part.
+///
+/// Nothing at all when any part is missing: a build takes every part or none.
+fn parts_in(held: &[(usize, ItemStack)], parts: &[ItemId]) -> Option<Vec<usize>> {
+    let mut spent: Vec<usize> = Vec::with_capacity(parts.len());
+    for part in parts {
+        let at = held
+            .iter()
+            .find(|(at, stack)| stack.id == *part && !spent.contains(at))
+            .map(|(at, _)| *at)?;
+        spent.push(at);
+    }
+    Some(spent)
 }
 
 /// The four slots a hero of this kind carries, all unlearned.
@@ -57,12 +84,25 @@ pub fn carried_bonus(inventory: &Inventory) -> Carried {
         let Some(def) = item_def(stack.id) else {
             continue;
         };
+        total.attributes += def.carried.attributes;
         total.move_speed += def.carried.move_speed;
         total.damage += def.carried.damage;
+        total.attack_speed += def.carried.attack_speed;
         total.armor += def.carried.armor;
         total.hp += def.carried.hp;
         total.mana += def.carried.mana;
+        total.hp_regen += def.carried.hp_regen;
+        total.mana_regen += def.carried.mana_regen;
         total.damage_to_creeps += def.carried.damage_to_creeps;
+        // What an item is set to is worth points of that attribute alone.
+        if let Some(mode) = stack.mode {
+            let bonus = Fixed::from_int(def.mode_bonus);
+            match mode {
+                Attribute::Strength => total.attributes.strength += bonus,
+                Attribute::Agility => total.attributes.agility += bonus,
+                Attribute::Intelligence => total.attributes.intelligence += bonus,
+            }
+        }
     }
     total
 }
@@ -109,6 +149,84 @@ impl World {
         }
     }
 
+    /// Builds whatever each hero now holds the parts of.
+    ///
+    /// Run every tick, so a build follows however the last part arrived: a
+    /// purchase, a slot moved, or a courier setting one down.
+    pub fn assemble_bags(&mut self) {
+        for unit in self
+            .seats
+            .iter()
+            .filter_map(|seat| seat.unit)
+            .collect::<Vec<_>>()
+        {
+            // One build may hand the next its last part, and each one leaves
+            // fewer stacks than it took, so the run ends.
+            for _ in 0..BAG_SLOTS {
+                if !self.assemble_once(unit) {
+                    break;
+                }
+            }
+        }
+    }
+
+    /// Builds the first item in the catalog whose parts an entity all holds.
+    ///
+    /// Only what a unit carries itself takes part: the stash is at the shop
+    /// and builds nothing. The build lands in the lowest slot any of its
+    /// parts came out of, so it stays in the inventory when a part was there.
+    fn assemble_once(&mut self, unit: Entity) -> bool {
+        let Some(bag) = self.inventory.get(unit) else {
+            return false;
+        };
+        let held: Vec<(usize, ItemStack)> = bag
+            .slots
+            .iter()
+            .enumerate()
+            .take(BAG_SLOTS)
+            .filter_map(|(at, slot)| slot.map(|stack| (at, stack)))
+            .collect();
+        for (index, def) in crate::game::ITEMS.iter().enumerate() {
+            if def.components.is_empty() {
+                continue;
+            }
+            let Some(spent) = parts_in(&held, def.components) else {
+                continue;
+            };
+            let landing = spent.iter().copied().min().expect("a build has parts");
+            // A build that holds charges takes over whatever its parts held.
+            let charges = held
+                .iter()
+                .filter(|(at, _)| spent.contains(at))
+                .filter(|(_, stack)| item_def(stack.id).is_some_and(|part| part.cast_charges > 0))
+                .map(|(_, stack)| stack.charges)
+                .sum::<u8>()
+                .min(def.cast_charges);
+            let built = ItemStack {
+                id: ItemId(index as u16),
+                charges: if def.cast_charges > 0 {
+                    charges
+                } else {
+                    def.charges
+                },
+                cooldown: 0,
+                mute: 0,
+                mode: def.mode,
+                bought_tick: self.tick,
+                touched: true,
+            };
+            let Some(bag) = self.inventory.get_mut(unit) else {
+                return false;
+            };
+            for at in spent {
+                bag.slots[at] = None;
+            }
+            bag.slots[landing] = Some(built);
+            return true;
+        }
+        false
+    }
+
     /// Buys an item for a seat that can afford it.
     ///
     /// At its own shop it goes to the first free slot of the hero's bag, and
@@ -121,36 +239,113 @@ impl World {
         let Some(unit) = self.seats[index].unit else {
             return false;
         };
-        let Some(def) = item_def(item) else {
-            return false;
-        };
-        if self.seats[index].gold < def.cost {
+        if item_def(item).is_none() {
             return false;
         }
-        let bought = ItemStack {
-            id: item,
-            charges: def.charges,
-            cooldown: 0,
-            mute: 0,
-            bought_tick: self.tick,
-            touched: false,
-        };
-        let in_hand = self.at_shop(unit)
-            && self
-                .inventory
-                .get_mut(unit)
-                .and_then(|bag| bag.slots.iter_mut().find(|slot| slot.is_none()))
-                .map(|free| *free = Some(bought))
-                .is_some();
-        if !in_hand && !self.put_in_stash(index, bought) {
+        let parts = self.missing_parts(index, unit, item);
+        let price: i32 = parts
+            .iter()
+            .filter_map(|part| item_def(*part))
+            .map(|def| def.cost)
+            .sum();
+        if self.seats[index].gold < price || self.free_slots(index, unit) < parts.len() {
             return false;
         }
-        self.seats[index].gold -= def.cost;
+        for part in parts {
+            let Some(def) = item_def(part) else {
+                continue;
+            };
+            let bought = ItemStack {
+                id: part,
+                charges: def.charges,
+                cooldown: 0,
+                mute: 0,
+                mode: def.mode,
+                bought_tick: self.tick,
+                touched: false,
+            };
+            let in_hand = self.at_shop(unit)
+                && self
+                    .inventory
+                    .get_mut(unit)
+                    .and_then(|bag| bag.slots.iter_mut().find(|slot| slot.is_none()))
+                    .map(|free| *free = Some(bought))
+                    .is_some();
+            if !in_hand {
+                self.put_in_stash(index, bought);
+            }
+        }
+        self.seats[index].gold -= price;
         events.push(Event {
             kind: EventKind::ItemBought { slot, item },
             visible_to: EventVisibility::OneTeam(self.seats[index].team),
         });
         true
+    }
+
+    /// What a seat still has to buy for one item to be had.
+    ///
+    /// An item bought whole is the whole of the answer, held already or not:
+    /// asking for a second one buys a second one. One that is built answers
+    /// with the parts it lacks, each of those asked the same question in turn,
+    /// so a part that is itself built is bought as its own parts. A part
+    /// already waiting in the bag or the stash is spent on the build and so is
+    /// bought no second time.
+    fn missing_parts(&self, seat: usize, unit: Entity, item: ItemId) -> Vec<ItemId> {
+        let mut held: Vec<ItemId> = self
+            .inventory
+            .get(unit)
+            .into_iter()
+            .flat_map(|bag| bag.slots.iter().take(BAG_SLOTS).flatten())
+            .chain(self.seats[seat].stash.slots.iter().flatten())
+            .map(|stack| stack.id)
+            .collect();
+        let mut wanted = Vec::new();
+        // What was asked for is bought however many of it are already held:
+        // only its parts are looked for in hand.
+        match item_def(item).map_or(&[][..], |def| def.components) {
+            [] => wanted.push(item),
+            parts => {
+                for part in parts {
+                    self.parts_beyond(*part, &mut held, &mut wanted);
+                }
+            }
+        }
+        wanted
+    }
+
+    /// Lays out what one item still costs, spending `held` as it goes.
+    fn parts_beyond(&self, item: ItemId, held: &mut Vec<ItemId>, wanted: &mut Vec<ItemId>) {
+        if let Some(at) = held.iter().position(|id| *id == item) {
+            held.remove(at);
+            return;
+        }
+        let parts = item_def(item).map_or(&[][..], |def| def.components);
+        if parts.is_empty() {
+            wanted.push(item);
+            return;
+        }
+        for part in parts {
+            self.parts_beyond(*part, held, wanted);
+        }
+    }
+
+    /// Slots a seat has free for something bought right now.
+    fn free_slots(&self, seat: usize, unit: Entity) -> usize {
+        let stash = self.seats[seat]
+            .stash
+            .slots
+            .iter()
+            .filter(|slot| slot.is_none())
+            .count();
+        if !self.at_shop(unit) {
+            return stash;
+        }
+        let bag = self
+            .inventory
+            .get(unit)
+            .map_or(0, |bag| bag.slots.iter().filter(|s| s.is_none()).count());
+        bag + stash
     }
 
     /// Lays a stack in the first free slot of a seat's stash.
@@ -187,12 +382,20 @@ impl World {
         if def.shared_wait && self.owes_wait(entity, stack.id) {
             return false;
         }
-        if def.charges > 0 && stack.charges == 0 {
+        if (def.charges > 0 || def.cast_charges > 0) && stack.charges == 0 {
             return false;
         }
         let Some(active) = def.active else {
             return false;
         };
+        if def.mana_cost > 0
+            && self
+                .mana
+                .get(entity)
+                .is_none_or(|pool| pool.mana < Fixed::from_int(def.mana_cost))
+        {
+            return false;
+        }
         let done = match active {
             ItemUse::Mend {
                 pool,
@@ -221,14 +424,35 @@ impl World {
             }
             ItemUse::Fell { range } => self.fell_a_tree(entity, target, range),
             ItemUse::Plant { ticks, range } => self.plant_a_tree(entity, target, ticks, range),
+            ItemUse::Restore {
+                hp_per_charge,
+                mana_per_charge,
+            } => self.restore_with(
+                entity,
+                i32::from(stack.charges) * hp_per_charge,
+                i32::from(stack.charges) * mana_per_charge,
+            ),
+            ItemUse::Blink { range } => self.blink_to(entity, target, range),
+            ItemUse::Phase { pct, ticks } => self.walk_through(entity, pct, ticks),
+            ItemUse::Switch => self.switch_mode(entity, slot),
         };
         if !done {
             return false;
         }
+        if def.mana_cost > 0
+            && let Some(pool) = self.mana.get_mut(entity)
+        {
+            pool.mana -= Fixed::from_int(def.mana_cost);
+        }
         let cooldown = if def.shared_wait { 0 } else { def.cooldown };
         // A scroll is spent when it carries, which is the teleport's own
         // business; everything else is spent the moment it is used.
-        let spends = def.charges > 0 && !matches!(active, ItemUse::Teleport { .. });
+        let spends = match active {
+            ItemUse::Teleport { .. } | ItemUse::Switch => Spends::Nothing,
+            ItemUse::Restore { .. } => Spends::Everything,
+            _ if def.charges > 0 => Spends::One,
+            _ => Spends::Nothing,
+        };
         if def.shared_wait {
             self.owe_wait(entity, stack.id, def.cooldown);
         }
@@ -238,13 +462,70 @@ impl World {
         {
             stack.cooldown = cooldown;
             stack.touched = true;
-            if spends {
-                stack.charges = stack.charges.saturating_sub(1);
-                if stack.charges == 0 {
-                    *held = None;
-                }
+            stack.charges = match spends {
+                Spends::Nothing => stack.charges,
+                Spends::One => stack.charges.saturating_sub(1),
+                Spends::Everything => 0,
+            };
+            // What gains charges again is kept when the last one goes;
+            // what does not is gone with it.
+            if stack.charges == 0 && def.cast_charges == 0 && spends != Spends::Nothing {
+                *held = None;
             }
         }
+        true
+    }
+
+    /// Mends whoever used an item, at once.
+    fn restore_with(&mut self, on: Entity, hp: i32, mana: i32) -> bool {
+        if hp <= 0 && mana <= 0 {
+            return false;
+        }
+        let ceiling = self.stats.get(on).copied();
+        if let Some(pool) = self.health.get_mut(on)
+            && let Some(most) = ceiling.map(|stats| stats.max_hp)
+        {
+            pool.hp = (pool.hp + Fixed::from_int(hp)).min(most);
+        }
+        if let Some(pool) = self.mana.get_mut(on)
+            && let Some(most) = ceiling.map(|stats| stats.max_mana)
+        {
+            pool.mana = (pool.mana + Fixed::from_int(mana)).min(most);
+        }
+        true
+    }
+
+    /// Walks whoever used an item faster, and through whatever is in the way.
+    fn walk_through(&mut self, user: Entity, pct: i32, ticks: u32) -> bool {
+        let mut on_it = self.statuses.remove(user).unwrap_or_default();
+        on_it.put(Status {
+            kind: StatusKind::Hastened { pct },
+            ticks_left: ticks,
+        });
+        on_it.put(Status {
+            kind: StatusKind::Phased,
+            ticks_left: ticks,
+        });
+        self.statuses.insert(user, on_it);
+        true
+    }
+
+    /// Sets what sits in a slot to the attribute after the one it is on.
+    fn switch_mode(&mut self, user: Entity, slot: usize) -> bool {
+        let Some(bag) = self.inventory.get_mut(user) else {
+            return false;
+        };
+        let Some(Some(stack)) = bag.slots.get_mut(slot) else {
+            return false;
+        };
+        let Some(mode) = stack.mode else {
+            return false;
+        };
+        stack.mode = Some(match mode {
+            Attribute::Strength => Attribute::Agility,
+            Attribute::Agility => Attribute::Intelligence,
+            Attribute::Intelligence => Attribute::Strength,
+        });
         true
     }
 
@@ -456,6 +737,50 @@ impl World {
         } else {
             self.inventory.get_mut(unit)?.slots.get_mut(slot)
         }
+    }
+
+    /// Carries whoever used an item to a point.
+    ///
+    /// Aimed further off than it carries, it carries as far as it does along
+    /// the same line. A landing spot on closed ground steps back along that
+    /// line until it finds open ground, and the blink fails when it finds
+    /// none.
+    fn blink_to(&mut self, user: Entity, target: OrderTarget, range: i32) -> bool {
+        let OrderTarget::Point { pos } = target else {
+            return false;
+        };
+        let Some(from) = self.transform.get(user).map(|t| t.pos) else {
+            return false;
+        };
+        let reach = rules::units(range);
+        let aim = clamp_to_map(if from.within(pos, reach) {
+            pos
+        } else {
+            move_towards(from, pos, reach)
+        });
+        let Some(landing) = self.open_ground_back(from, aim) else {
+            return false;
+        };
+        if let Some(transform) = self.transform.get_mut(user) {
+            transform.pos = landing;
+        }
+        true
+    }
+
+    /// The spot nearest `aim` on the line back to `from` that is open ground.
+    fn open_ground_back(&self, from: Vec2, aim: Vec2) -> Option<Vec2> {
+        let step = rules::units(rules::BLINK_STEP_BACK);
+        let mut at = aim;
+        for _ in 0..rules::BLINK_STEP_TRIES {
+            if self.grid.walkable(at) {
+                return Some(at);
+            }
+            if at == from {
+                break;
+            }
+            at = move_towards(at, from, step);
+        }
+        None
     }
 
     /// The tree an item was aimed at.

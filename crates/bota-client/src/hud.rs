@@ -144,23 +144,39 @@ pub fn stash_boxes(panel: &UiRect) -> Vec<(u8, UiRect)> {
 
 /// The shop panel on the right edge. Shown only within the home shop area.
 pub fn shop_panel(screen_w: f32, screen_h: f32) -> UiRect {
+    let h = 620.0_f32.min(screen_h - 180.0).max(160.0);
     UiRect {
         x: screen_w - 250.0,
-        y: (screen_h - 320.0) / 2.0,
+        y: (screen_h - h) / 2.0,
         w: 240.0,
-        h: 320.0,
+        h,
     }
 }
 
-/// One clickable row per catalog item inside the shop panel.
-pub fn shop_rows(panel: &UiRect, items: usize) -> Vec<(u16, UiRect)> {
-    (0..items)
-        .map(|i| {
+/// Height of one shop row.
+const SHOP_ROW: f32 = 26.0;
+
+/// How many rows the shop panel shows at once.
+pub fn shop_row_count(panel: &UiRect) -> usize {
+    (((panel.h - 30.0 - 34.0) / SHOP_ROW).floor().max(1.0)) as usize
+}
+
+/// How far down the catalog the shop may be scrolled and still fill.
+pub fn shop_scroll_end(panel: &UiRect, items: usize) -> usize {
+    items.saturating_sub(shop_row_count(panel))
+}
+
+/// One clickable row per catalog item the shop shows, starting at `from`.
+pub fn shop_rows(panel: &UiRect, items: usize, from: usize) -> Vec<(u16, UiRect)> {
+    let from = from.min(shop_scroll_end(panel, items));
+    (from..items.min(from + shop_row_count(panel)))
+        .enumerate()
+        .map(|(row, item)| {
             (
-                i as u16,
+                item as u16,
                 UiRect {
                     x: panel.x + 6.0,
-                    y: panel.y + 30.0 + i as f32 * 26.0,
+                    y: panel.y + 30.0 + row as f32 * SHOP_ROW,
                     w: panel.w - 12.0,
                     h: 24.0,
                 },

@@ -381,7 +381,41 @@ exploit any leak a human reviewer shrugs off:
   lane.
 - Hero: Sylla (ranged carry). 3 abilities + an ultimate, levels 1–10.
 - Economy: passive gold 1/sec, last hits, kill bounty with streaks.
-- Items follow the Dota slot topology, engine in `sim/items.rs`. A seat owns
+- Attributes are Dota's three: strength buys health and health regeneration,
+  agility buys armor and attack speed, intelligence buys mana and mana
+  regeneration, and whichever one a hero is primary in buys its attack damage.
+  They are held in fixed point rather than whole points, because Dota's growth
+  per level is fractional and rounding it to whole numbers would put the same
+  hero on two different curves depending on where the rounding fell. They sit
+  on `UnitDef` and in `Stats`, so a creep simply has none of them and pays for
+  nothing; the derivation runs once, after items have been added and before
+  anything reads what attributes pay for. The base numbers of both heroes were
+  cut by exactly what their attributes now hand back, so level one is the body
+  it always was.
+  The alternative — leaving attributes out and giving every item flat health,
+  mana and damage — was rejected because it throws away the whole cheap end of
+  the Dota shop: Circlet, the three 140-gold attribute items, Bracer and its
+  two siblings all exist to be bought as attributes, and inventing replacements
+  for them is work with nothing behind it.
+- Attack speed is a number on the Dota scale, where 100 is a unit's own pace,
+  and the interval between two attacks is the kind's own interval scaled by it.
+  It replaces the earlier haste effect, which took a percentage off the
+  interval directly: percentages off an interval do not add up — two sources of
+  twenty percent are not forty — so item bonuses and Frenzy could not have been
+  put on the same footing. The bounds are Dota's, 20 to 700.
+- Items are built from components. Every built item's price is exactly the sum
+  of its parts, with the difference carried by an ordinary catalog entry — a
+  recipe — rather than by a number on the item, so there is one rule for what a
+  build costs and no second place to keep it. Buying a built item buys only the
+  parts the seat does not already hold, asking the same question of a part that
+  is itself built, which is what makes buying a component now and the whole
+  later worth anything. The build itself runs once a tick over every hero's
+  bag rather than at each place an item can arrive: a purchase, a slot moved
+  and a courier setting one down would otherwise each need their own hook, and
+  a missed one would leave parts sitting side by side. Only what a hero
+  carries builds; the stash does not, since it is a shelf at the shop and not a
+  pair of hands.
+- Items follow the Dota slot topology, engine in `game/systems/gear.rs`. A seat owns
   fifteen slots: six inventory, where items work; three backpack, where they ride
   inert — and a stack leaving the backpack for the inventory is muted for six
   seconds before it works again; six stash. A purchase spends gold anywhere, but lands in the
@@ -392,7 +426,26 @@ exploit any leak a human reviewer shrugs off:
   Carried bonuses are flat and apply only from unmuted inventory slots; growing a
   pool keeps its filled fraction. Consumables (Healing Salve, Clarity) drip over
   thirty seconds and spill on any hit from a hero. Items survive the hero's
-  death on the seat. No courier yet.
+  death on the seat.
+- An item set to an attribute — Power Treads — keeps which one on the stack
+  rather than in the catalog, and the wire carries it in `ItemView`, since two
+  players holding the same item may have it on different attributes and the
+  client has to draw which. Switching is an ordinary `UseItem` with no target:
+  a second order kind for one item would be a wire change bought for nothing.
+- Blink is a point-targeted use like any other. Aimed further off than it
+  carries it carries as far as it does along the same line rather than
+  refusing, which is how Dota reads a click past the edge of the range. A
+  landing spot on closed ground steps back along that line a grid cell at a
+  time until it finds open ground: refusing outright would have been simpler,
+  but it makes the item unusable at exactly the cliffs it exists to cross.
+  A blow from a hero, a tower or Roshan sets it back, and that lives in the
+  same place a blow already puts a Salve out, so there is one pass over what a
+  blow breaks rather than two.
+- Charges gained from enemy casts — Magic Stick and Wand — are counted where
+  the cast succeeds, not from the event stream: the events a side is told of
+  are already filtered by what it may see, and charges do not answer to
+  vision. A stack that may gain charges is kept when its last one is spent;
+  every other stack is gone with it.
 - Fog of war is mandatory: without it a bot learns to play with full information.
 - Victory: the Ancient falls.
 
@@ -471,7 +524,7 @@ channeling come later. Casts of the same tick run after cooldown ticking, so a
 fresh cooldown surfaces at its full value. Sylla's kit: slot 0 a critical strike
 passive fed by the hidden per-unit `Chance` stream (the stream is keyed by the
 arena slot, so respawning continues the sequence); slot 1 an attack speed
-self-buff that shortens the attack interval for its duration; slot 2 a magical
+self-buff for its duration; slot 2 a magical
 projectile that bounces to the closest unhit enemy in range, never a structure;
 slot 3 an ultimate volley launching an attack projectile at every enemy unit in
 its radius. A crit rolls once at windup completion and rides the projectile,
@@ -902,15 +955,312 @@ The weights are kept in `weights.safetensors` beside the repository, on the same
 the numbers: read when the bot runs, not committed, not carried inside the binary. Asked to
 play by weights that are not there, the bot says so rather than playing something else.
 
-Credit inside a match is handed out bluntly — every decision shares the match's score.
-Nothing in the match says which tick won it, and inventing a signal that is not there
-would be worse than admitting there is none.
+Credit inside a match is handed out per decision: what followed it over the next while,
+discounted so the near future counts for most of it, judged against what other decisions
+taken at about the same point in a match were worth. Early ticks pay little and late ticks
+pay much whatever is chosen, so comparing against the run of all decisions would only be
+measuring the clock.
+
+Whether that is better than giving every decision the match's score is **not settled**. Run
+against run from the same weights and seed, the blunt scheme reached +23.4 against the rule
+bot and the per-decision scheme +23.6 — a tie. What the per-decision scheme did need before
+it could even tie was a fix to something else: the network used to write down a decision on
+every tick, including the thousands where it was standing by what it had already said.
+Those frames are near-duplicates of their neighbours, their returns differ by noise, and
+learning the difference is learning nothing. Recording only the ticks that actually issue an
+order — which is what watching the rule bot always did — cut the frames fivefold and brought
+the scheme from +17.6 back to parity.
+
+### Two bots can each be better than the other
+
+The net that came out of that run is +35.8 against the rule bot, the best measured, and
+−4.6 against the clone it was itself trained from, losing every match. Both verdicts are
+twenty matches with the doubt on them under five.
+
+This is not a contradiction to be explained away. Practising against a frozen copy of
+oneself is training to beat *that opponent*, and a policy can get better at one style while
+getting worse against another. It means a single number cannot say which of two bots is
+stronger — only which is stronger against what it was measured on. The honest fix is a pool
+of opponents rather than one, which the arena is already shaped for; until then, a verdict
+here should always be read with its opponent named.
 
 A forward model (rolling out hypothetical futures for planning) is not supported and
 not needed now: the bot has no hidden state, so it could not roll forward with the
 real engine anyway. If it becomes needed, the simulation moves out of `bota-server`
 into its own crate, which is cheap since `sim/` is already a separate subtree with no
 dependencies on the network layer.
+
+### Playing without a socket
+
+Most of a match is not the match. Measured on one match of twenty thousand ticks: the world
+itself steps in 231 ms, projecting it through the fog for both sides costs 46 ms, the model
+decides in 3363 ms — and the remaining 5812 ms is postcard, TCP, two processes and the
+lockstep acks between them. Three per cent of the wall clock is the game.
+
+So `bota-bot-v2` can play its matches in its own process. All of that lives in one module,
+`bench.rs`, which is the only place in the bot that names `bota-server` at all; the server
+is not changed for it and does not know it exists. A bench hands over the view of that
+seat's own side, fog and all, which is byte for byte what the socket would have carried.
+Reading the world directly would be faster still and would train a bot that cannot play,
+having learned on what a seat is never shown.
+
+The dependency is behind the `builtin` feature, so a bot built without it carries no
+simulation. That the bot could reach further into `bota-server` than `bench.rs` does is a
+matter of one module's discipline rather than of the compiler's — the cost of not bending
+the server around the bot.
+
+There is one seat loop, not two. `play_on` takes anything that answers three questions —
+hear, order, done thinking — and a socket and a chair both do. Two loops would part company
+by the second change to either, and then the model would be trained on one game and played
+on another.
+
+The gain is real and smaller than it looks from the breakdown: **about a quarter**, not the
+two and a half times the numbers above suggest. The server's share of that 5812 ms runs on
+another core, in parallel with the bot's thinking, so removing it does not remove wall clock
+one for one. What it does remove is a process and a socket per match, which is what matters
+once there are more lanes than cores.
+
+Two things had to be got exactly right, and both were found by comparing the two paths on
+the same seeds rather than by reading the code.
+
+**A tick waits for every seat that is still there.** The seats' acks started life meaning
+"has thought about everything", so a seat that had not spoken yet did not hold the tick and
+the world walked on without it. The match still ran, and still repeated itself when run
+twice in a row, which is what made it look right.
+
+**There is no snapshot of the tick a match begins on.** The server gathers orders, advances,
+and only then sends, so the first snapshot a seat ever sees is of tick one. An arena that
+handed out tick zero put every seat a tick ahead of itself for the whole match. The first
+three lessons agreed to the mark either way — they are short — and everything from three
+thousand ticks on drifted apart.
+
+With both fixed, one model scored identically on all seven lessons down to the last tenth,
+by both paths. That equality is the whole warrant for training on the fast one.
+
+### Hanging up
+
+A connection is closed one half at a time: the writer shuts down the sending side and
+leaves the receiving side open. Closing both while the peer still has bytes of ours in
+flight resets the connection, and a reset discards what was already sent — so the peer
+loses the message saying who won and sees an aborted socket instead of a result. It cost
+an afternoon to find, because the seat reported it as a connection error at a tick number
+that looked like a length limit.
+
+Two things around it are part of the same lesson. The server waits for its writer threads
+rather than exiting from under them, since the last message of a match is queued at the
+moment the server has nothing left to do. And a harness that starts a server reads its
+error output rather than discarding it: thrown away, a server that panics reaches the
+caller as a socket that closed, naming neither the server nor the panic.
+
+## bota-bot-v2
+
+A second bot, built the other way round. The first one weighs candidates the rules drew
+up; this one is handed a fixed vector and a fixed numbered list of deeds, and names one.
+Nothing of the first is reused: a bot that depended on another would mean every future bot
+carrying every past one about with it.
+
+The whole contract is four pieces.
+
+| | |
+|---|---|
+| `field.rs` | one tick read into a settled shape: who is who, in what order, seen from where |
+| `sight.rs` | **156 numbers** built from that |
+| `deed.rs` | **56 deeds**, flat and numbered |
+| `doing.rs` | which of them may be done now, and what a chosen number turns into |
+| `marks.rs` | what a tick is worth, lesson by lesson |
+
+Between the numbers and the choice sits a `Mind`: handed numbers and flags, answers with
+one number. That is the whole seam. A mind that knows what a creep is has reached across
+it, and a game that knows what a weight is has reached back.
+
+### Why the reading of a tick is its own piece
+
+Because the vector and the decoder have to agree about which creep is the third one. Read
+the tick twice and they drift, and every hour of training above them is learning noise.
+For the same reason the order has a tie-break on the handle: two creeps the same distance
+off would otherwise swap places from tick to tick, and the number that named one would
+name the other.
+
+### Turned about
+
+Forward is always towards the other side's fountain and left is always left of that. In
+world coordinates a bot would learn the game twice, once from each corner of a map that is
+a mirror of itself.
+
+### Legality is ours, not the model's
+
+Every tick carries a flag per deed. The model never picks one that is false — the numbers
+of the impossible are sent to nothing before anything is compared, so they can never come
+out on top and never carry a gradient. Letting it pick freely and taking the points off
+afterwards was considered and dropped: there is one order a tick, so a wasted pick is a
+lost creep, and what is legal is known to us for nothing.
+
+The counting goes both ways, and it earned its keep immediately. The first match run this
+way had the model choose nothing illegal — and the **server refuse eleven hundred of its
+orders out of eight thousand**. What the bot believed about legality and what the server
+enforced were not the same thing: a snapshot carries an ability's level and its wait but
+not whether it can be cast at all or what it must be aimed at, and the bot was offering
+casts of passives and bolts aimed at the ground. With that written down in `spells.rs` the
+refusals went to nought. A bot that had only counted its own mask would have called itself
+correct and quietly thrown away one tick in eight.
+
+### The model
+
+Two heads over one trunk of two layers: a number per deed, and one number for what the
+position is worth whatever is chosen. Some **232 thousand weights** against the first
+bot's twenty-four.
+
+The value head is not decoration. Judging a decision needs something to judge it against,
+and the first bot's home-made baselines — the match's own score, then the average of
+decisions at the same point on the clock — were measured against each other and came out a
+tie. A learned value is the answer the tie was pointing at.
+
+It is shown the last four ticks laid end to end rather than only the newest, because a
+swing that has begun, a creep about to die and a creep just dead look alike in one frame.
+Frames rather than a memory of its own: what history is worth here is mostly the last
+second, and a memory carried through twelve thousand ticks and reset on every death costs
+more to train than that is worth. If a measured gap ever asks for recurrence, the seam is
+the place to put it and nothing above or below would notice.
+
+### Lessons
+
+A match pays almost nothing almost all of the time, so the bot is not asked to learn the
+game at once. Seven lessons, each a longer match than the last, each paid for something
+narrower than winning.
+
+| | ticks | scored in |
+|---|---|---|
+| stock up | 300 | `marks/stock_up.rs` |
+| find the lane | 900 | `marks/find_the_lane.rs` |
+| hold the lane | 1200 | `marks/hold_the_lane.rs` |
+| meet the wave | 3000 | `marks/meet_the_wave.rs` |
+| work the lane | 12600 | `marks/work_the_lane.rs` |
+| take the towers | 36000 | `marks/take_the_towers.rs` |
+| grow rich | 54000 | `marks/grow_rich.rs` |
+
+**A lesson is one file and one function.** How long it runs is its row of `LADDER`; what it
+pays for is the file that row names, weights and all. `score` is the only place in the
+crate that branches on which lesson is being taught, and it does nothing but hand the tick
+to that lesson's own function. There used to be seven such branches, spread over standing,
+walking, blows, buying and fighting, and reading what one lesson was worth meant reading
+all of them.
+
+**A lesson is scored once a tick.** The seat holds a tick's events until the next snapshot
+says what the tick came to, then scores it whole. Two entry points — one for the snapshot,
+one for the events — would force every lesson to be cut in half along a seam that is the
+wire's, not the lesson's.
+
+**A lesson's marks are its own.** Nothing a lesson pays for depends on what an earlier one
+taught. Lessons used to keep a quarter of the habit before them, and it was measured not to
+work: at the last rung a quarter of the shopping habit is one mark against three hundred,
+which no selection can see, and every bred model had forgotten how to shop by the end of
+the ladder. Rescaling the quarter would have been a knob to guess; dropping it is one less
+thing that can be wrong.
+
+Isolated marks are also readable all at once, which is how they are now read. One match,
+run to the longest lesson's clock, is scored by every lesson: each counts the ticks inside
+its own window and stops. The whole ladder for the price of its longest rung, and a card
+that describes one game rather than seven different ones.
+
+The last rung is net worth itself — unspent gold plus what everything owned cost — paid a
+tick at a time as the difference since the tick before, which adds up to what the seat
+ended up worth less what it started with. Downwards as well, so gold lost on dying is net
+worth lost. One mark a gold, which puts the number an order of magnitude above every other
+lesson's; that is harmless because a lesson's marks are never added to another's, and it
+means the number reported is net worth and not a scaled shadow of it.
+
+Four decisions inside the marks were settled by measuring, each after a run that learned
+nothing or learned the wrong thing.
+
+**No flat floor.** Nearness was a straight slope from full marks at six hundred units to
+nothing at three thousand. Past three thousand every position scored the same nothing, so a
+bot that had wandered off had nothing in the numbers pointing home. It is now a falloff
+that halves at six hundred and never reaches zero.
+
+**Not the line — the spot.** The first lane lesson paid for standing near the line its lane
+runs along. A fountain is on that line. Doing nothing whatsoever scored 8.9 out of a ceiling
+of 9.0; the lesson now pays for the spot halfway along, where the waves meet.
+
+**Ground closed, not ground left.** Paid for nearness alone, the same lesson stuck at 0.5
+out of 9.0 for thirty rounds: a random walk cannot cross most of a lane in thirty seconds,
+and until it does, nothing it does changes what it is paid. Marks go to the distance
+*closed* since the last tick, which pays from the first step in the right direction. With
+that the lesson went 3.6 to 10.0 in ten rounds.
+
+**Blows count only against the other side.** Paid for the swing alone, the gradient trainer
+found what the wording allowed and went all the way into it: nought enemy creeps killed a
+match and twenty-four of its own, because its own wave is always beside it and never fights
+back. Closing the wording moved the same trainer from nought last hits to fifty-three and
+from twenty-four denies to none.
+
+The last rung pays for four things at once: damage to their towers, a tower falling,
+killing them, and staying whole, with dying counted against it. A tower is worth more the
+earlier it falls, by a falloff that halves at five minutes, and worth more for every one
+already taken, so the second is twice the first. Two departures from the plain reading of
+"damage over time, times towers taken": multiplying the whole score by the towers taken
+makes every point of damage before the first tower worth exactly nothing, which is the flat
+plateau again, so damage pays on its own and the multiplier applies to the towers alone;
+and dividing by the clock makes a tower taken in the first seconds worth unboundedly more
+than one taken a minute in, so a falloff is used instead. Health and mana are paid for only
+outside its own base — paid wherever it stood, the surest route to full health, full mana
+and no deaths at all is never to leave the fountain.
+
+Spending is read off what the seat owns — the bag, the stash and the courier's load, each
+item at its price — rather than off the gold falling, which also falls on death and rises
+on its own. Only increases count; selling gold back is not spending it.
+
+### Breeding
+
+Lessons are taught by breeding rather than by gradient. A crowd of models plays the
+lesson, the best are kept, and the crowd is refilled by copying them with noise added.
+The crowd carries over from one lesson to the next.
+
+What decided it was not determinism but this: **what is improved and what is reported
+become the same number.** Under gradient they were two things and they came apart twice
+in measurement — a run whose loose play climbed from 49 to 88 while its greedy play fell
+from 63 to 21, and a lesson that sat at its starting mark for sixty rounds. Breeding
+scores the match, and the match is also the report.
+
+It also deletes seven numbers nobody could check: the discount, the window a decision is
+credited over, the value head's share of the loss, the entropy bonus, the heat, the step
+size and the batch. One of them was already known to be wrong — at the wave lesson the
+loss ran to 2.6 because a creep pays ten and the value head's error swamped the policy's.
+What replaces them is four with plain meanings: how many models, how many matches each,
+how many survive, how far a child moves. `step.rs`, `roll.rs`, `adam.rs` and the value
+head all go once breeding is shown to be better, and the gradient trainer stays under
+`descend` until then.
+
+Three decisions inside it.
+
+**The trial seeds move with the generation.** A crowd judged on the same matches every
+generation is a crowd selected for those matches, and with two hundred thousand numbers to
+play with it will learn them rather than the game. Seeds are a function of which
+generation it is, so a run still repeats to the byte — two runs of one seed were checked
+to produce identical logs and identical weights — while no model is asked twice to do well
+at the same match. A separate set that never moves is used to report and never to choose,
+and a test asserts the two sets never meet.
+
+**Children are handed round the survivors in turn** rather than heaped on the winner,
+or a crowd becomes one model and its copies before a lesson has finished asking anything
+of it.
+
+**Ties never swap.** Two models worth the same keep the order they had, and a match that
+came to nothing does not shuffle the crowd. Without that a run is not repeatable.
+
+The cost is known and was measured before building: breeding gets one number per match
+where gradient gets one per decision, so it needs roughly a hundred times the matches. At
+thirteen matches a second that is fine for the short rungs and marginal for the last,
+where a match is twelve thousand ticks.
+
+### What is not built yet
+
+The other half of training. The design constraint that decides whether it is worth building at all: **every
+deed the rule-driven bot can take must be one number in this list**, so that the first half
+of training is copying a bot that already plays a respectable lane rather than a search
+from nothing. That was measured on the first bot — a clone at 87% agreement played worse
+than what it copied, at 92.6% it played better, and widening the choice beyond what the
+teacher demonstrates cost twenty points. A second bot that threw the teacher away would be
+starting a search at our budget of one match a second, which is where months go.
 
 ## Stages
 

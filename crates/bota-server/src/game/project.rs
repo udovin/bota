@@ -127,7 +127,8 @@ impl World {
             attack_damage: stats.damage,
             attack_range: stats.attack_range,
             attack_interval: stats.attack_interval,
-            armor: Fixed::from_int(stats.armor),
+            attack_speed: stats.attack_speed,
+            armor: stats.armor,
             magic_resist: Fixed::from_ratio(stats.magic_resist_pct, 100),
             radius: self.hull.get(entity).map_or(Fixed::ZERO, |h| h.radius),
             vision_radius: stats.vision,
@@ -140,6 +141,8 @@ impl World {
                         0
                     },
             },
+            attributes: stats.attributes,
+            primary: stats.primary,
             hero: self.hero.get(entity).copied(),
             owner: self.owner.get(entity).copied(),
             level: self.level.get(entity).map_or(0, |l| l.0),
@@ -192,6 +195,7 @@ fn effect_id(kind: StatusKind) -> u16 {
         StatusKind::Slowed { .. } => 5,
         StatusKind::Hastened { .. } => 7,
         StatusKind::Burning { .. } => 6,
+        StatusKind::Phased => 9,
     }
 }
 

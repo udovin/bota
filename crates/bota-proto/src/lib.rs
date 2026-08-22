@@ -6,6 +6,7 @@
 //!
 //! See `DESIGN.md` for the architecture this follows from.
 
+mod attrs;
 mod codec;
 mod event;
 mod ids;
@@ -17,6 +18,7 @@ mod view;
 #[cfg(test)]
 mod tests;
 
+pub use attrs::*;
 pub use codec::*;
 pub use event::*;
 pub use ids::*;

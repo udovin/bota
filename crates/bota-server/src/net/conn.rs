@@ -26,6 +26,9 @@ pub struct Connection {
     pub id: PlayerId,
     /// Frames on their way out.
     pub outbox: Arc<Outbox>,
+    /// The thread putting them on the socket, kept so the last of them can be
+    /// waited for.
+    writer: Option<thread::JoinHandle<()>>,
 }
 
 impl Connection {
@@ -35,9 +38,13 @@ impl Connection {
         let outbox = Outbox::new();
         let writer_outbox = Arc::clone(&outbox);
         let writer_stream = stream.try_clone().expect("cloning a tcp stream");
-        thread::spawn(move || writer_outbox.run_writer(writer_stream));
+        let writer = thread::spawn(move || writer_outbox.run_writer(writer_stream));
         thread::spawn(move || read_loop(id, stream, events));
-        Connection { id, outbox }
+        Connection {
+            id,
+            outbox,
+            writer: Some(writer),
+        }
     }
 
     /// Queues a message that must arrive.
@@ -55,6 +62,18 @@ impl Connection {
     /// Whether the peer is still worth sending to.
     pub fn is_open(&self) -> bool {
         !self.outbox.is_closed()
+    }
+
+    /// Stops sending and waits for what is queued to reach the socket.
+    ///
+    /// Waited for rather than left to finish on its own: the match's last
+    /// message is queued at the moment the server has nothing else to do, and
+    /// a process that exits from under the writer takes that message with it.
+    pub fn close_and_wait(&mut self) {
+        self.close();
+        if let Some(writer) = self.writer.take() {
+            let _ = writer.join();
+        }
     }
 
     /// Stops sending and lets the writer drain and hang up.

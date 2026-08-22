@@ -976,15 +976,65 @@ fn draw_vitals(u: &UnitView, rect: &crate::hud::UiRect, rate: u32) {
     );
     draw_text(
         format!(
-            "Range {}   Attacks {:.1}/s",
+            "Range {}   Attacks {:.1}/s   AS {}",
             u.attack_range.to_f32().round() as i32,
             f64::from(rate) / f64::from(u.attack_interval.max(1)),
+            u.attack_speed,
         ),
         bx,
         rect.y + 98.0,
         15.0,
         GRAY,
     );
+    draw_attributes(u, bx, rect.y + 114.0);
+}
+
+/// The three attributes in a row, the one paying for damage marked with a dot.
+fn draw_attributes(u: &UnitView, x: f32, y: f32) {
+    if u.attributes == bota_proto::Attributes::ZERO {
+        return;
+    }
+    let held = [
+        (bota_proto::Attribute::Strength, u.attributes.strength),
+        (bota_proto::Attribute::Agility, u.attributes.agility),
+        (
+            bota_proto::Attribute::Intelligence,
+            u.attributes.intelligence,
+        ),
+    ];
+    for (at, (which, points)) in held.iter().enumerate() {
+        let mark = if u.primary == Some(*which) { "*" } else { "" };
+        draw_text(
+            format!(
+                "{} {}{}",
+                attribute_letter(*which),
+                points.to_f32().floor() as i32,
+                mark
+            ),
+            x + at as f32 * 62.0,
+            y,
+            14.0,
+            attribute_color(*which),
+        );
+    }
+}
+
+/// The letter one attribute is shown by.
+fn attribute_letter(which: bota_proto::Attribute) -> &'static str {
+    match which {
+        bota_proto::Attribute::Strength => "STR",
+        bota_proto::Attribute::Agility => "AGI",
+        bota_proto::Attribute::Intelligence => "INT",
+    }
+}
+
+/// The colour one attribute is shown in.
+fn attribute_color(which: bota_proto::Attribute) -> Color {
+    match which {
+        bota_proto::Attribute::Strength => Color::new(0.85, 0.35, 0.30, 1.0),
+        bota_proto::Attribute::Agility => Color::new(0.45, 0.80, 0.40, 1.0),
+        bota_proto::Attribute::Intelligence => Color::new(0.40, 0.65, 0.95, 1.0),
+    }
 }
 
 /// Hotkey letters of the four ability slots.
@@ -1137,6 +1187,15 @@ fn draw_item_box(
             GRAY,
         );
     }
+    if let Some(mode) = item.mode {
+        draw_text(
+            attribute_letter(mode),
+            r.x + 3.0,
+            r.y + r.h - 3.0,
+            13.0,
+            attribute_color(mode),
+        );
+    }
     if backpack {
         draw_rectangle(r.x, r.y, r.w, r.h, Color::new(0.0, 0.0, 0.0, 0.45));
     }
@@ -1225,11 +1284,13 @@ fn draw_shop(app: &App, view: &WorldView) {
         );
     }
     let gold = p.gold.unwrap_or(0);
-    for (id, r) in crate::hud::shop_rows(&shop, crate::catalog::ITEMS.len()) {
+    let held = held_items(view, p);
+    for (id, r) in crate::hud::shop_rows(&shop, crate::catalog::ITEMS.len(), app.shop_scroll) {
         let Some(face) = crate::catalog::item(id) else {
             continue;
         };
-        let affordable = gold >= face.cost;
+        let price = crate::catalog::price_for(id, &held);
+        let affordable = gold >= price;
         let color = if affordable { WHITE } else { GRAY };
         let icon = r.h - 4.0;
         let drawn = crate::icons::draw_item_icon(id, r.x + 2.0, r.y + 2.0, icon * 1.5, icon);
@@ -1240,13 +1301,15 @@ fn draw_shop(app: &App, view: &WorldView) {
         };
         draw_text(face.name, text, r.y + 16.0, 15.0, color);
         draw_text(face.stats, text + 62.0, r.y + 16.0, 13.0, DARKGRAY);
-        draw_text(
-            format!("{}", face.cost),
-            r.x + r.w - 42.0,
-            r.y + 16.0,
-            14.0,
-            GOLD,
-        );
+        // What the parts already in hand save is worth showing beside what
+        // the whole would have cost.
+        let shown = if price < face.cost {
+            format!("{} / {}", price, face.cost)
+        } else {
+            format!("{price}")
+        };
+        let w = measure_text(&shown, None, 14, 1.0).width;
+        draw_text(&shown, r.x + r.w - w - 4.0, r.y + 16.0, 14.0, GOLD);
     }
     let sell = crate::hud::sell_strip(&shop);
     draw_rectangle_lines(sell.x, sell.y, sell.w, sell.h, 1.0, DARKGRAY);
@@ -1263,6 +1326,23 @@ pub const TELEPORT_RANGE: f32 = 600.0;
 
 /// The circle a tree stands in, in world units.
 pub const TREE_RADIUS: f32 = 48.0;
+
+/// Every item one seat holds, in its hero's bag and in its stash.
+///
+/// What the shop charges is worked out against this, so a part already in hand
+/// is not asked for twice.
+fn held_items(view: &WorldView, p: &bota_proto::PlayerView) -> Vec<u16> {
+    let bag = p
+        .unit
+        .and_then(|id| view.units.iter().find(|u| u.id == id))
+        .map(|u| u.items.as_slice())
+        .unwrap_or_default();
+    bag.iter()
+        .chain(p.stash.iter().flatten())
+        .flatten()
+        .map(|item| item.id.0)
+        .collect()
+}
 
 /// The hover popup for whatever HUD element sits under the cursor.
 fn draw_tooltips(app: &App, view: &WorldView) {
@@ -1339,7 +1419,13 @@ fn draw_tooltips(app: &App, view: &WorldView) {
         }
         if app.shop_open {
             let shop = crate::hud::shop_panel(sw, sh);
-            for (id, r) in crate::hud::shop_rows(&shop, crate::catalog::ITEMS.len()) {
+            let held = app
+                .my_slot
+                .and_then(|slot| view.players.iter().find(|p| p.slot == slot))
+                .map_or_else(Vec::new, |p| held_items(view, p));
+            for (id, r) in
+                crate::hud::shop_rows(&shop, crate::catalog::ITEMS.len(), app.shop_scroll)
+            {
                 if r.contains(mx, my)
                     && let Some(face) = crate::catalog::item(id)
                 {
@@ -1348,10 +1434,17 @@ fn draw_tooltips(app: &App, view: &WorldView) {
                     } else {
                         "Click to buy into the stash."
                     };
-                    tip = Some((
-                        format!("{}  {} g", face.name, face.cost),
-                        vec![face.blurb.to_string(), where_to.to_string()],
-                    ));
+                    let price = crate::catalog::price_for(id, &held);
+                    let mut lines = vec![face.blurb.to_string()];
+                    if price < face.cost {
+                        lines.push(format!(
+                            "{} g of it is already in hand; {} g to pay.",
+                            face.cost - price,
+                            price
+                        ));
+                    }
+                    lines.push(where_to.to_string());
+                    tip = Some((format!("{}  {} g", face.name, price), lines));
                 }
             }
         }

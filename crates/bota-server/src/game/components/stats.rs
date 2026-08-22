@@ -1,6 +1,6 @@
 //! The numbers an entity fights by, worked out afresh every tick.
 
-use bota_proto::Fixed;
+use bota_proto::{Attribute, Attributes, Fixed};
 
 /// Everything the type an entity is, its level, its items and what is on it
 /// add up to.
@@ -9,6 +9,10 @@ use bota_proto::Fixed;
 /// Nothing else writes here: a value put in by hand is gone next tick.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Stats {
+    /// The three attributes, after everything that adds to them.
+    pub attributes: Attributes,
+    /// Which attribute pays its attack damage. Absent for whatever has none.
+    pub primary: Option<Attribute>,
     /// The most health it can hold.
     pub max_hp: Fixed,
     /// The most mana it can hold.
@@ -25,8 +29,13 @@ pub struct Stats {
     pub attack_range: Fixed,
     /// How far it looks for something to attack.
     pub acquisition: Fixed,
-    /// Ticks between the starts of two attacks.
+    /// Ticks between the starts of two attacks, after attack speed.
     pub attack_interval: u32,
+    /// How fast it swings, where [`rules::BASE_ATTACK_SPEED`] is its own pace
+    /// and twice that is twice the pace.
+    ///
+    /// [`rules::BASE_ATTACK_SPEED`]: crate::game::rules::BASE_ATTACK_SPEED
+    pub attack_speed: i32,
     /// Ticks from the start of an attack to the hit.
     pub attack_point: u32,
     /// Ticks after the hit before it may move again.
@@ -34,7 +43,7 @@ pub struct Stats {
     /// Speed of the missile it throws. Absent for a melee attack.
     pub projectile_speed: Option<Fixed>,
     /// Armor, reducing physical damage.
-    pub armor: i32,
+    pub armor: Fixed,
     /// Magic resistance, percent.
     pub magic_resist_pct: i32,
     /// World units per second on the ground.
@@ -49,6 +58,8 @@ pub struct Stats {
     pub hides: bool,
     /// Whether it flies: closed ground is nothing to it.
     pub flies: bool,
+    /// Whether it walks through the bodies in its way.
+    pub phased: bool,
     /// Whether damage passes it by.
     pub invulnerable: bool,
 }

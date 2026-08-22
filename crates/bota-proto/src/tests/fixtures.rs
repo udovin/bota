@@ -28,6 +28,7 @@ pub fn item_view(slot: u16) -> ItemView {
         id: ItemId(slot),
         charges: 3,
         cooldown_left: 0,
+        mode: None,
     }
 }
 
@@ -49,6 +50,9 @@ pub fn hero_unit() -> UnitView {
         attack_damage: 54,
         attack_range: fixed(550),
         attack_interval: 51,
+        attack_speed: 100,
+        attributes: Attributes::ZERO,
+        primary: None,
         armor: fixed(3),
         magic_resist: Fixed { raw: 16384 },
         radius: fixed(24),
@@ -89,6 +93,9 @@ pub fn creep_unit(idx: u32) -> UnitView {
         attack_damage: 21,
         attack_range: fixed(100),
         attack_interval: 30,
+        attack_speed: 100,
+        attributes: Attributes::ZERO,
+        primary: None,
         armor: fixed(2),
         magic_resist: Fixed { raw: 0 },
         radius: fixed(16),

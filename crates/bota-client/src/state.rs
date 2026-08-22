@@ -97,6 +97,8 @@ pub struct App {
     /// Whether the shop panel is open. Toggled by key or button; buying
     /// away from home lands in the stash.
     pub shop_open: bool,
+    /// The catalog row the shop panel starts at.
+    pub shop_scroll: usize,
     /// Every tree on the map, from MatchStart.
     pub trees: Vec<(f32, f32)>,
     /// Cells per terrain axis, from MatchStart.
@@ -156,6 +158,7 @@ impl App {
             pending_item: None,
             held_item: None,
             shop_open: false,
+            shop_scroll: 0,
             trees: Vec::new(),
             terrain_cells: 0,
             terrain: Vec::new(),

@@ -1,4 +1,4 @@
-//! The wire between a bot and a server.
+//! The wire between the bot and a server.
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -10,7 +10,7 @@ use bota_proto::{
 
 use crate::Ask;
 
-/// What the server said when it took a connection.
+/// What the server said when it took the connection.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Seated {
     /// The handle it was given.
@@ -25,23 +25,19 @@ pub struct Seated {
 
 /// One connection to a server, framed.
 pub struct Link {
-    /// The socket itself.
     stream: TcpStream,
-    /// What has arrived and not yet been read out.
     reader: FrameReader,
-    /// The number the next order goes out under.
     seq: u32,
 }
 
 impl Link {
-    /// Joins a server as a bot, waits to be given a seat, and asks for a hero.
+    /// Joins a server, waits to be given a seat, and asks for a hero.
     ///
     /// The wait is not politeness. Seats go out in the order the server sees
-    /// the connections arrive, and two connections made back to back arrive in
-    /// whichever order the threads behind them happen to run. Waiting for the
-    /// answer to one before making the next is what makes which side a bot
-    /// plays something the caller decides rather than something the scheduler
-    /// does.
+    /// connections arrive, and two made back to back arrive in whichever order
+    /// the threads behind them run; waiting for the answer to one before
+    /// making the next is what makes which side a bot plays the caller's
+    /// decision rather than the scheduler's.
     pub fn join(addr: &str, name: &str, hero: HeroId) -> std::io::Result<(Link, Seated)> {
         let stream = TcpStream::connect(addr)?;
         stream.set_nodelay(true)?;
@@ -86,9 +82,6 @@ impl Link {
     }
 
     /// Sends one order under the next number.
-    ///
-    /// Naming nobody means the seat's own hero; naming one of the units the
-    /// seat drives, such as its courier, means that one.
     pub fn order(&mut self, ask: Ask) -> std::io::Result<()> {
         self.seq += 1;
         let seq = self.seq;
@@ -102,8 +95,8 @@ impl Link {
     /// Says that this tick has been thought about.
     ///
     /// A lockstep server advances no further until every seat has said it, so
-    /// a bot that never says it stalls the whole match to the ack timeout, one
-    /// tick at a time.
+    /// a bot that never does holds the whole match at the straggler timeout,
+    /// one tick at a time.
     pub fn done_thinking(&mut self, tick: u32) -> std::io::Result<()> {
         self.send(&ClientMsg::Ack { tick })
     }

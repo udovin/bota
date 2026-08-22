@@ -89,11 +89,13 @@ pub fn hitting_system(cx: HitCx<'_>) {
 }
 
 /// Damage after armor or magic resistance.
-fn mitigate(amount: i32, kind: DamageKind, armor: i32, magic_resist_pct: i32) -> i32 {
+fn mitigate(amount: i32, kind: DamageKind, armor: Fixed, magic_resist_pct: i32) -> i32 {
     match kind {
         DamageKind::Physical => {
-            let den = 100 + rules::ARMOR_SCALE * armor.max(0);
-            (i64::from(amount) * 100 / i64::from(den)) as i32
+            let armor = armor.max(Fixed::ZERO);
+            let whole = i64::from(Fixed::ONE.raw);
+            let den = 100 * whole + i64::from(rules::ARMOR_SCALE) * i64::from(armor.raw);
+            (i64::from(amount) * 100 * whole / den) as i32
         }
         DamageKind::Magical => {
             let kept = (100 - magic_resist_pct).clamp(0, 100);

@@ -1,0 +1,303 @@
+//! Teaching by breeding rather than by gradient.
+//!
+//! A crowd of models plays the lesson, the best of them are kept, and the rest
+//! of the crowd is refilled by copying those with noise added. No credit is
+//! worked out for any single decision: what is scored is the match, which is
+//! also what is reported, so the thing being improved and the thing being
+//! measured cannot come apart.
+//!
+//! Three things about the shape of it.
+//!
+//! **The trial seeds move.** A crowd judged on the same handful of matches
+//! every generation is a crowd being selected for those matches, and with two
+//! hundred thousand numbers to play with it will learn them. The seeds are a
+//! function of which generation it is, so a run is still repeatable to the
+//! number while no model is ever asked twice to do well at the same match. A
+//! separate set that never moves is used to report, and never to choose.
+//!
+//! **Ranks, not marks.** A lesson pays five for shopping and forty-five for a
+//! wave, so choosing by the marks themselves would mean a different pressure
+//! on every rung. Rank has no units.
+//!
+//! **The crowd carries over.** A lesson ends with the same number of models it
+//! started with, and the next lesson starts from those. What is inherited is a
+//! crowd rather than a champion: a lesson's best is often narrow, and the one
+//! behind it is what the next lesson turns out to want.
+
+use std::thread;
+
+use crate::{Card, Chair, Dice, Learned, Lesson, Model, Role, Yard};
+
+/// A crowd being taught.
+#[derive(Clone, Debug)]
+pub struct Tribe {
+    /// Where the matches are played.
+    pub yard: Yard,
+    /// What the seats are there to do.
+    pub role: Role,
+    /// How many models there are.
+    pub folk: usize,
+    /// Matches each model plays a generation.
+    pub trials: usize,
+    /// Generations a lesson runs for.
+    pub lives: u32,
+    /// How many of the crowd survive a generation.
+    pub keep: usize,
+    /// How far a child is moved from its parent.
+    pub spread: f32,
+    /// How many matches run at once.
+    pub lanes: usize,
+    /// Where the whole run is seeded from.
+    pub seed: u64,
+}
+
+/// What one model is worth at every lesson, from matches it never trained on.
+///
+/// One match a seed, run to the longest lesson's clock, and every lesson
+/// scored off that one match: each counts the ticks inside its own window. The
+/// whole ladder for the price of its longest rung, and a card that describes
+/// one game rather than seven different ones.
+pub fn report_card(tribe: &Tribe, body: &Body) -> std::io::Result<Card> {
+    let longest = Lesson::longest();
+    let (cards, _) = worth_of_all(
+        tribe,
+        std::slice::from_ref(body),
+        longest,
+        &tribe.reported_on(),
+    )?;
+    Ok(cards.first().copied().unwrap_or_default())
+}
+
+/// Matches a lesson is reported on, which never change.
+pub const REPORTED_ON: usize = 4;
+/// Where the reporting seeds come from, apart from everything else.
+const REPORTING_SEED: u64 = 0x5eed_0001;
+
+impl Tribe {
+    /// A crowd with the plain settings.
+    pub fn new(folk: usize, trials: usize) -> Tribe {
+        Tribe {
+            yard: Yard::default(),
+            role: Role::Mid,
+            folk: folk.max(2),
+            trials: trials.max(1),
+            lives: 30,
+            keep: (folk / 4).max(1),
+            spread: 0.02,
+            lanes: 12,
+            seed: 1,
+        }
+    }
+
+    /// The matches a generation is judged on.
+    ///
+    /// A function of which generation it is, so that a run repeats to the
+    /// number and no model is ever judged twice on the same match.
+    pub fn trials_of(&self, life: u32) -> Vec<u64> {
+        let mut dice = Dice::from_seed(
+            self.seed
+                .wrapping_mul(0x9e37_79b9)
+                .wrapping_add(u64::from(life).wrapping_mul(0x1000_0001)),
+        );
+        (0..self.trials).map(|_| dice.next_u64()).collect()
+    }
+
+    /// The matches a lesson is reported on, the same ones every time.
+    pub fn reported_on(&self) -> Vec<u64> {
+        let mut dice = Dice::from_seed(REPORTING_SEED);
+        (0..REPORTED_ON).map(|_| dice.next_u64()).collect()
+    }
+}
+
+/// One model's numbers.
+pub type Body = Vec<f32>;
+
+/// A crowd drawn at random.
+pub fn first_crowd(tribe: &Tribe) -> Result<Vec<Body>, String> {
+    (0..tribe.folk)
+        .map(|at| {
+            Model::fresh(tribe.seed.wrapping_add(at as u64).wrapping_mul(31))
+                .and_then(|model| model.pour())
+                .map_err(|wrong| wrong.to_string())
+        })
+        .collect()
+}
+
+/// What one model is worth over the matches given.
+///
+/// Both seats are the model itself, choosing what it likes best. A lesson pays
+/// for what a seat does rather than for beating anybody, so the two seats are
+/// two readings of the same model rather than a contest.
+fn worth_of(tribe: &Tribe, body: &Body, lesson: Lesson, seed: u64) -> std::io::Result<Card> {
+    let hatch = || -> std::io::Result<Learned> {
+        let model = Model::fresh(1).map_err(std::io::Error::other)?;
+        model.soak(body).map_err(std::io::Error::other)?;
+        Ok(Learned::new(model))
+    };
+    let mut one = hatch()?;
+    let mut other = hatch()?;
+    let chair = |name: &str| Chair {
+        addr: String::new(),
+        name: name.to_string(),
+        hero: tribe.yard.hero,
+        limit: Some(lesson.ticks()),
+        role: tribe.role,
+        lesson,
+    };
+    let (mine, theirs) =
+        tribe
+            .yard
+            .play_a_match(seed, &mut one, &mut other, &chair("one"), &chair("other"))?;
+    let mut both = mine.card;
+    both.add(&theirs.card);
+    Ok(both.over(2))
+}
+
+/// What every model of a crowd is worth, averaged over the matches given.
+///
+/// Every model against every match, run as many at a time as there are lanes.
+/// Results go back to the slot they came from, so how the work was shared out
+/// cannot change the answer.
+///
+/// A match that fails counts as nothing for the model that was playing it, and
+/// the number that failed comes back alongside the marks. One bad match out of
+/// hundreds is not worth a run of several hours, but every match failing is
+/// something else — no server, or none of them able to start — and that is
+/// reported as an error rather than as a crowd worth nothing.
+pub fn worth_of_all(
+    tribe: &Tribe,
+    crowd: &[Body],
+    lesson: Lesson,
+    seeds: &[u64],
+) -> std::io::Result<(Vec<Card>, usize)> {
+    let jobs: Vec<(usize, u64)> = crowd
+        .iter()
+        .enumerate()
+        .flat_map(|(at, _)| seeds.iter().map(move |seed| (at, *seed)))
+        .collect();
+    let mut marks = vec![Card::new(); crowd.len()];
+    let mut failed = 0;
+    let mut last_words = None;
+    for batch in jobs.chunks(tribe.lanes.max(1)) {
+        let done: Vec<std::io::Result<(usize, Card)>> = thread::scope(|scope| {
+            let running: Vec<_> = batch
+                .iter()
+                .map(|(at, seed)| {
+                    let (at, seed) = (*at, *seed);
+                    scope.spawn(move || {
+                        worth_of(tribe, &crowd[at], lesson, seed).map(|worth| (at, worth))
+                    })
+                })
+                .collect();
+            running
+                .into_iter()
+                .map(|one| {
+                    one.join()
+                        .unwrap_or_else(|_| Err(std::io::Error::other("a match gave up")))
+                })
+                .collect()
+        });
+        for outcome in done {
+            match outcome {
+                Ok((at, worth)) => marks[at].add(&worth),
+                Err(wrong) => {
+                    failed += 1;
+                    last_words = Some(wrong);
+                }
+            }
+        }
+    }
+    if failed == jobs.len()
+        && let Some(wrong) = last_words
+    {
+        return Err(wrong);
+    }
+    let over = seeds.len().max(1);
+    Ok((marks.iter().map(|total| total.over(over)).collect(), failed))
+}
+
+/// The crowd in the order they placed at one lesson, best first.
+///
+/// Judged on that lesson's marks alone. Ties are broken by where a model
+/// already stood, so that two models worth the same never swap places and a
+/// run stays repeatable.
+pub fn placings(cards: &[Card], lesson: Lesson) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..cards.len()).collect();
+    order.sort_by(|one, other| {
+        cards[*other]
+            .of(lesson)
+            .partial_cmp(&cards[*one].of(lesson))
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(one.cmp(other))
+    });
+    order
+}
+
+/// The next crowd: those that placed, and children of them to fill it out.
+///
+/// Children are handed round the survivors in turn rather than heaped on the
+/// best one, so that a crowd does not become one model and its copies before
+/// a lesson has finished asking anything of it.
+pub fn next_crowd(tribe: &Tribe, crowd: &[Body], placed: &[usize], life: u32) -> Vec<Body> {
+    let keep = tribe.keep.clamp(1, crowd.len());
+    let mut next: Vec<Body> = placed[..keep].iter().map(|at| crowd[*at].clone()).collect();
+    for at in keep..tribe.folk {
+        let parent = &next[(at - keep) % keep];
+        let mut dice = Dice::from_seed(
+            tribe
+                .seed
+                .wrapping_mul(0x2545_f491)
+                .wrapping_add(u64::from(life).wrapping_mul(7919))
+                .wrapping_add(at as u64),
+        );
+        let child = parent
+            .iter()
+            .map(|number| number + tribe.spread * dice.spread())
+            .collect();
+        next.push(child);
+    }
+    next
+}
+
+/// What one generation came to.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Life {
+    /// Which generation.
+    pub number: u32,
+    /// What the best of the crowd was worth on the generation's own matches.
+    pub best: f32,
+    /// What the crowd was worth on average.
+    pub middling: f32,
+    /// Matches of it that never finished.
+    pub failed: usize,
+}
+
+/// Teaches a crowd one lesson, and hands back what is left of it.
+///
+/// The crowd that comes back is the same size as the one that went in, best
+/// first, so a lesson can be handed straight to the next.
+pub fn teach_a_lesson(
+    tribe: &Tribe,
+    crowd: Vec<Body>,
+    lesson: Lesson,
+    mut told: impl FnMut(Life),
+) -> std::io::Result<Vec<Body>> {
+    let mut crowd = crowd;
+    for life in 1..=tribe.lives {
+        let (cards, failed) = worth_of_all(tribe, &crowd, lesson, &tribe.trials_of(life))?;
+        let placed = placings(&cards, lesson);
+        told(Life {
+            number: life,
+            best: placed.first().map_or(0.0, |at| cards[*at].of(lesson)),
+            middling: cards.iter().map(|card| card.of(lesson)).sum::<f32>()
+                / cards.len().max(1) as f32,
+            failed,
+        });
+        crowd = next_crowd(tribe, &crowd, &placed, life);
+    }
+    // Placed once more on the last children, so that what is handed on is in
+    // order and nothing untried is called the best.
+    let (cards, _) = worth_of_all(tribe, &crowd, lesson, &tribe.trials_of(tribe.lives + 1))?;
+    let placed = placings(&cards, lesson);
+    Ok(placed.into_iter().map(|at| crowd[at].clone()).collect())
+}

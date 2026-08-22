@@ -126,7 +126,9 @@ fn ui_clicks(app: &mut App) -> bool {
             let shop = crate::hud::shop_panel(sw, sh);
             if shop.contains(mx, my) {
                 if left {
-                    for (id, rect) in crate::hud::shop_rows(&shop, crate::catalog::ITEMS.len()) {
+                    for (id, rect) in
+                        crate::hud::shop_rows(&shop, crate::catalog::ITEMS.len(), app.shop_scroll)
+                    {
                         if rect.contains(mx, my) {
                             app.send_order(Order::BuyItem { item: ItemId(id) });
                         }
@@ -281,7 +283,20 @@ fn lobby_controls(app: &mut App) {
 fn camera_controls(app: &mut App) {
     let (_, wheel) = mouse_wheel();
     if wheel != 0.0 {
-        app.camera.zoom_by(wheel.signum());
+        // Over the shop the wheel runs the catalog; anywhere else it zooms.
+        let (sw, sh) = (screen_width(), screen_height());
+        let (mx, my) = mouse_position();
+        let shop = crate::hud::shop_panel(sw, sh);
+        if app.shop_open && shop.contains(mx, my) {
+            let end = crate::hud::shop_scroll_end(&shop, crate::catalog::ITEMS.len());
+            app.shop_scroll = if wheel > 0.0 {
+                app.shop_scroll.saturating_sub(1)
+            } else {
+                (app.shop_scroll + 1).min(end)
+            };
+        } else {
+            app.camera.zoom_by(wheel.signum());
+        }
     }
     let dt = get_frame_time();
     let pan = 900.0 * dt;

@@ -66,8 +66,11 @@ compilation and demands a conscious decision about what to put in it.
 
 ### Crate boundaries
 
-Four crates: `bota-proto` (shared vocabulary + codec), `bota-server` (simulation +
-networking), `bota-client`, `bota-bot`. All depend only on `proto`.
+Five crates: `bota-proto` (shared vocabulary + codec), `bota-server` (simulation +
+networking), `bota-client`, and two bots — `bota-bot` and `bota-bot-v2`. All depend only
+on `proto`, and in particular no bot depends on another: a second bot that leaned on the
+first would mean every future one carrying every past one about with it. The wire and the
+match loop are short enough to be worth writing twice.
 
 The membership criterion for `bota-proto` is the single rule deciding where code lives:
 
@@ -106,7 +109,7 @@ New external dependencies only after discussion. Allowed:
 | `resvg` | `bota-client` | rasterising the item art |
 | `rand_chacha` 0.10 | `bota-server` | PRNG |
 | `clap` (derive) | every binary | command line arguments |
-| `candle-core` 0.11 | `bota-bot` | the network the second bot decides with |
+| `candle-core` 0.11 | both bots | the networks they decide with |
 
 Every binary parses its arguments with `clap` and its derive. There is no bar low enough
 for a hand-rolled parser to be worth clearing: it costs a hundred lines, generates no

@@ -7,10 +7,10 @@ use crate::engine::Entity;
 /// One kind of effect, with what there is of it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StatusKind {
-    /// Attacks come faster, by `pct` percent.
+    /// Attacks come faster.
     Haste {
-        /// Percent taken off the wait between attacks.
-        pct: i32,
+        /// Attack speed added.
+        speed: i32,
     },
     /// Health mends faster.
     Mending {
@@ -37,6 +37,8 @@ pub enum StatusKind {
     Stunned,
     /// Nothing gets through: damage passes it by while it holds.
     Shielded,
+    /// Walks through the bodies in its way, and nothing eases it out of one.
+    Phased,
     /// Walks slower, by `pct` percent of what it would.
     Slowed {
         /// Percent taken off its speed.

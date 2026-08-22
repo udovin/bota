@@ -373,6 +373,7 @@ impl World {
         self.spawn_waves();
         self.fill_camps();
         self.tick_gear();
+        self.assemble_bags();
         self.passive_gold();
         self.tick_respawns();
         self.tick_couriers();
@@ -462,7 +463,7 @@ impl World {
             health: &mut self.health,
         });
         let felt: Vec<Landed> = self.landed.drain(..).collect();
-        self.break_drinks(&felt);
+        self.break_on_blows(&felt);
         self.rouse_camps(&felt);
         self.tell_of(&felt, &mut events);
         let fallen = felt

@@ -3,7 +3,7 @@
 //! Generated. The camp a kind belongs to and what a camp draws are elsewhere;
 //! this is only what one of them is worth.
 
-use bota_proto::{Fixed, UnitKind};
+use bota_proto::{Attributes, Fixed, UnitKind};
 
 use crate::game::rules;
 use crate::game::{Growth, UnitDef};
@@ -94,6 +94,7 @@ impl NeutralKind {
 
 /// What one upgrade interval adds to any neutral.
 const NEUTRAL_GROWTH: Growth = Growth {
+    attributes: Attributes::ZERO,
     hp: rules::NEUTRAL_UPGRADE_HP,
     mana: 0,
     damage: rules::NEUTRAL_UPGRADE_DAMAGE,
@@ -105,6 +106,8 @@ const NEUTRAL_GROWTH: Growth = Growth {
 /// What every neutral shares, so a kind names only its own numbers.
 const NEUTRAL_BASE: UnitDef = UnitDef {
     kind: UnitKind::CreepNeutral,
+    attributes: Attributes::ZERO,
+    primary: None,
     max_hp: 0,
     max_mana: 0,
     hp_regen: Fixed::ZERO,
@@ -127,6 +130,7 @@ const NEUTRAL_BASE: UnitDef = UnitDef {
     bounty_gold: 0,
     bounty_xp: 0,
     per_level: Growth {
+        attributes: Attributes::ZERO,
         hp: 0,
         mana: 0,
         damage: 0,

@@ -47,7 +47,12 @@ impl World {
         if !flies && !self.grid.walkable(next) && self.grid.walkable(from) {
             return false;
         }
-        shoving || !self.blocked_by_bodies(mover, from, next)
+        shoving || self.phased(mover) || !self.blocked_by_bodies(mover, from, next)
+    }
+
+    /// Whether an entity walks through the bodies in its way.
+    pub fn phased(&self, entity: Entity) -> bool {
+        self.stats.get(entity).is_some_and(|stats| stats.phased)
     }
 
     /// One step of a march, refusing anything shut.
@@ -200,6 +205,11 @@ impl World {
             for j in i + 1..bodies.len() {
                 let (one, other) = (&bodies[i], &bodies[j]);
                 if one.3 && other.3 {
+                    continue;
+                }
+                // Neither side of a pair is eased apart while one of them
+                // walks through bodies.
+                if self.phased(one.0) || self.phased(other.0) {
                     continue;
                 }
                 let dx = i64::from(other.1.x.raw) - i64::from(one.1.x.raw);

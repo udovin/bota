@@ -1,6 +1,6 @@
 //! Entity allocation and component storage.
 
-use bota_proto::{Fixed, Team};
+use bota_proto::{Attributes, Fixed, Team};
 
 use crate::game::rules;
 use crate::game::{
@@ -120,10 +120,13 @@ fn stats() -> Stats {
         attack_range: Fixed::ZERO,
         acquisition: Fixed::ZERO,
         attack_interval: 30,
+        attack_speed: 100,
+        attributes: Attributes::ZERO,
+        primary: None,
         attack_point: 0,
         attack_backswing: 0,
         projectile_speed: None,
-        armor: 0,
+        armor: Fixed::ZERO,
         magic_resist_pct: 0,
         move_speed: Fixed::ZERO,
         turn_rate: 0,
@@ -132,6 +135,7 @@ fn stats() -> Stats {
         true_sight: Fixed::ZERO,
         hides: false,
         flies: false,
+        phased: false,
         invulnerable: false,
     }
 }
@@ -316,7 +320,7 @@ fn a_plain_creep_gets_the_numbers_of_its_kind() {
     let stats = world.stats.get(creep).expect("worked out this tick");
     assert_eq!(stats.max_hp, Fixed::from_int(rules::MELEE_CREEP_HP));
     assert_eq!(stats.damage, rules::MELEE_CREEP_ATTACK_DAMAGE);
-    assert_eq!(stats.armor, rules::MELEE_CREEP_ARMOR);
+    assert_eq!(stats.armor, Fixed::from_int(rules::MELEE_CREEP_ARMOR));
     assert_eq!(stats.attack_interval, rules::CREEP_ATTACK_INTERVAL);
     assert_eq!(stats.projectile_speed, None, "a melee creep throws nothing");
 }
@@ -437,6 +441,15 @@ fn a_flag_carrier_takes_no_upgrades() {
     );
 }
 
+/// The health a hero of the plain kind holds so many levels past the first,
+/// counting what its strength is worth.
+fn body_at(levels: i32) -> Fixed {
+    let strength = rules::HERO_ATTRIBUTES.strength
+        + rules::HERO_ATTRIBUTES_PER_LEVEL.strength * Fixed::from_int(levels);
+    Fixed::from_int(rules::HERO_HP + levels * rules::HERO_HP_PER_LEVEL)
+        + Fixed::from_int(rules::HP_PER_STRENGTH) * strength
+}
+
 #[test]
 fn levels_raise_a_hero() {
     let mut world = World::new();
@@ -446,14 +459,12 @@ fn levels_raise_a_hero() {
     world.mana.insert(hero, Mana { mana: Fixed::ZERO });
     world.step();
     let first = world.stats.get(hero).expect("worked out this tick").max_hp;
-    assert_eq!(first, Fixed::from_int(rules::HERO_HP), "level one is plain");
+    assert_eq!(first, body_at(0), "level one is plain");
     world.level.insert(hero, Level(4));
     world.step();
     assert_eq!(
         world.stats.get(hero).map(|s| s.max_hp),
-        Some(Fixed::from_int(
-            rules::HERO_HP + 3 * rules::HERO_HP_PER_LEVEL
-        )),
+        Some(body_at(3)),
         "three levels past the first"
     );
 }
@@ -465,14 +476,14 @@ fn haste_shortens_the_wait_between_attacks_while_it_lasts() {
     world.statuses.insert(
         creep,
         Statuses(vec![Status {
-            kind: StatusKind::Haste { pct: 40 },
+            kind: StatusKind::Haste { speed: 40 },
             ticks_left: 5,
         }]),
     );
     world.step();
     assert_eq!(
         world.stats.get(creep).map(|s| s.attack_interval),
-        Some(rules::CREEP_ATTACK_INTERVAL * 60 / 100)
+        Some(rules::CREEP_ATTACK_INTERVAL * 100 / 140)
     );
     world.statuses.insert(creep, Statuses(Vec::new()));
     world.step();
@@ -533,6 +544,7 @@ fn what_an_entity_carries_and_casts_keeps_its_slots() {
         charges: 2,
         cooldown: 0,
         mute: 0,
+        mode: None,
         bought_tick: 0,
         touched: false,
     });
@@ -1188,6 +1200,7 @@ fn what_a_hero_carries_shows_up_in_its_stats() {
             charges: def.charges,
             cooldown: 0,
             mute: 0,
+            mode: None,
             bought_tick: 0,
             touched: false,
         });
@@ -1233,6 +1246,7 @@ fn a_salve_puts_mending_on_whoever_drinks_it_and_runs_out() {
             charges: 1,
             cooldown: 0,
             mute: 0,
+            mode: None,
             bought_tick: 0,
             touched: false,
         });
@@ -1246,7 +1260,8 @@ fn a_salve_puts_mending_on_whoever_drinks_it_and_runs_out() {
         "the last charge takes the stack with it"
     );
     world.step();
-    let plain = crate::game::HERO.hp_regen;
+    let plain = crate::game::HERO.hp_regen
+        + rules::HP_REGEN_PER_STRENGTH * crate::game::HERO.attributes.strength;
     assert!(
         world.stats.get(hero).expect("settled").hp_regen > plain,
         "it mends faster while the salve holds"
@@ -3264,6 +3279,7 @@ fn a_hero_at_the_shop() -> (World, Entity, bota_proto::ItemId) {
         charges: 0,
         cooldown: 0,
         mute: 0,
+        mode: None,
         bought_tick: 0,
         touched: false,
     });
@@ -3388,6 +3404,7 @@ fn a_hero_with_a_scroll() -> (World, Entity) {
             charges: 1,
             cooldown: 0,
             mute: 0,
+            mode: None,
             bought_tick: 0,
             touched: false,
         });
@@ -3509,6 +3526,7 @@ fn a_hero_with_a_ward(item: u16) -> (World, Entity, bota_proto::Vec2) {
             charges: 1,
             cooldown: 0,
             mute: 0,
+            mode: None,
             bought_tick: 0,
             touched: false,
         });
@@ -3862,6 +3880,7 @@ fn a_drink_may_be_aimed_at_the_one_drinking_it() {
                 charges: 1,
                 cooldown: 0,
                 mute: 0,
+                mode: None,
                 bought_tick: 0,
                 touched: false,
             });
@@ -3923,6 +3942,7 @@ fn a_hero_by_the_trees(item: u16, charges: u8) -> (World, Entity, bota_proto::Ve
             charges,
             cooldown: 0,
             mute: 0,
+            mode: None,
             bought_tick: 0,
             touched: false,
         });
@@ -4035,6 +4055,7 @@ fn tango_ticks(world: &mut World, hero: Entity, at: bota_proto::Vec2) -> u32 {
             charges: 1,
             cooldown: 0,
             mute: 0,
+            mode: None,
             bought_tick: 0,
             touched: false,
         });
@@ -4128,6 +4149,7 @@ fn a_quelling_blade_is_worth_something_against_a_creep_and_nothing_against_a_her
             charges: 0,
             cooldown: 0,
             mute: 0,
+            mode: None,
             bought_tick: 0,
             touched: false,
         });
@@ -4310,7 +4332,10 @@ fn each_hero_stands_up_with_what_its_own_kind_carries() {
         );
         assert_eq!(
             world.stats.get(hero).map(|s| s.max_hp),
-            Some(Fixed::from_int(def.unit.max_hp)),
+            Some(
+                Fixed::from_int(def.unit.max_hp)
+                    + Fixed::from_int(rules::HP_PER_STRENGTH) * def.unit.attributes.strength
+            ),
             "{} stands up in its own body",
             def.name
         );
@@ -4706,6 +4731,7 @@ fn hand_item(world: &mut World, hero: Entity, item: u16, charges: u8) {
             charges,
             cooldown: 0,
             mute: 0,
+            mode: None,
             bought_tick: 0,
             touched: false,
         });
@@ -5334,6 +5360,7 @@ fn a_courier_fetches_the_stash_and_hands_it_to_its_owner() {
         charges: 0,
         cooldown: 0,
         mute: 0,
+        mode: None,
         bought_tick: 0,
         touched: false,
     });
@@ -5549,6 +5576,7 @@ fn a_courier_at_the_fountain_reaches_the_stash_itself() {
         charges: 0,
         cooldown: 0,
         mute: 0,
+        mode: None,
         bought_tick: 0,
         touched: false,
     });
@@ -5598,6 +5626,7 @@ fn an_order_takes_a_courier_off_its_errand() {
             charges: 0,
             cooldown: 0,
             mute: 0,
+            mode: None,
             bought_tick: 0,
             touched: false,
         });
@@ -5647,6 +5676,7 @@ fn a_courier_that_has_handed_over_turns_for_home() {
         charges: 0,
         cooldown: 0,
         mute: 0,
+        mode: None,
         bought_tick: 0,
         touched: false,
     });
@@ -5688,6 +5718,7 @@ fn taking_the_stash_carries_it_on_without_being_asked_twice() {
         charges: 0,
         cooldown: 0,
         mute: 0,
+        mode: None,
         bought_tick: 0,
         touched: false,
     });
@@ -5744,6 +5775,7 @@ fn a_courier_whose_owner_fell_puts_what_it_carries_back() {
             charges: 0,
             cooldown: 0,
             mute: 0,
+            mode: None,
             bought_tick: 0,
             touched: false,
         });
@@ -5799,6 +5831,7 @@ fn the_stash_sells_from_anywhere_and_a_bag_only_at_the_shop() {
         charges: 0,
         cooldown: 0,
         mute: 0,
+        mode: None,
         bought_tick: 0,
         touched: true,
     };
@@ -5888,6 +5921,7 @@ fn what_a_courier_carries_is_worth_nothing_to_the_courier() {
             charges: 0,
             cooldown: 0,
             mute: 0,
+            mode: None,
             bought_tick: 0,
             touched: false,
         });
@@ -5897,5 +5931,365 @@ fn what_a_courier_carries_is_worth_nothing_to_the_courier() {
         world.stats.get(courier).map(|stats| stats.move_speed),
         Some(plain),
         "it carries the boots, it does not wear them"
+    );
+}
+
+/// A hero of the plain kind, standing at its own shop with gold in hand.
+fn a_hero_with_gold(gold: i32) -> (World, Entity) {
+    let mut world = World::for_match(&config(), config().rng());
+    let hero = world.seats[0].unit.expect("stood up");
+    world.seats[0].gold = gold;
+    world.settle();
+    // A tick past settling, so what the fountain hands out is already on and
+    // does not read as a change of its own.
+    world.step();
+    (world, hero)
+}
+
+/// What sits in one of a hero's inventory slots.
+fn slot_of(world: &World, hero: Entity, at: usize) -> Option<crate::game::ItemStack> {
+    world.inventory.get(hero).and_then(|bag| bag.slots[at])
+}
+
+/// What one item of the catalog costs.
+fn price_of(item: u16) -> i32 {
+    crate::game::ITEMS[usize::from(item)].cost
+}
+
+#[test]
+fn every_attribute_pays_for_what_it_is_worth() {
+    let (mut world, hero) = a_hero_with_gold(0);
+    let before = *world.stats.get(hero).expect("settled");
+    let six = Fixed::from_int(6);
+    hand_item(&mut world, hero, crate::game::ITEM_BELT, 0);
+    world.step();
+    let with_belt = *world.stats.get(hero).expect("settled");
+    assert_eq!(
+        with_belt.attributes.strength - before.attributes.strength,
+        six,
+        "the belt is worth six points of strength"
+    );
+    assert_eq!(
+        with_belt.max_hp - before.max_hp,
+        Fixed::from_int(rules::HP_PER_STRENGTH) * six,
+        "and strength is worth health"
+    );
+    assert_eq!(
+        with_belt.hp_regen - before.hp_regen,
+        rules::HP_REGEN_PER_STRENGTH * six,
+        "and mending"
+    );
+    hand_item(&mut world, hero, crate::game::ITEM_ROBE, 0);
+    world.step();
+    let with_robe = *world.stats.get(hero).expect("settled");
+    assert_eq!(
+        with_robe.max_mana - before.max_mana,
+        Fixed::from_int(rules::MANA_PER_INTELLIGENCE) * six,
+        "intelligence is worth mana"
+    );
+    hand_item(&mut world, hero, crate::game::ITEM_BAND, 0);
+    world.step();
+    let with_band = *world.stats.get(hero).expect("settled");
+    assert_eq!(
+        with_band.armor - before.armor,
+        rules::ARMOR_PER_AGILITY * six,
+        "agility is worth armor"
+    );
+    assert_eq!(
+        with_band.damage - before.damage,
+        6 * rules::DAMAGE_PER_PRIMARY,
+        "and it is what this one pays its damage with"
+    );
+}
+
+#[test]
+fn attack_speed_shortens_the_wait_between_attacks() {
+    let (mut world, hero) = a_hero_with_gold(0);
+    let plain = *world.stats.get(hero).expect("settled");
+    hand_item(&mut world, hero, crate::game::ITEM_GLOVES, 0);
+    world.step();
+    let hasted = *world.stats.get(hero).expect("settled");
+    assert_eq!(
+        hasted.attack_speed,
+        plain.attack_speed + 20,
+        "the gloves are worth twenty"
+    );
+    assert!(
+        hasted.attack_interval < plain.attack_interval,
+        "and the wait is shorter for it"
+    );
+    assert_eq!(
+        hasted.attack_interval,
+        crate::game::HERO.attack_interval * rules::BASE_ATTACK_SPEED as u32
+            / hasted.attack_speed as u32,
+        "by exactly what the speed says"
+    );
+}
+
+#[test]
+fn buying_a_built_item_buys_only_the_parts_it_lacks() {
+    let (mut world, hero) = a_hero_with_gold(10_000);
+    let treads = bota_proto::ItemId(crate::game::ITEM_POWER_TREADS);
+    hand_item(&mut world, hero, crate::game::ITEM_BOOTS, 0);
+    let before = world.seats[0].gold;
+    let mut events = Vec::new();
+    assert!(
+        world.buy(bota_proto::SlotId(0), treads, &mut events),
+        "bought"
+    );
+    assert_eq!(
+        before - world.seats[0].gold,
+        price_of(crate::game::ITEM_POWER_TREADS) - price_of(crate::game::ITEM_BOOTS),
+        "the boots already in hand are not paid for twice"
+    );
+    world.step();
+    assert_eq!(
+        slot_of(&world, hero, 0).map(|stack| stack.id),
+        Some(treads),
+        "and the parts build themselves into the whole"
+    );
+    assert!(
+        world
+            .inventory
+            .get(hero)
+            .expect("has a bag")
+            .slots
+            .iter()
+            .skip(1)
+            .all(|slot| slot.is_none()),
+        "leaving nothing of what went into it"
+    );
+}
+
+#[test]
+fn what_an_item_is_set_to_is_worth_points_of_that_attribute() {
+    let (mut world, hero) = a_hero_with_gold(10_000);
+    let treads = bota_proto::ItemId(crate::game::ITEM_POWER_TREADS);
+    let mut events = Vec::new();
+    assert!(
+        world.buy(bota_proto::SlotId(0), treads, &mut events),
+        "bought"
+    );
+    world.step();
+    let bonus =
+        Fixed::from_int(crate::game::ITEMS[usize::from(crate::game::ITEM_POWER_TREADS)].mode_bonus);
+    let on_strength = *world.stats.get(hero).expect("settled");
+    assert_eq!(
+        slot_of(&world, hero, 0).and_then(|stack| stack.mode),
+        Some(bota_proto::Attribute::Strength),
+        "they come set to strength"
+    );
+    assert!(
+        world.use_item(hero, 0, bota_proto::OrderTarget::None),
+        "and using them sets them over"
+    );
+    world.step();
+    let on_agility = *world.stats.get(hero).expect("settled");
+    assert_eq!(
+        slot_of(&world, hero, 0).and_then(|stack| stack.mode),
+        Some(bota_proto::Attribute::Agility),
+        "to the attribute after the one they were on"
+    );
+    assert_eq!(
+        on_agility.attributes.strength + bonus,
+        on_strength.attributes.strength,
+        "what they were worth in strength is gone"
+    );
+    assert_eq!(
+        on_agility.attributes.agility,
+        on_strength.attributes.agility + bonus,
+        "and worth the same in agility instead"
+    );
+}
+
+#[test]
+fn a_blink_carries_no_further_than_it_reaches() {
+    let (mut world, hero) = a_hero_with_gold(0);
+    let from = world.transform.get(hero).expect("stands somewhere").pos;
+    hand_item(&mut world, hero, crate::game::ITEM_BLINK_DAGGER, 0);
+    world.step();
+    let range = match crate::game::ITEMS[usize::from(crate::game::ITEM_BLINK_DAGGER)].active {
+        Some(crate::game::ItemUse::Blink { range }) => range,
+        _ => panic!("the dagger blinks"),
+    };
+    let far = bota_proto::Vec2 {
+        x: from.x + rules::units(range * 4),
+        y: from.y,
+    };
+    assert!(
+        world.use_item(hero, 0, bota_proto::OrderTarget::Point { pos: far }),
+        "it goes"
+    );
+    let landed = world.transform.get(hero).expect("stands somewhere").pos;
+    assert!(landed != from, "and it carried");
+    assert!(
+        landed.within(from, rules::units(range)),
+        "no further than it reaches"
+    );
+}
+
+#[test]
+fn a_blink_aimed_at_closed_ground_steps_back_to_open() {
+    let (mut world, hero) = a_hero_with_gold(0);
+    let from = world.transform.get(hero).expect("stands somewhere").pos;
+    hand_item(&mut world, hero, crate::game::ITEM_BLINK_DAGGER, 0);
+    world.step();
+    let aim = bota_proto::Vec2 {
+        x: from.x + rules::units(600),
+        y: from.y,
+    };
+    world
+        .grid
+        .block_circle(aim, rules::units(rules::BLINK_STEP_BACK * 2));
+    assert!(
+        world.use_item(hero, 0, bota_proto::OrderTarget::Point { pos: aim }),
+        "it goes"
+    );
+    let landed = world.transform.get(hero).expect("stands somewhere").pos;
+    assert!(world.grid.walkable(landed), "and it lands on open ground");
+    assert!(landed != aim, "short of what it was aimed at");
+}
+
+#[test]
+fn a_blow_from_a_hero_sets_a_blink_back() {
+    let (mut world, hero) = a_hero_with_gold(0);
+    hand_item(&mut world, hero, crate::game::ITEM_BLINK_DAGGER, 0);
+    world.step();
+    assert_eq!(
+        slot_of(&world, hero, 0).map(|stack| stack.cooldown),
+        Some(0),
+        "it is ready"
+    );
+    let hitter = world.spawn();
+    world.kind.insert(hitter, bota_proto::UnitKind::Hero);
+    world.push_hit(Some(hitter), hero, 10, bota_proto::DamageKind::Physical);
+    world.step();
+    let wait = crate::game::ITEMS[usize::from(crate::game::ITEM_BLINK_DAGGER)].breaks_on_damage;
+    assert!(
+        slot_of(&world, hero, 0)
+            .map(|stack| stack.cooldown)
+            .is_some_and(|left| left > 0 && left <= wait),
+        "and a blow from a hero sets it back"
+    );
+}
+
+#[test]
+fn a_magic_stick_gains_charges_and_is_kept_when_it_spends_them() {
+    let (mut world, hero) = a_hero_with_gold(0);
+    hand_item(&mut world, hero, crate::game::ITEM_MAGIC_STICK, 0);
+    world.step();
+    assert!(
+        !world.use_item(hero, 0, bota_proto::OrderTarget::None),
+        "with no charge there is nothing to spend"
+    );
+    if let Some(bag) = world.inventory.get_mut(hero)
+        && let Some(stack) = bag.slots[0].as_mut()
+    {
+        stack.charges = 4;
+    }
+    if let Some(pool) = world.health.get_mut(hero) {
+        pool.hp = Fixed::from_int(100);
+    }
+    world.step();
+    let before = world.health.get(hero).expect("has health").hp;
+    assert!(
+        world.use_item(hero, 0, bota_proto::OrderTarget::None),
+        "with charges it mends"
+    );
+    assert!(
+        world.health.get(hero).expect("has health").hp > before,
+        "and health comes back"
+    );
+    assert!(
+        slot_of(&world, hero, 0).is_some_and(|stack| stack.charges == 0),
+        "every charge goes at once, and the stack stays"
+    );
+}
+
+#[test]
+fn phase_walks_a_body_through_another() {
+    let (mut world, hero) = a_hero_with_gold(0);
+    hand_item(&mut world, hero, crate::game::ITEM_PHASE_BOOTS, 0);
+    world.step();
+    assert!(
+        !world.stats.get(hero).expect("settled").phased,
+        "it walks round what is in the way until the boots are used"
+    );
+    assert!(
+        world.use_item(hero, 0, bota_proto::OrderTarget::None),
+        "it goes"
+    );
+    world.step();
+    assert!(
+        world.stats.get(hero).expect("settled").phased,
+        "and then walks through it"
+    );
+}
+
+#[test]
+fn buying_a_second_of_something_buys_a_second_of_it() {
+    let (mut world, hero) = a_hero_with_gold(10_000);
+    let branch = bota_proto::ItemId(crate::game::ITEM_IRON_BRANCH);
+    let mut events = Vec::new();
+    for held in 1..=3 {
+        let before = world.seats[0].gold;
+        assert!(
+            world.buy(bota_proto::SlotId(0), branch, &mut events),
+            "bought the branch"
+        );
+        assert_eq!(
+            before - world.seats[0].gold,
+            price_of(crate::game::ITEM_IRON_BRANCH),
+            "and paid for it"
+        );
+        assert_eq!(
+            world
+                .inventory
+                .get(hero)
+                .expect("has a bag")
+                .slots
+                .iter()
+                .flatten()
+                .filter(|stack| stack.id == branch)
+                .count(),
+            held,
+            "one more branch in hand than before"
+        );
+    }
+}
+
+#[test]
+fn buying_a_built_item_a_second_time_buys_its_parts_again() {
+    let (mut world, hero) = a_hero_with_gold(10_000);
+    let treads = bota_proto::ItemId(crate::game::ITEM_POWER_TREADS);
+    let mut events = Vec::new();
+    assert!(
+        world.buy(bota_proto::SlotId(0), treads, &mut events),
+        "bought the first pair"
+    );
+    world.step();
+    let before = world.seats[0].gold;
+    assert!(
+        world.buy(bota_proto::SlotId(0), treads, &mut events),
+        "bought a second pair"
+    );
+    assert_eq!(
+        before - world.seats[0].gold,
+        price_of(crate::game::ITEM_POWER_TREADS),
+        "the pair already worn is no part of the new one"
+    );
+    world.step();
+    assert_eq!(
+        world
+            .inventory
+            .get(hero)
+            .expect("has a bag")
+            .slots
+            .iter()
+            .flatten()
+            .filter(|stack| stack.id == treads)
+            .count(),
+        2,
+        "and both pairs are in hand"
     );
 }

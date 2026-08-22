@@ -139,6 +139,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "bota-bot-v2"
+version = "0.1.0"
+dependencies = [
+ "bota-proto",
+ "bota-server",
+ "candle-core",
+ "clap",
+]
+
+[[package]]
 name = "bota-client"
 version = "0.1.0"
 dependencies = [

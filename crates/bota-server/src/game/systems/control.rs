@@ -58,11 +58,13 @@ impl World {
 }
 
 impl World {
-    /// Puts out every drink a blow is enough to break.
+    /// Puts out every drink a blow is enough to break, and sets back every
+    /// item that answers to one.
     ///
-    /// Only a hero, a tower or Roshan breaks one; a creep may hit all day
-    /// without it. What was drunk with nothing to break it is left alone.
-    pub fn break_drinks(&mut self, felt: &[crate::game::Landed]) {
+    /// Only a hero, a tower or Roshan breaks anything; a creep may hit all day
+    /// without it. What was drunk with nothing to break it is left alone, and
+    /// so is an item that answers to no blow.
+    pub fn break_on_blows(&mut self, felt: &[crate::game::Landed]) {
         for blow in felt {
             let Some(from) = blow.source else {
                 continue;
@@ -72,16 +74,25 @@ impl World {
             }) {
                 continue;
             }
-            let Some(on_it) = self.statuses.get_mut(blow.target) else {
-                continue;
-            };
-            on_it.0.retain(|status| {
-                !matches!(
-                    status.kind,
-                    StatusKind::Mending { breaks: true, .. }
-                        | StatusKind::Clarity { breaks: true, .. }
-                )
-            });
+            if let Some(on_it) = self.statuses.get_mut(blow.target) {
+                on_it.0.retain(|status| {
+                    !matches!(
+                        status.kind,
+                        StatusKind::Mending { breaks: true, .. }
+                            | StatusKind::Clarity { breaks: true, .. }
+                    )
+                });
+            }
+            if let Some(bag) = self.inventory.get_mut(blow.target) {
+                for stack in bag.slots.iter_mut().flatten() {
+                    let Some(def) = crate::game::item_def(stack.id) else {
+                        continue;
+                    };
+                    if def.breaks_on_damage > 0 {
+                        stack.cooldown = stack.cooldown.max(def.breaks_on_damage);
+                    }
+                }
+            }
         }
     }
 }

@@ -147,10 +147,11 @@ impl World {
 /// One effect kind and everything it carries.
 fn hash_status_kind(fnv: &mut Fnv, kind: StatusKind) {
     match kind {
-        StatusKind::Haste { pct } => {
+        StatusKind::Haste { speed } => {
             fnv.u8(0);
-            fnv.i32(pct);
+            fnv.i32(speed);
         }
+        StatusKind::Phased => fnv.u8(9),
         StatusKind::Mending { per_tick, breaks } => {
             fnv.u8(1);
             fnv.i32(per_tick);

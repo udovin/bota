@@ -5,7 +5,8 @@
 //! type is delivered to humans and to bots.
 
 use crate::{
-    AbilityId, Angle, EffectId, EntityId, Fixed, HeroId, ItemId, SlotId, Team, UnitKind, Vec2,
+    AbilityId, Angle, Attribute, Attributes, EffectId, EntityId, Fixed, HeroId, ItemId, SlotId,
+    Team, UnitKind, Vec2,
 };
 use serde::{Deserialize, Serialize};
 
@@ -75,6 +76,8 @@ pub struct ItemView {
     pub charges: u8,
     /// Ticks remaining before the item can be used again. Zero means ready.
     pub cooldown_left: u32,
+    /// Which attribute it is set to. Absent for an item that is not set to one.
+    pub mode: Option<Attribute>,
 }
 
 /// A unit the viewing team can currently see.
@@ -110,6 +113,8 @@ pub struct UnitView {
     pub attack_range: Fixed,
     /// Ticks between the start of one attack and the next.
     pub attack_interval: u32,
+    /// Attack speed, where 100 is the unit's own pace and 200 is twice it.
+    pub attack_speed: i32,
     /// Armor.
     pub armor: Fixed,
     /// Magic resistance as a fraction, where 1.0 is total immunity.
@@ -126,6 +131,11 @@ pub struct UnitView {
     pub true_sight_radius: Fixed,
     /// Conditions currently affecting it.
     pub statuses: StatusFlags,
+    /// The three attributes, after items. All zero for anything that has none.
+    pub attributes: Attributes,
+    /// Which attribute pays this unit attack damage. Absent for a unit whose
+    /// damage answers to none of them.
+    pub primary: Option<Attribute>,
     /// Which hero this is, when `kind` is [`UnitKind::Hero`].
     pub hero: Option<HeroId>,
     /// Which seat controls it, when it is a hero or a hero's summon.
