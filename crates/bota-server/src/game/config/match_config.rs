@@ -3,7 +3,7 @@
 use bota_proto::{EntityId, EventKind, MapId, MatchInfo, Order, Pick, SlotId, Team, TickMode};
 
 use crate::game::{
-    MAX_SPAWN_MODIFIERS, MatchRng, SpawnModifier, SpawnModifierError, check as check_spawn_modifier,
+    MAX_SPAWN_MODIFIERS, MatchRng, SpawnModifier, SpawnModifierError, check_spawn_modifier,
 };
 
 /// Why a match description was refused.

@@ -2545,14 +2545,14 @@ resistances add in their own units, scales add as deltas of the nominal 10,000
 so that sources never compound, and the fold happens once. The magnitudes
 (`move_speed`, `max_hp`, `max_mana`) are scaled from the raised base at that
 point; flat item bonuses, strength and intelligence, and the `Slowed` or
-`Hastened` multipliers all land on top and are not scaled again. The pool
-share of an applied maximum is recorded separately (`applied_max_hp`,
-`applied_max_mana`), so it raises the maximum without moving the pool: a body
-keeps the health it had when the modifier lands, a pool already standing at
-the raised maximum stays there, and a pool left above the maximum comes down
-to it when the modifier lifts. A respawned body is filled to its effective
-maximum after every source has been folded, so it stands full and never has
-to regenerate up to it. The mechanics are real
+`Hastened` multipliers all land on top and are not scaled again. An applied maximum
+is just another source of the maximum: when it moves for a living body, the
+pool keeps its filled fraction (`hp' = hp * new / old`, clamped to the new
+maximum), so a full pool stays full, a body at three fifths stays at three
+fifths, and a pool that held anything stays non-empty. A respawned body has
+no earlier pool to scale and stands at its full effective maximum, and a unit
+seeded at match start is settled once its rules have landed, so a standing
+tower or hero is full at the scaled maximum immediately. The mechanics are real
 derived stats, neutral by default: `Stats` gains `status_resist_bp`,
 `physical_amp_bp`, `magic_amp_bp`, `pure_amp_bp`, `cooldown_rate_bp` and
 `mana_cost_rate_bp`, while magic resistance was already a stat and the spec
@@ -2569,10 +2569,12 @@ and the bots agree. Damage amplification scales a blow before armor and
 resistance, after Shadowraze stack composition, per the dealing unit's kind
 field; a blow with no source is left alone, and pure damage stays unmitigated
 but still scales. Status resistance scales the ticks of `Stunned`, `Feared` and
-`Slowed` as they are put on or extended, down to one tick, and never touches
-buffs; the time already held is not shortened a second time when a disable is
-extended. Channel-managed disables (Dismember, the hook grab) are out of its
-reach, as they are managed by their channel rather than by a debuff timer.
+`Slowed` wherever they are put on — an ability, an item and an aura all pass
+through the same point — down to one tick, and never touches buffs; the time
+already held is not shortened a second time when a disable is extended. A hold
+that is put on afresh every tick for as long as its channel runs (Dismember,
+the hook's drag) has its recorded ticks shortened like any other, but its
+length is governed by the channel and not by the countdown.
 Cooldown rate scales every cooldown at the moment it is set: a cast, an item
 use, a shared item wait and the break-on-damage mute, with a floor of one tick
 for a cooldown that was set at all. It never scales the decrement, so a cooldown
@@ -2590,8 +2592,8 @@ still reads the previous tick's resistance.
 
 **Trusted setup can put modifiers on spawns.** A match description carries a
 bounded list of spawn modifiers (`SpawnModifier`), each a selector (a side, an
-exact kind or category, or one unit handle), an existing `ModifierSpec` and a
-duration: `MatchLong` until the body falls, or a tick count. `World::for_match`
+exact kind or category), an existing `ModifierSpec` and a duration:
+`MatchLong` until the body falls, or a tick count. `World::for_match`
 copies the list into the world, puts it on every unit already standing
 (buildings included) and, through `spawn_body`, on every unit stood up later;
 each wave, each camp, each building and each respawned body gets the rules
@@ -2600,6 +2602,9 @@ cheat order path is untouched and independent: a unit may carry both, and
 clearing a cheat leaves what trusted setup put there alone.
 `MatchConfig::validate` refuses a spec outside the bounds the cheat gate uses,
 a duration outside `1..=MAX_MODIFIER_TICKS`, and a list past
-`MAX_SPAWN_MODIFIERS`, naming the rule that failed; a setup that does not carry
-the list at all behaves exactly as before, and the empty-list guards keep the
-default game paying nothing.
+`MAX_SPAWN_MODIFIERS`, naming the rule that failed; `World::for_match` calls
+it and stops loudly rather than dropping a rule, and a rule that somehow
+reaches a spawn unchecked does the same. The hash covers every spec field and
+the rule list itself while any of it is present, so an unmodified world hashes
+as it always did; a setup that does not carry the list at all behaves exactly
+as before, and the empty-list guards keep the default game paying nothing.

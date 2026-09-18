@@ -6,7 +6,7 @@ use crate::game::{
     Action, ActionState, AppliedModifier, AppliedOrigin, Auras, Bounty, CampHome, Def, Entity,
     Errand, Expiry, Health, Hull, Inventory, Lane, LaneAi, Level, Mana, March, Mark, Modifiers,
     Motion, NeutralAi, Orders, Plan, Rax, Route, Tier, Transform, UnitDef, UnitOrder, Upgrades,
-    World, rules, wire_id,
+    World, rules,
 };
 
 /// Which building of a side one is.
@@ -62,7 +62,9 @@ impl World {
     ///
     /// Every spawn is a fresh application: a new wave, a camp that fills
     /// again, a tower stood up later and a respawned body all get the rules
-    /// afresh. What a cheat put on the unit is left alone.
+    /// afresh. What a cheat put on the unit is left alone. A rule that was
+    /// never checked is a broken setup and stops here rather than landing
+    /// half applied.
     pub fn apply_spawn_modifiers(&mut self, entity: Entity) {
         if self.spawn_modifiers.is_empty() {
             return;
@@ -71,11 +73,13 @@ impl World {
             return;
         };
         let team = self.team.get(entity).copied();
-        let unit = wire_id(entity);
         let mut applied = self.applied.remove(entity).unwrap_or_default();
         applied.retain(|held| held.origin != AppliedOrigin::Setup);
         for rule in &self.spawn_modifiers {
-            if rule.is_valid() && rule.select.takes(def.kind, team, unit) {
+            if let Err(error) = crate::game::check_spawn_modifier(rule) {
+                panic!("a spawn modifier was applied without being checked: {error}");
+            }
+            if rule.select.takes(def.kind, team) {
                 applied.push(AppliedModifier {
                     spec: rule.spec,
                     ticks_left: rule.duration.ticks_left(),

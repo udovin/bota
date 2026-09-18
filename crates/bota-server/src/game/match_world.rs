@@ -23,7 +23,9 @@ impl World {
     ///
     /// No camp is filled; the jungle has not been carried over yet.
     pub fn for_match(cfg: &MatchConfig, rng: MatchRng) -> World {
-        debug_assert!(cfg.validate().is_ok(), "the match setup was not checked");
+        if let Err(error) = cfg.validate() {
+            panic!("the match setup was refused: {error}");
+        }
         let map = map_of(cfg.map);
         let mut world = World::on_map(map);
         world.rng = rng;
@@ -491,10 +493,7 @@ impl World {
                         spec,
                         ticks,
                     } => {
-                        if !spec.is_bounded()
-                            || *ticks == 0
-                            || *ticks > bota_proto::MAX_MODIFIER_TICKS
-                        {
+                        if !spec.is_bounded() || !bota_proto::modifier_ticks_bounded(*ticks) {
                             return Err(RejectReason::BadCheat);
                         }
                         self.cheat_target(unit, *target)?;

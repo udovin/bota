@@ -17,14 +17,8 @@ pub struct Stats {
     pub primary: Option<Attribute>,
     /// The most health it can hold.
     pub max_hp: Fixed,
-    /// The part of the most health that a cheat-granted change added. Held
-    /// apart so the pool does not follow it.
-    pub applied_max_hp: Fixed,
     /// The most mana it can hold.
     pub max_mana: Fixed,
-    /// The part of the most mana that a cheat-granted change added. Held
-    /// apart so the pool does not follow it.
-    pub applied_max_mana: Fixed,
     /// Health mended each tick.
     pub hp_regen: Fixed,
     /// Mana mended each tick.

@@ -6,9 +6,9 @@ use bota_proto::{
 };
 
 use crate::game::{
-    AppliedModifier, AppliedModifiers, AppliedOrigin, Entity, ITEMS, ItemStack, MELEE_CREEP,
-    Modifier, ModifierKind, StackKind, Stacks, World, ability, ability_cooldown, ability_mana_cost,
-    cooldown_after, cost_after, rules, wire_id,
+    AppliedModifier, AppliedModifiers, AppliedOrigin, Aura, AuraCx, Auras, Entity, ITEMS,
+    ItemStack, MELEE_CREEP, Modifier, ModifierKind, Reach, StackKind, Stacks, World, ability,
+    ability_cooldown, ability_mana_cost, aura_system, cooldown_after, cost_after, rules, wire_id,
 };
 
 /// A world with a hero and a creep standing well apart.
@@ -518,37 +518,89 @@ fn damage_amplification_multiplies_the_whole_damage_before_mitigation() {
 }
 
 #[test]
-fn a_creep_keeps_its_health_when_a_modifier_raises_its_maximum() {
+fn a_full_pool_stays_full_when_a_modifier_raises_its_maximum() {
     let (mut world, _hero, creep) = arena();
-    let before = world.health.get(creep).expect("standing").hp;
-    apply(&mut world, creep, spec(|s| s.max_hp = 20_000), 10);
-    assert_eq!(
-        world.stats.get(creep).map(|stats| stats.max_hp.to_int()),
-        Some(rules::MELEE_CREEP_HP * 2)
-    );
+    let base = world.stats.get(creep).expect("settled").max_hp;
     assert_eq!(
         world.health.get(creep).expect("standing").hp,
-        before,
-        "the pool does not follow the cheat-granted share"
+        base,
+        "it starts full"
+    );
+    apply(&mut world, creep, spec(|s| s.max_hp = 20_000), 10);
+    let scaled = base + base;
+    assert_eq!(
+        world.stats.get(creep).map(|stats| stats.max_hp),
+        Some(scaled)
+    );
+    assert_eq!(
+        world.health.get(creep).map(|health| health.hp),
+        Some(scaled),
+        "a full pool follows the maximum to full"
     );
 }
 
 #[test]
-fn a_creep_comes_down_to_its_maximum_when_the_modifier_lifts() {
+fn a_pool_keeps_its_fraction_through_raises_and_lifts() {
     let (mut world, _hero, creep) = arena();
     let base = world.stats.get(creep).expect("settled").max_hp;
+    world.health.get_mut(creep).expect("standing").hp =
+        base * Fixed::from_int(3) / Fixed::from_int(5);
     apply(&mut world, creep, spec(|s| s.max_hp = 20_000), 10);
-    world.health.get_mut(creep).expect("standing").hp = base + base - Fixed::ONE;
-    apply(&mut world, creep, ModifierSpec::NOMINAL, 10);
     assert_eq!(
-        world.stats.get(creep).map(|stats| stats.max_hp),
-        Some(base),
-        "the maximum returns to what it was"
+        world.stats.get(creep).map(|stats| stats.max_hp.to_int()),
+        Some(rules::MELEE_CREEP_HP * 2),
+        "the maximum doubles"
     );
     assert_eq!(
-        world.health.get(creep).map(|health| health.hp),
-        Some(base),
-        "a pool left above it comes down to it"
+        world.health.get(creep).map(|health| health.hp.to_int()),
+        Some(rules::MELEE_CREEP_HP * 2 * 3 / 5),
+        "three fifths of it stays three fifths"
+    );
+    apply(&mut world, creep, spec(|s| s.max_hp = 6_000), 10);
+    assert_eq!(
+        world.stats.get(creep).map(|stats| stats.max_hp.to_int()),
+        Some(rules::MELEE_CREEP_HP * 3 / 5),
+        "a forty percent cut leaves three fifths of the base"
+    );
+    assert_eq!(
+        world.health.get(creep).map(|health| health.hp.to_int()),
+        Some(rules::MELEE_CREEP_HP * 3 / 5 * 3 / 5),
+        "and the pool stays at its fraction of the new maximum"
+    );
+}
+
+#[test]
+fn a_pool_that_held_anything_stays_alive_when_the_maximum_shrinks() {
+    let (mut world, _hero, creep) = arena();
+    world.health.get_mut(creep).expect("standing").hp = Fixed::ONE;
+    apply(&mut world, creep, spec(|s| s.max_hp = 2_500), 10);
+    let held = world.health.get(creep).expect("standing").hp;
+    assert!(
+        held > Fixed::ZERO,
+        "a point of health stays a point of health, not nothing"
+    );
+    assert!(
+        held <= world.stats.get(creep).expect("settled").max_hp,
+        "and never past the maximum"
+    );
+}
+
+#[test]
+fn a_mana_pool_keeps_its_fraction_too() {
+    let (mut world, hero, _creep) = arena();
+    let base = world.stats.get(hero).expect("settled").max_mana;
+    world.mana.get_mut(hero).expect("has mana").mana = base / Fixed::from_int(2);
+    apply(&mut world, hero, spec(|s| s.max_mana = 20_000), 10);
+    let doubled = Fixed::from_int(rules::HERO_MANA * 2 + rules::MANA_PER_INTELLIGENCE * 18);
+    assert_eq!(
+        world.stats.get(hero).map(|stats| stats.max_mana),
+        Some(doubled),
+        "the raised base doubles, intelligence pays on top"
+    );
+    assert_eq!(
+        world.mana.get(hero).map(|mana| mana.mana),
+        Some(doubled / Fixed::from_int(2)),
+        "and the half-filled pool keeps its half"
     );
 }
 
@@ -587,7 +639,11 @@ fn a_tower_takes_the_same_maximum_health_modifier() {
         .find(|entity| world.kind.get(*entity) == Some(&UnitKind::Tower))
         .expect("the map stands towers");
     let base = world.stats.get(tower).expect("settled").max_hp;
-    let before = world.health.get(tower).expect("standing").hp;
+    assert_eq!(
+        world.health.get(tower).expect("standing").hp,
+        base,
+        "it stands full"
+    );
     apply(&mut world, tower, spec(|s| s.max_hp = 15_000), 10);
     let expected = Fixed {
         raw: (i64::from(base.raw) * 15_000 / 10_000) as i32,
@@ -598,8 +654,8 @@ fn a_tower_takes_the_same_maximum_health_modifier() {
     );
     assert_eq!(
         world.health.get(tower).map(|health| health.hp),
-        Some(before),
-        "a tower keeps what it had"
+        Some(expected),
+        "a full tower follows the maximum to full"
     );
     let view = world.view_full();
     assert_eq!(
@@ -657,6 +713,42 @@ fn an_amplified_creep_deals_more_damage() {
         amplified,
         2 * neutral,
         "the attacking creep's own modifier scales its blow"
+    );
+}
+
+/// A slow handed out by standing near something.
+static SLOWING_AURA: [Aura; 1] = [Aura {
+    kind: ModifierKind::Slowed { pct: 30 },
+    radius: 400,
+    reaches: Reach::All,
+    ticks: 10,
+}];
+
+#[test]
+fn an_aura_hands_out_a_slow_through_the_same_resistance() {
+    let (mut world, hero, _creep) = arena();
+    let source = world.spawn_unit(&MELEE_CREEP, Team::Radiant, Vec2::from_ints(7100, 7000));
+    let plain = world.spawn_unit(&MELEE_CREEP, Team::Radiant, Vec2::from_ints(7200, 7000));
+    world.auras.insert(source, Auras(&SLOWING_AURA));
+    apply(&mut world, hero, spec(|s| s.status_resist = 5_000), 10);
+    aura_system(AuraCx {
+        entities: &world.entities,
+        transform: &world.transform,
+        team: &world.team,
+        kind: &world.kind,
+        auras: &world.auras,
+        stats: &world.stats,
+        modifiers: &mut world.modifiers,
+    });
+    assert_eq!(
+        left_on(&world, hero, ModifierKind::Slowed { pct: 30 }),
+        Some(5),
+        "the resisting unit keeps half of it"
+    );
+    assert_eq!(
+        left_on(&world, plain, ModifierKind::Slowed { pct: 30 }),
+        Some(10),
+        "and the plain one keeps all of it"
     );
 }
 

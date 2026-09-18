@@ -68,12 +68,6 @@ impl World {
         self.cooldown_after_rate(entity, item_def(id).map_or(0, |def| def.cooldown))
     }
 
-    /// Ticks a blow of this kind puts an item on the clock, after the cooldown
-    /// rate of whoever it landed on.
-    pub fn item_mute(&self, entity: Entity, id: ItemId) -> u32 {
-        self.cooldown_after_rate(entity, item_def(id).map_or(0, |def| def.breaks_on_damage))
-    }
-
     /// A base mana cost after the entity's mana cost rate.
     pub fn cost_after_rate(&self, entity: Entity, base: i32) -> i32 {
         let rate = self.rate_of(entity, |stats| stats.mana_cost_rate_bp);

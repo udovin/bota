@@ -3,7 +3,28 @@
 use bota_proto::{DamageKind, Fixed, UnitKind};
 
 use crate::engine::Entity;
-use crate::game::{Modifier, ModifierKind, World, rules};
+use crate::game::{Modifier, ModifierKind, Stats, Table, World, rules};
+
+/// How long a disable or slow holds on an entity after its status
+/// resistance. Every other kind is left as it is.
+///
+/// Every timed disable and slow passes here, whatever hands it out: an
+/// ability, an item or an aura.
+pub fn resisted_ticks(stats: &Table<Stats>, on: Entity, kind: ModifierKind, ticks: u32) -> u32 {
+    if !matches!(
+        kind,
+        ModifierKind::Stunned | ModifierKind::Feared | ModifierKind::Slowed { .. }
+    ) {
+        return ticks;
+    }
+    let resist = stats
+        .get(on)
+        .map_or(0, |stats| stats.status_resist_bp)
+        .clamp(0, rules::NOMINAL_BP - 1);
+    let kept =
+        i64::from(ticks) * i64::from(rules::NOMINAL_BP - resist) / i64::from(rules::NOMINAL_BP);
+    kept.max(1) as u32
+}
 
 impl World {
     /// Whether an entity is held: it neither walks, nor turns, nor swings,
@@ -40,7 +61,7 @@ impl World {
     /// resistance, down to one tick.
     pub fn put_modifier(&mut self, on: Entity, mut modifier: Modifier) {
         if let Some(ticks) = modifier.ticks_left {
-            modifier.ticks_left = Some(self.resisted_ticks(on, modifier.kind, ticks));
+            modifier.ticks_left = Some(resisted_ticks(&self.stats, on, modifier.kind, ticks));
         }
         if let Some(on_it) = self.modifiers.get_mut(on) {
             on_it.put(modifier);
@@ -53,9 +74,9 @@ impl World {
     /// The time added is shortened by the target's status resistance; what is
     /// already held has been shortened once and is not shortened again.
     pub fn extend_modifier(&mut self, on: Entity, modifier: Modifier, cap: u32) {
-        let more = modifier
-            .ticks_left
-            .map_or(0, |ticks| self.resisted_ticks(on, modifier.kind, ticks));
+        let more = modifier.ticks_left.map_or(0, |ticks| {
+            resisted_ticks(&self.stats, on, modifier.kind, ticks)
+        });
         let Some(on_it) = self.modifiers.get_mut(on) else {
             return;
         };
@@ -71,25 +92,6 @@ impl World {
             ticks_left: Some(held.saturating_add(more).min(cap)),
             ..modifier
         });
-    }
-
-    /// How long a disable or slow holds on an entity after its status
-    /// resistance. Every other kind is left as it is.
-    fn resisted_ticks(&self, on: Entity, kind: ModifierKind, ticks: u32) -> u32 {
-        if !matches!(
-            kind,
-            ModifierKind::Stunned | ModifierKind::Feared | ModifierKind::Slowed { .. }
-        ) {
-            return ticks;
-        }
-        let resist = self
-            .stats
-            .get(on)
-            .map_or(0, |stats| stats.status_resist_bp)
-            .clamp(0, rules::NOMINAL_BP - 1);
-        let kept =
-            i64::from(ticks) * i64::from(rules::NOMINAL_BP - resist) / i64::from(rules::NOMINAL_BP);
-        kept.max(1) as u32
     }
 
     /// Takes off every modifier of one kind from one source.

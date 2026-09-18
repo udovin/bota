@@ -25,8 +25,13 @@ pub enum Target {
     Unit(EntityId),
 }
 
-/// The longest a cheat-granted modifier may be put on for, in ticks.
+/// The longest an applied modifier may be put on for, in ticks.
 pub const MAX_MODIFIER_TICKS: u32 = 1_000_000;
+
+/// Whether a tick count is one an applied modifier may run for.
+pub const fn modifier_ticks_bounded(ticks: u32) -> bool {
+    ticks >= 1 && ticks <= MAX_MODIFIER_TICKS
+}
 
 /// What a scale is worth at nominal, in basis points.
 const NOMINAL_RATE: i32 = 10_000;

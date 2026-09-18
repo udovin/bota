@@ -1,6 +1,6 @@
 //! Modifiers trusted match setup puts on units as they are stood up.
 
-use bota_proto::{EntityId, MAX_MODIFIER_TICKS, ModifierSpec, Team, UnitKind};
+use bota_proto::{ModifierSpec, Team, UnitKind, modifier_ticks_bounded};
 
 use crate::game::is_structure;
 
@@ -21,7 +21,7 @@ pub struct SpawnModifier {
 impl SpawnModifier {
     /// Whether the rule is one a match setup may carry.
     pub fn is_valid(&self) -> bool {
-        check(self).is_ok()
+        check_spawn_modifier(self).is_ok()
     }
 }
 
@@ -35,19 +35,11 @@ pub struct SpawnSelector {
     pub team: Option<Team>,
     /// Which kinds it takes. Empty takes every kind.
     pub targets: Vec<SpawnTarget>,
-    /// One exact unit handle. When present it is the only unit taken, and it
-    /// does not follow a body to a respawn.
-    pub unit: Option<EntityId>,
 }
 
 impl SpawnSelector {
     /// Whether a standing unit is one this selector takes.
-    pub fn takes(&self, kind: UnitKind, team: Option<Team>, unit: EntityId) -> bool {
-        if let Some(named) = self.unit
-            && named != unit
-        {
-            return false;
-        }
+    pub fn takes(&self, kind: UnitKind, team: Option<Team>) -> bool {
         if let Some(wanted) = self.team
             && team != Some(wanted)
         {
@@ -136,7 +128,7 @@ impl ModifierDuration {
     pub fn is_valid(self) -> bool {
         match self {
             ModifierDuration::MatchLong => true,
-            ModifierDuration::Ticks(ticks) => ticks > 0 && ticks <= MAX_MODIFIER_TICKS,
+            ModifierDuration::Ticks(ticks) => modifier_ticks_bounded(ticks),
         }
     }
 }
@@ -162,7 +154,7 @@ impl core::fmt::Display for SpawnModifierError {
 impl std::error::Error for SpawnModifierError {}
 
 /// Why a rule is not one a match setup may carry, or nothing when it is.
-pub fn check(rule: &SpawnModifier) -> Result<(), SpawnModifierError> {
+pub fn check_spawn_modifier(rule: &SpawnModifier) -> Result<(), SpawnModifierError> {
     if !rule.spec.is_bounded() {
         return Err(SpawnModifierError::UnboundedSpec);
     }

@@ -227,7 +227,7 @@ fn a_modifier_cheat_lands_on_the_named_unit_alone() {
         world
             .applied
             .get(creep)
-            .and_then(|applied| applied.first())
+            .and_then(|applied| applied.iter().next())
             .map(|held| held.spec),
         Some(a_spec())
     );
@@ -353,7 +353,7 @@ fn a_modifier_cheat_runs_for_its_ticks_and_then_lifts() {
         world
             .applied
             .get(hero)
-            .and_then(|applied| applied.first())
+            .and_then(|applied| applied.iter().next())
             .map(|held| held.ticks_left),
         Some(Some(1)),
         "the tick that applied it is one of its own"
@@ -541,29 +541,4 @@ fn a_scaled_mana_cost_is_what_the_cast_checks_and_spends() {
         Err(RejectReason::NotEnoughMana),
         "a hair short of it is not"
     );
-}
-
-#[test]
-fn two_runs_with_the_same_cheat_modifier_hash_the_same() {
-    let run = |modifier: bool| {
-        let cfg = config(true);
-        let mut world = World::for_match(&cfg, cfg.rng());
-        if modifier {
-            cheat(
-                &mut world,
-                Cheat::ApplyModifier {
-                    target: Target::None,
-                    spec: a_spec(),
-                    ticks: 100_000,
-                },
-            );
-        }
-        for _ in 0..300 {
-            world.step();
-        }
-        world.hash()
-    };
-    assert_eq!(run(true), run(true), "the same cheats, the same world");
-    assert_eq!(run(false), run(false), "and none, and none");
-    assert_ne!(run(true), run(false), "a modifier is part of the world");
 }

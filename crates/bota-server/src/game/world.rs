@@ -592,6 +592,7 @@ impl World {
             team: &self.team,
             kind: &self.kind,
             auras: &self.auras,
+            stats: &self.stats,
             modifiers: &mut self.modifiers,
         });
         derive_stats(StatsCx {

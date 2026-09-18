@@ -192,9 +192,6 @@ impl World {
             }
             self.seats[index].unit = Some(unit);
             self.settle();
-            // A respawned body stands at its effective maximum, whatever
-            // modifiers and other sources were folded into it.
-            self.fill_pools(unit);
         }
     }
 

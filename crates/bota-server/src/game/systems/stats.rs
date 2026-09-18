@@ -46,11 +46,9 @@ pub struct StatsCx<'a> {
 /// has been raised, and what is on it.
 ///
 /// A pool follows its maximum: when the maximum moves, the pool keeps its
-/// filled fraction, and a pool that held anything is never left empty by the
-/// move alone. A cheat-granted share of a maximum is held apart: it raises
-/// the maximum without moving the pool, and a pool left above its maximum
-/// comes down to it. An entity with no stats behind it yet has just been
-/// stood up, and stands up full.
+/// filled fraction, so a full pool stays full and a pool that held anything
+/// is never left empty by the move alone. An entity with no stats behind it
+/// yet has just been stood up, and stands up full.
 pub fn derive_stats(cx: StatsCx<'_>) {
     if cx.applied.is_empty() {
         derive_stats_impl::<false>(cx);
@@ -192,23 +190,13 @@ fn derive_stats_impl<const APPLIED: bool>(cx: StatsCx<'_>) {
         let before = stats.get(entity).copied();
         if let Some(hp) = health.get_mut(entity) {
             hp.hp = match before {
-                Some(before) => follow(
-                    hp.hp,
-                    before.max_hp - before.applied_max_hp,
-                    now.max_hp - now.applied_max_hp,
-                    now.max_hp,
-                ),
+                Some(before) => follow(hp.hp, before.max_hp, now.max_hp),
                 None => now.max_hp,
             };
         }
         if let Some(mp) = mana.get_mut(entity) {
             mp.mana = match before {
-                Some(before) => follow(
-                    mp.mana,
-                    before.max_mana - before.applied_max_mana,
-                    now.max_mana - now.applied_max_mana,
-                    now.max_mana,
-                ),
+                Some(before) => follow(mp.mana, before.max_mana, now.max_mana),
                 None => now.max_mana,
             };
         }
@@ -254,12 +242,8 @@ fn fold_applied(now: &mut Stats, applied: &AppliedModifiers) {
     now.cooldown_rate_bp = (now.cooldown_rate_bp + cooldown).max(1);
     now.mana_cost_rate_bp = (now.mana_cost_rate_bp + mana_cost).max(1);
     now.move_speed = scaled_bp(now.move_speed, combined_scale(move_speed));
-    let raised_hp = now.max_hp;
     now.max_hp = scaled_bp(now.max_hp, combined_scale(max_hp));
-    now.applied_max_hp += now.max_hp - raised_hp;
-    let raised_mana = now.max_mana;
     now.max_mana = scaled_bp(now.max_mana, combined_scale(max_mana));
-    now.applied_max_mana += now.max_mana - raised_mana;
 }
 
 /// What several additive scale deltas come to, kept inside the bounds one
@@ -318,9 +302,7 @@ fn raised(kind: &UnitDef, levels: i32, steps: i32) -> Stats {
         attributes: kind.attributes + up.attributes,
         primary: kind.primary,
         max_hp: Fixed::from_int(kind.max_hp + up.hp),
-        applied_max_hp: Fixed::ZERO,
         max_mana: Fixed::from_int(kind.max_mana + up.mana),
-        applied_max_mana: Fixed::ZERO,
         hp_regen: kind.hp_regen,
         mana_regen: kind.mana_regen,
         damage: kind.damage + up.damage,
@@ -354,24 +336,22 @@ fn raised(kind: &UnitDef, levels: i32, steps: i32) -> Stats {
     }
 }
 
-/// What a pool holds once the maximum it follows has moved.
+/// What a pool holds once its maximum has moved.
 ///
-/// The filled fraction of `was` is kept, up to `ceiling`. The maximum a pool
-/// follows may be narrower than the ceiling a pool may reach: a
-/// cheat-granted share is held apart from the maximum the fraction is taken
-/// over, but a pool already filled to the raised ceiling stays there. The
-/// fraction is worked out wide in raw units: a pool times a pool is past
-/// what a [`Fixed`] holds. The result stays within `Fixed::EPSILON..=ceiling`
-/// when anything was held, and within `0..=ceiling` otherwise.
-fn follow(held: Fixed, was: Fixed, now: Fixed, ceiling: Fixed) -> Fixed {
-    let ceiling = ceiling.max(Fixed::ZERO);
-    if now <= Fixed::ZERO || was <= Fixed::ZERO || held <= Fixed::ZERO {
-        return held.clamp(Fixed::ZERO, ceiling);
+/// The filled fraction is kept, worked out wide in raw units: a pool times a
+/// pool is past what a [`Fixed`] holds. The result stays within
+/// `Fixed::EPSILON..=now` when anything was held, and within `0..=now`
+/// otherwise.
+fn follow(held: Fixed, was: Fixed, now: Fixed) -> Fixed {
+    if now <= Fixed::ZERO {
+        return Fixed::ZERO;
+    }
+    if held <= Fixed::ZERO || was <= Fixed::ZERO {
+        return held.clamp(Fixed::ZERO, now);
     }
     let kept = i64::from(held.raw) * i64::from(now.raw) / i64::from(was.raw);
-    let top = ceiling.raw.max(Fixed::EPSILON.raw);
     Fixed {
-        raw: kept.clamp(i64::from(Fixed::EPSILON.raw), i64::from(top)) as i32,
+        raw: kept.clamp(i64::from(Fixed::EPSILON.raw), i64::from(now.raw)) as i32,
     }
 }
 

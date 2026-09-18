@@ -1,14 +1,14 @@
 //! Trusted setup modifiers: which spawns they take and how long they hold.
 
 use bota_proto::{
-    Cheat, DamageKind, EntityId, Fixed, HeroId, MAX_MODIFIER_TICKS, MapId, ModifierSpec, Order,
-    Pick, SlotId, Target, Team, TickMode, UnitKind, Vec2,
+    Cheat, DamageKind, Fixed, HeroId, MAX_MODIFIER_TICKS, MapId, ModifierSpec, Order, Pick, SlotId,
+    Target, Team, TickMode, UnitKind, Vec2,
 };
 
 use crate::game::{
-    AppliedOrigin, Command, Def, Entity, MAX_SPAWN_MODIFIERS, MatchConfig, MatchConfigError,
-    ModifierDuration, SpawnCategory, SpawnModifier, SpawnModifierError, SpawnSelector, SpawnTarget,
-    World, rules, wire_id,
+    AppliedModifier, AppliedModifiers, AppliedOrigin, Command, Def, Entity, MAX_SPAWN_MODIFIERS,
+    MatchConfig, MatchConfigError, ModifierDuration, SpawnCategory, SpawnModifier,
+    SpawnModifierError, SpawnSelector, SpawnTarget, World, rules,
 };
 
 /// A spec with one change on it, everything else neutral.
@@ -87,9 +87,12 @@ fn a_hero_starts_with_a_match_setup_modifier() {
         "it stands up full"
     );
     let applied = world.applied.get(hero).expect("seeded");
-    assert_eq!(applied.len(), 1);
+    assert_eq!(applied.iter().count(), 1);
     assert_eq!(
-        applied.first().map(|held| (held.origin, held.ticks_left)),
+        applied
+            .iter()
+            .next()
+            .map(|held| (held.origin, held.ticks_left)),
         Some((AppliedOrigin::Setup, None))
     );
     assert!(cfg.validate().is_ok());
@@ -115,36 +118,6 @@ fn a_hero_on_the_other_side_is_left_alone() {
         )),
         "the hero is untouched"
     );
-}
-
-#[test]
-fn an_exact_unit_selector_takes_only_that_unit() {
-    let mut world = World::new();
-    let first = world.spawn_hero(
-        Team::Radiant,
-        Vec2::from_ints(7000, 7000),
-        SlotId(0),
-        HeroId(0),
-    );
-    let second = world.spawn_hero(
-        Team::Radiant,
-        Vec2::from_ints(7600, 7000),
-        SlotId(1),
-        HeroId(0),
-    );
-    world.settle();
-    world.spawn_modifiers = vec![SpawnModifier {
-        select: SpawnSelector {
-            unit: Some(wire_id(first)),
-            ..SpawnSelector::default()
-        },
-        spec: spec(|s| s.max_hp = 20_000),
-        duration: ModifierDuration::MatchLong,
-    }];
-    world.apply_spawn_modifiers_to_all();
-    world.settle();
-    assert!(world.applied.contains(first));
-    assert!(!world.applied.contains(second));
 }
 
 #[test]
@@ -191,6 +164,11 @@ fn lane_creeps_are_seeded_on_every_wave() {
                 world.stats.get(entity).map(|stats| stats.max_hp),
                 Some(expected * Fixed::from_int(2)),
                 "wave {wave}: a lane creep is raised"
+            );
+            assert_eq!(
+                world.health.get(entity).map(|health| health.hp),
+                Some(expected * Fixed::from_int(2)),
+                "wave {wave}: and stands full"
             );
             assert!(
                 world.applied.contains(entity),
@@ -299,6 +277,11 @@ fn structures_are_seeded_at_the_start_and_when_stood_up() {
             raw: (i64::from(raised_hp(&world, tower).raw) * 15_000 / 10_000) as i32
         }
     );
+    assert_eq!(
+        world.health.get(tower).map(|health| health.hp),
+        Some(expected),
+        "and it is full to the raised maximum right away"
+    );
 
     let mut later = World::new();
     later.spawn_modifiers = vec![rule];
@@ -358,7 +341,7 @@ fn a_ticks_rule_lifts_after_its_ticks() {
         world
             .applied
             .get(hero)
-            .and_then(|applied| applied.first())
+            .and_then(|applied| applied.iter().next())
             .and_then(|held| held.ticks_left),
         Some(2)
     );
@@ -404,7 +387,7 @@ fn a_respawned_hero_is_seeded_afresh_and_stands_full() {
         world
             .applied
             .get(reborn)
-            .and_then(|applied| applied.first()),
+            .and_then(|applied| applied.iter().next()),
         Some(&crate::game::AppliedModifier {
             spec: spec(|s| s.max_hp = 20_000),
             ticks_left: None,
@@ -449,34 +432,141 @@ fn an_empty_rule_list_leaves_the_world_alone() {
     let world = World::for_match(&cfg, cfg.rng());
     assert!(world.spawn_modifiers.is_empty());
     assert!(world.applied.is_empty(), "nothing was seeded");
-    let run = || {
-        let cfg = config(false, Vec::new());
-        let mut world = World::for_match(&cfg, cfg.rng());
-        for _ in 0..200 {
-            world.step();
-        }
-        world.hash()
-    };
-    assert_eq!(run(), run(), "two empty setups go the same way");
+    for entity in world.entities.iter() {
+        assert!(!world.applied.contains(entity));
+    }
+}
+
+/// The hash of a world holding one applied spec.
+fn hash_with_spec(spec: ModifierSpec) -> u64 {
+    let mut world = World::new();
+    let creep = world.spawn_unit(
+        &crate::game::MELEE_CREEP,
+        Team::Dire,
+        Vec2::from_ints(2000, 2000),
+    );
+    world.applied.insert(
+        creep,
+        AppliedModifiers::single(AppliedModifier {
+            spec,
+            ticks_left: Some(10),
+            origin: AppliedOrigin::Setup,
+        }),
+    );
+    world.settle();
+    world.hash()
+}
+
+/// One named change to a spec field.
+type FieldChange = (&'static str, fn(&mut ModifierSpec));
+
+#[test]
+fn every_modifier_field_changes_the_hash() {
+    let base = spec(|s| {
+        s.magic_resist = 1_000;
+        s.status_resist = 2_000;
+        s.physical_damage = 11_000;
+        s.magic_damage = 12_000;
+        s.pure_damage = 13_000;
+        s.cooldown_rate = 9_000;
+        s.mana_cost_rate = 8_000;
+        s.move_speed = 8_500;
+        s.max_hp = 11_000;
+        s.max_mana = 12_000;
+        s.gold_income = 7_500;
+    });
+    let baseline = hash_with_spec(base);
+    let changes: [FieldChange; 11] = [
+        ("magic_resist", |s| s.magic_resist += 1),
+        ("status_resist", |s| s.status_resist += 1),
+        ("physical_damage", |s| s.physical_damage += 1),
+        ("magic_damage", |s| s.magic_damage += 1),
+        ("pure_damage", |s| s.pure_damage += 1),
+        ("cooldown_rate", |s| s.cooldown_rate += 1),
+        ("mana_cost_rate", |s| s.mana_cost_rate += 1),
+        ("move_speed", |s| s.move_speed += 1),
+        ("max_hp", |s| s.max_hp += 1),
+        ("max_mana", |s| s.max_mana += 1),
+        ("gold_income", |s| s.gold_income += 1),
+    ];
+    for (name, change) in changes {
+        let mut changed = base;
+        change(&mut changed);
+        assert_ne!(
+            hash_with_spec(changed),
+            baseline,
+            "{name} must show in the hash"
+        );
+    }
+}
+
+/// The hash of a world carrying one trusted spawn rule.
+fn hash_with_rule(rule: SpawnModifier) -> u64 {
+    let mut world = World::new();
+    world.spawn_modifiers = vec![rule];
+    world.hash()
 }
 
 #[test]
-fn two_runs_with_the_same_rules_hash_the_same() {
-    let run = || {
-        let cfg = config(
-            false,
-            vec![
-                a_rule(spec(|s| s.max_hp = 12_500)),
-                a_rule(spec(|s| s.move_speed = 9_000)),
-            ],
+fn every_spawn_rule_field_changes_the_hash() {
+    let base = a_rule(spec(|s| s.max_hp = 12_500));
+    let baseline = hash_with_rule(base.clone());
+    let variants = [
+        (
+            "team",
+            SpawnModifier {
+                select: SpawnSelector {
+                    team: Some(Team::Dire),
+                    ..base.select.clone()
+                },
+                ..base.clone()
+            },
+        ),
+        (
+            "category",
+            SpawnModifier {
+                select: SpawnSelector {
+                    targets: vec![SpawnTarget::Category(SpawnCategory::Hero)],
+                    ..base.select.clone()
+                },
+                ..base.clone()
+            },
+        ),
+        (
+            "kind",
+            SpawnModifier {
+                select: SpawnSelector {
+                    targets: vec![SpawnTarget::Kind(UnitKind::Tower)],
+                    ..base.select.clone()
+                },
+                ..base.clone()
+            },
+        ),
+        (
+            "duration",
+            SpawnModifier {
+                duration: ModifierDuration::Ticks(5),
+                ..base.clone()
+            },
+        ),
+        (
+            "spec",
+            SpawnModifier {
+                spec: spec(|s| s.max_hp = 12_501),
+                ..base.clone()
+            },
+        ),
+    ];
+    for (name, rule) in variants {
+        assert_ne!(
+            hash_with_rule(rule),
+            baseline,
+            "{name} must show in the hash"
         );
-        let mut world = World::for_match(&cfg, cfg.rng());
-        for _ in 0..300 {
-            world.step();
-        }
-        world.hash()
-    };
-    assert_eq!(run(), run(), "the same rules, the same world");
+    }
+    let mut two = World::new();
+    two.spawn_modifiers = vec![base.clone(), base];
+    assert_ne!(two.hash(), baseline, "the number of rules must show");
 }
 
 #[test]
@@ -534,7 +624,7 @@ fn a_cheat_does_not_take_trusted_setup_off_a_unit() {
         ticks: 50,
     })]);
     let applied = world.applied.get(hero).expect("both are on it");
-    assert_eq!(applied.len(), 2);
+    assert_eq!(applied.iter().count(), 2);
     assert!(
         applied
             .iter()
@@ -549,30 +639,9 @@ fn a_cheat_does_not_take_trusted_setup_off_a_unit() {
         target: Target::None,
     })]);
     let applied = world.applied.get(hero).expect("setup stays");
-    assert_eq!(applied.len(), 1);
+    assert_eq!(applied.iter().count(), 1);
     assert_eq!(
-        applied.first().map(|held| held.origin),
+        applied.iter().next().map(|held| held.origin),
         Some(AppliedOrigin::Setup)
     );
-}
-
-#[test]
-fn an_unknown_explicit_unit_selector_takes_nothing() {
-    let cfg = config(
-        false,
-        vec![SpawnModifier {
-            select: SpawnSelector {
-                unit: Some(EntityId {
-                    idx: 999,
-                    generation: 7,
-                }),
-                ..SpawnSelector::default()
-            },
-            spec: spec(|s| s.max_hp = 20_000),
-            duration: ModifierDuration::MatchLong,
-        }],
-    );
-    let world = World::for_match(&cfg, cfg.rng());
-    let hero = world.seats[0].unit.expect("stood up");
-    assert!(!world.applied.contains(hero));
 }

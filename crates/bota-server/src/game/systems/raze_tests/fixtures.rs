@@ -44,9 +44,7 @@ pub(super) fn prepare(world: &mut World, entity: Entity, pos: Vec2) {
 fn stats() -> Stats {
     Stats {
         max_hp: Fixed::from_int(30000),
-        applied_max_hp: Fixed::ZERO,
         max_mana: Fixed::from_int(30000),
-        applied_max_mana: Fixed::ZERO,
         hp_regen: Fixed::ZERO,
         mana_regen: Fixed::ZERO,
         damage: 0,

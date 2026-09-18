@@ -1,7 +1,7 @@
 //! Shortcuts round the rules, for trying things out in a match that allows
 //! them.
 
-use bota_proto::{Cheat, EventKind, ItemId, MAX_MODIFIER_TICKS, SlotId};
+use bota_proto::{Cheat, EventKind, ItemId, SlotId, modifier_ticks_bounded};
 
 use crate::game::{
     AppliedModifier, AppliedOrigin, Entity, Event, EventVisibility, ItemStack, World, rules,
@@ -28,7 +28,7 @@ impl World {
             } => {
                 // The order gate rejects unbounded payloads; a caller that
                 // came another way is turned away rather than trusted.
-                if !spec.is_bounded() || ticks == 0 || ticks > MAX_MODIFIER_TICKS {
+                if !spec.is_bounded() || !modifier_ticks_bounded(ticks) {
                     return;
                 }
                 if let Ok(mark) = self.cheat_target(unit, target) {

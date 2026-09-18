@@ -58,16 +58,6 @@ impl AppliedModifiers {
         self.0.iter()
     }
 
-    /// How many entries are held.
-    pub fn len(&self) -> usize {
-        self.0.len()
-    }
-
-    /// The first entry held.
-    pub fn first(&self) -> Option<&AppliedModifier> {
-        self.0.first()
-    }
-
     /// Drops every entry the keeper turns down.
     pub fn retain(&mut self, keep: impl FnMut(&mut AppliedModifier) -> bool) {
         self.0.retain_mut(keep);

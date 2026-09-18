@@ -5,8 +5,8 @@
 
 use crate::engine::Fnv;
 use crate::game::{
-    ActionPhase, ActionState, AppliedOrigin, Hit, HitEffect, Inventory, ItemStack, ModifierKind,
-    Target, World,
+    ActionPhase, ActionState, AppliedOrigin, Hit, HitEffect, Inventory, ItemStack,
+    ModifierDuration, ModifierKind, SpawnCategory, SpawnModifier, SpawnTarget, Target, World,
 };
 
 impl World {
@@ -281,6 +281,13 @@ impl World {
                 }
             }
         }
+        if !self.spawn_modifiers.is_empty() {
+            fnv.u8(1);
+            fnv.u32(self.spawn_modifiers.len() as u32);
+            for rule in &self.spawn_modifiers {
+                hash_spawn_modifier(&mut fnv, rule);
+            }
+        }
         fnv.done()
     }
 }
@@ -414,6 +421,42 @@ fn hash_modifier_kind(fnv: &mut Fnv, kind: ModifierKind) {
     }
 }
 
+/// One trusted spawn rule: what it takes, what it puts on, how long.
+fn hash_spawn_modifier(fnv: &mut Fnv, rule: &SpawnModifier) {
+    fnv.some(rule.select.team.is_some());
+    if let Some(team) = rule.select.team {
+        fnv.team(team);
+    }
+    fnv.u32(rule.select.targets.len() as u32);
+    for target in &rule.select.targets {
+        match target {
+            SpawnTarget::Kind(kind) => {
+                fnv.u8(0);
+                fnv.kind(*kind);
+            }
+            SpawnTarget::Category(category) => {
+                fnv.u8(1);
+                fnv.u8(match category {
+                    SpawnCategory::Hero => 0,
+                    SpawnCategory::LaneCreep => 1,
+                    SpawnCategory::NeutralCreep => 2,
+                    SpawnCategory::Structure => 3,
+                    SpawnCategory::Ward => 4,
+                    SpawnCategory::Courier => 5,
+                });
+            }
+        }
+    }
+    match rule.duration {
+        ModifierDuration::MatchLong => fnv.u8(0),
+        ModifierDuration::Ticks(ticks) => {
+            fnv.u8(1);
+            fnv.u32(ticks);
+        }
+    }
+    hash_modifier_spec(fnv, rule.spec);
+}
+
 /// A cheat-granted stat change, field by field in declaration order.
 fn hash_modifier_spec(fnv: &mut Fnv, spec: bota_proto::ModifierSpec) {
     fnv.i32(spec.magic_resist);
@@ -423,6 +466,10 @@ fn hash_modifier_spec(fnv: &mut Fnv, spec: bota_proto::ModifierSpec) {
     fnv.i32(spec.pure_damage);
     fnv.i32(spec.cooldown_rate);
     fnv.i32(spec.mana_cost_rate);
+    fnv.i32(spec.move_speed);
+    fnv.i32(spec.max_hp);
+    fnv.i32(spec.max_mana);
+    fnv.i32(spec.gold_income);
 }
 
 /// Every slot of a bag, empty ones counted so slots keep their numbers.
