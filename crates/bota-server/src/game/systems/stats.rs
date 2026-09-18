@@ -4,7 +4,7 @@ use bota_proto::{Attributes, Fixed, ModifierSpec};
 
 use crate::game::rules;
 use crate::game::{
-    AbilityBook, AppliedModifier, Def, EntityAllocator, Growth, Health, Inventory, Level, Mana,
+    AbilityBook, AppliedModifiers, Def, EntityAllocator, Growth, Health, Inventory, Level, Mana,
     ModifierKind, Modifiers, Ratio, StackKind, Stacks, Stats, Table, UnitDef, Upgrades,
 };
 
@@ -28,8 +28,8 @@ pub struct StatsCx<'a> {
     pub inventory: &'a Table<Inventory>,
     /// What is on each entity.
     pub modifiers: &'a Table<Modifiers>,
-    /// Cheat-granted stat changes on each entity.
-    pub applied: &'a Table<AppliedModifier>,
+    /// Applied stat changes on each entity.
+    pub applied: &'a Table<AppliedModifiers>,
     /// What each entity has learned, for what its passives are worth.
     pub abilities: &'a Table<AbilityBook>,
     /// What each entity has kept of the deaths around it.
@@ -83,10 +83,10 @@ fn derive_stats_impl<const APPLIED: bool>(cx: StatsCx<'_>) {
         let levels = level.get(entity).map_or(0, |l| i32::from(l.0.max(1) - 1));
         let steps = upgrades.get(entity).map_or(0, |u| u.0 as i32);
         let mut now = raised(kind, levels, steps);
-        // A cheat-granted change is folded in first and additively. Items,
-        // attributes and every multiplier below land on top of it.
+        // Applied changes are folded in first and additively. Items,
+        // attributes and every multiplier below land on top of them.
         if APPLIED && let Some(on_it) = applied.get(entity) {
-            apply_modifiers(&mut now, on_it.spec);
+            fold_applied(&mut now, on_it);
         }
         let carried = inventory
             .get(entity)
@@ -196,8 +196,8 @@ fn derive_stats_impl<const APPLIED: bool>(cx: StatsCx<'_>) {
                     hp.hp,
                     before.max_hp - before.applied_max_hp,
                     now.max_hp - now.applied_max_hp,
-                )
-                .min(now.max_hp),
+                    now.max_hp,
+                ),
                 None => now.max_hp,
             };
         }
@@ -207,8 +207,8 @@ fn derive_stats_impl<const APPLIED: bool>(cx: StatsCx<'_>) {
                     mp.mana,
                     before.max_mana - before.applied_max_mana,
                     now.max_mana - now.applied_max_mana,
-                )
-                .min(now.max_mana),
+                    now.max_mana,
+                ),
                 None => now.max_mana,
             };
         }
@@ -216,26 +216,58 @@ fn derive_stats_impl<const APPLIED: bool>(cx: StatsCx<'_>) {
     }
 }
 
-/// Folds one cheat-granted spec into a freshly raised stat block.
+/// Folds everything applied to a unit into a freshly raised stat block.
 ///
-/// Resistances are added and scales are taken as deltas of the nominal, so
-/// several sources never compound. Everything the rest of the pipeline adds
+/// Every family is summed as a delta first and written once, so several
+/// sources never compound. Resistances are added in their own units and
+/// scales as deltas of the nominal; everything the rest of the pipeline adds
 /// or multiplies lands on top of the result.
-fn apply_modifiers(now: &mut Stats, spec: ModifierSpec) {
-    now.magic_resist_pct = (now.magic_resist_pct + spec.magic_resist / 100).clamp(0, 100);
-    now.status_resist_bp += spec.status_resist;
-    now.physical_amp_bp += spec.physical_damage - rules::NOMINAL_BP;
-    now.magic_amp_bp += spec.magic_damage - rules::NOMINAL_BP;
-    now.pure_amp_bp += spec.pure_damage - rules::NOMINAL_BP;
-    now.cooldown_rate_bp += spec.cooldown_rate - rules::NOMINAL_BP;
-    now.mana_cost_rate_bp += spec.mana_cost_rate - rules::NOMINAL_BP;
-    now.move_speed = scaled_bp(now.move_speed, spec.move_speed);
+fn fold_applied(now: &mut Stats, applied: &AppliedModifiers) {
+    let mut magic_resist: i32 = 0;
+    let mut status_resist: i32 = 0;
+    let mut physical: i32 = 0;
+    let mut magical: i32 = 0;
+    let mut pure: i32 = 0;
+    let mut cooldown: i32 = 0;
+    let mut mana_cost: i32 = 0;
+    let mut move_speed: i32 = 0;
+    let mut max_hp: i32 = 0;
+    let mut max_mana: i32 = 0;
+    for held in applied.iter() {
+        let spec = held.spec;
+        magic_resist = magic_resist.saturating_add(spec.magic_resist);
+        status_resist = status_resist.saturating_add(spec.status_resist);
+        physical = physical.saturating_add(spec.physical_damage - rules::NOMINAL_BP);
+        magical = magical.saturating_add(spec.magic_damage - rules::NOMINAL_BP);
+        pure = pure.saturating_add(spec.pure_damage - rules::NOMINAL_BP);
+        cooldown = cooldown.saturating_add(spec.cooldown_rate - rules::NOMINAL_BP);
+        mana_cost = mana_cost.saturating_add(spec.mana_cost_rate - rules::NOMINAL_BP);
+        move_speed = move_speed.saturating_add(spec.move_speed - rules::NOMINAL_BP);
+        max_hp = max_hp.saturating_add(spec.max_hp - rules::NOMINAL_BP);
+        max_mana = max_mana.saturating_add(spec.max_mana - rules::NOMINAL_BP);
+    }
+    now.magic_resist_pct = (now.magic_resist_pct + magic_resist / 100).clamp(0, 100);
+    now.status_resist_bp += status_resist;
+    now.physical_amp_bp = (now.physical_amp_bp + physical).max(0);
+    now.magic_amp_bp = (now.magic_amp_bp + magical).max(0);
+    now.pure_amp_bp = (now.pure_amp_bp + pure).max(0);
+    now.cooldown_rate_bp = (now.cooldown_rate_bp + cooldown).max(1);
+    now.mana_cost_rate_bp = (now.mana_cost_rate_bp + mana_cost).max(1);
+    now.move_speed = scaled_bp(now.move_speed, combined_scale(move_speed));
     let raised_hp = now.max_hp;
-    now.max_hp = scaled_bp(now.max_hp, spec.max_hp);
+    now.max_hp = scaled_bp(now.max_hp, combined_scale(max_hp));
     now.applied_max_hp += now.max_hp - raised_hp;
     let raised_mana = now.max_mana;
-    now.max_mana = scaled_bp(now.max_mana, spec.max_mana);
+    now.max_mana = scaled_bp(now.max_mana, combined_scale(max_mana));
     now.applied_max_mana += now.max_mana - raised_mana;
+}
+
+/// What several additive scale deltas come to, kept inside the bounds one
+/// source may carry.
+fn combined_scale(total_delta: i32) -> i32 {
+    rules::NOMINAL_BP
+        .saturating_add(total_delta)
+        .clamp(ModifierSpec::MIN_SCALE, ModifierSpec::MAX_SCALE)
 }
 
 /// A value at a basis-point scale, where [`rules::NOMINAL_BP`] leaves it as
@@ -322,22 +354,24 @@ fn raised(kind: &UnitDef, levels: i32, steps: i32) -> Stats {
     }
 }
 
-/// What a pool holds once its maximum has moved.
+/// What a pool holds once the maximum it follows has moved.
 ///
-/// The filled fraction is kept, worked out wide in raw units: a pool times a
-/// pool is past what a [`Fixed`] holds. The result stays within
-/// `Fixed::EPSILON..=now` when anything was held, and within `0..=now`
-/// otherwise.
-fn follow(held: Fixed, was: Fixed, now: Fixed) -> Fixed {
-    if now <= Fixed::ZERO {
-        return Fixed::ZERO;
-    }
-    if held <= Fixed::ZERO || was <= Fixed::ZERO {
-        return held.clamp(Fixed::ZERO, now);
+/// The filled fraction of `was` is kept, up to `ceiling`. The maximum a pool
+/// follows may be narrower than the ceiling a pool may reach: a
+/// cheat-granted share is held apart from the maximum the fraction is taken
+/// over, but a pool already filled to the raised ceiling stays there. The
+/// fraction is worked out wide in raw units: a pool times a pool is past
+/// what a [`Fixed`] holds. The result stays within `Fixed::EPSILON..=ceiling`
+/// when anything was held, and within `0..=ceiling` otherwise.
+fn follow(held: Fixed, was: Fixed, now: Fixed, ceiling: Fixed) -> Fixed {
+    let ceiling = ceiling.max(Fixed::ZERO);
+    if now <= Fixed::ZERO || was <= Fixed::ZERO || held <= Fixed::ZERO {
+        return held.clamp(Fixed::ZERO, ceiling);
     }
     let kept = i64::from(held.raw) * i64::from(now.raw) / i64::from(was.raw);
+    let top = ceiling.raw.max(Fixed::EPSILON.raw);
     Fixed {
-        raw: kept.clamp(i64::from(Fixed::EPSILON.raw), i64::from(now.raw)) as i32,
+        raw: kept.clamp(i64::from(Fixed::EPSILON.raw), i64::from(top)) as i32,
     }
 }
 

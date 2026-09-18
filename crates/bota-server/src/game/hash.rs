@@ -5,7 +5,8 @@
 
 use crate::engine::Fnv;
 use crate::game::{
-    ActionPhase, ActionState, Hit, HitEffect, Inventory, ItemStack, ModifierKind, Target, World,
+    ActionPhase, ActionState, AppliedOrigin, Hit, HitEffect, Inventory, ItemStack, ModifierKind,
+    Target, World,
 };
 
 impl World {
@@ -173,8 +174,16 @@ impl World {
             }
             if let Some(applied) = self.applied.get(entity) {
                 fnv.u8(1);
-                hash_modifier_spec(&mut fnv, applied.spec);
-                fnv.u32(applied.ticks_left);
+                fnv.u32(applied.iter().count() as u32);
+                for held in applied.iter() {
+                    hash_modifier_spec(&mut fnv, held.spec);
+                    fnv.some(held.ticks_left.is_some());
+                    fnv.u32(held.ticks_left.unwrap_or(0));
+                    fnv.u8(match held.origin {
+                        AppliedOrigin::Setup => 0,
+                        AppliedOrigin::Cheat => 1,
+                    });
+                }
             }
             if let Some(bag) = self.inventory.get(entity) {
                 hash_bag(&mut fnv, bag);

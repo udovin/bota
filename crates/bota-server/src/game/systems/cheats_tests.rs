@@ -25,6 +25,7 @@ fn config(cheats: bool) -> MatchConfig {
         mode: TickMode::Lockstep,
         ack_timeout_ticks: 30,
         cheats,
+        spawn_modifiers: Vec::new(),
     }
 }
 
@@ -223,7 +224,11 @@ fn a_modifier_cheat_lands_on_the_named_unit_alone() {
     assert_eq!(world.validate_order(SlotId(0), None, &order), Ok(()));
     hand(&mut world, order);
     assert_eq!(
-        world.applied.get(creep).map(|applied| applied.spec),
+        world
+            .applied
+            .get(creep)
+            .and_then(|applied| applied.first())
+            .map(|held| held.spec),
         Some(a_spec())
     );
     assert!(!world.applied.contains(hero), "and nowhere else");
@@ -345,8 +350,12 @@ fn a_modifier_cheat_runs_for_its_ticks_and_then_lifts() {
         },
     );
     assert_eq!(
-        world.applied.get(hero).map(|applied| applied.ticks_left),
-        Some(1),
+        world
+            .applied
+            .get(hero)
+            .and_then(|applied| applied.first())
+            .map(|held| held.ticks_left),
+        Some(Some(1)),
         "the tick that applied it is one of its own"
     );
     world.step();

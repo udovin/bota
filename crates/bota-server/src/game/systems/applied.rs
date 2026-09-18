@@ -6,19 +6,24 @@ use crate::game::rules;
 use crate::game::{Entity, Stats, World, ability_cooldown, ability_mana_cost, item_def};
 
 impl World {
-    /// Runs every cheat-granted stat change one tick down and drops what has
-    /// run out.
+    /// Runs every applied stat change one tick down and drops what has run
+    /// out.
+    ///
+    /// A world where nothing is applied pays nothing for the pass.
     pub fn tick_applied(&mut self) {
+        if self.applied.is_empty() {
+            return;
+        }
         let entities = self.take_entity_snapshot();
         for entity in entities.iter().copied() {
-            let expired = match self.applied.get_mut(entity) {
+            let drop_row = match self.applied.get_mut(entity) {
                 Some(applied) => {
-                    applied.ticks_left = applied.ticks_left.saturating_sub(1);
-                    applied.ticks_left == 0
+                    applied.retain(|held| !held.tick());
+                    applied.is_empty()
                 }
                 None => false,
             };
-            if expired {
+            if drop_row {
                 self.applied.remove(entity);
             }
         }
@@ -32,7 +37,12 @@ impl World {
     pub fn bounty_after(&self, killer: Option<Entity>, base: i32) -> i32 {
         let scale = killer
             .and_then(|unit| self.applied.get(unit))
-            .map_or(rules::NOMINAL_BP, |applied| applied.spec.gold_income);
+            .map_or(rules::NOMINAL_BP, |applied| {
+                applied.iter().fold(rules::NOMINAL_BP, |sum, held| {
+                    sum.saturating_add(held.spec.gold_income - rules::NOMINAL_BP)
+                })
+            })
+            .clamp(0, i32::MAX);
         (i64::from(base) * i64::from(scale) / i64::from(rules::NOMINAL_BP))
             .clamp(0, i64::from(i32::MAX)) as i32
     }

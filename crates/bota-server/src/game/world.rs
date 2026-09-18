@@ -5,12 +5,13 @@ use std::collections::VecDeque;
 use bota_proto::{HeroId, SlotId, Team, UnitKind};
 
 use crate::game::{
-    AbilityBook, Action, AppliedModifier, AuraCx, Auras, Bounty, CampHome, Def, Entity,
+    AbilityBook, Action, AppliedModifiers, AuraCx, Auras, Bounty, CampHome, Def, Entity,
     EntityAllocator, Errand, Expiry, Forest, Handling, Health, Hit, Hook, Hull, Inventory, Landed,
     Lane, LaneAi, Level, Loot, Mana, March, Mark, Missed, Modifier, Modifiers, Motion, NeutralAi,
-    Orders, Place, Plan, Projectile, Rax, RequiemLine, Route, Seat, SightCx, SightScratch, Stacks,
-    Stats, StatsCx, Table, Target, Tier, Transform, UnitOrder, Upgrades, Visibility, aura_system,
-    derive_stats, hitting_system, missile_system, regenerate, visibility_system,
+    Orders, Place, Plan, Projectile, Rax, RequiemLine, Route, Seat, SightCx, SightScratch,
+    SpawnModifier, Stacks, Stats, StatsCx, Table, Target, Tier, Transform, UnitOrder, Upgrades,
+    Visibility, aura_system, derive_stats, hitting_system, missile_system, regenerate,
+    visibility_system,
 };
 use crate::game::{HitCx, MissileCx};
 
@@ -104,9 +105,11 @@ pub struct World {
     pub stats: Table<Stats>,
     /// What is on each entity.
     pub modifiers: Table<Modifiers>,
-    /// Cheat-granted stat changes on each entity, apart from what abilities,
-    /// items and dispels may touch.
-    pub applied: Table<AppliedModifier>,
+    /// Applied stat changes on each entity, apart from what abilities, items
+    /// and dispels may touch.
+    pub applied: Table<AppliedModifiers>,
+    /// Trusted match setup's modifiers, put on each unit as it is stood up.
+    pub spawn_modifiers: Vec<SpawnModifier>,
     /// The hook each entity that is one is flying.
     pub hook: Table<Hook>,
     /// What each entity that is an ability's mark shows.
@@ -228,6 +231,7 @@ impl World {
             stats: Table::new(),
             modifiers: Table::new(),
             applied: Table::new(),
+            spawn_modifiers: Vec::new(),
             hook: Table::new(),
             mark: Table::new(),
             requiem_line: Table::new(),

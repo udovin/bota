@@ -6,9 +6,9 @@ use bota_proto::{
 };
 
 use crate::game::{
-    AppliedModifier, Entity, ITEMS, ItemStack, MELEE_CREEP, Modifier, ModifierKind, StackKind,
-    Stacks, World, ability, ability_cooldown, ability_mana_cost, cooldown_after, cost_after, rules,
-    wire_id,
+    AppliedModifier, AppliedModifiers, AppliedOrigin, Entity, ITEMS, ItemStack, MELEE_CREEP,
+    Modifier, ModifierKind, StackKind, Stacks, World, ability, ability_cooldown, ability_mana_cost,
+    cooldown_after, cost_after, rules, wire_id,
 };
 
 /// A world with a hero and a creep standing well apart.
@@ -36,10 +36,11 @@ fn spec(change: impl FnOnce(&mut ModifierSpec)) -> ModifierSpec {
 fn apply(world: &mut World, on: Entity, spec: ModifierSpec, ticks: u32) {
     world.applied.insert(
         on,
-        AppliedModifier {
+        AppliedModifiers::single(AppliedModifier {
             spec,
-            ticks_left: ticks,
-        },
+            ticks_left: Some(ticks),
+            origin: AppliedOrigin::Setup,
+        }),
     );
     world.settle();
 }
@@ -557,10 +558,11 @@ fn a_creep_spawned_with_a_modifier_is_raised_with_it() {
     let creep = world.spawn_creep(&MELEE_CREEP, Team::Dire, Vec2::from_ints(1000, 1000), 0, 0);
     world.applied.insert(
         creep,
-        AppliedModifier {
+        AppliedModifiers::single(AppliedModifier {
             spec: spec(|s| s.max_hp = 12_500),
-            ticks_left: 100,
-        },
+            ticks_left: Some(100),
+            origin: AppliedOrigin::Setup,
+        }),
     );
     world.settle();
     let max = rules::MELEE_CREEP_HP * 12_500 / 10_000;
@@ -622,10 +624,11 @@ fn a_tower_spawned_with_a_modifier_is_raised_with_it() {
     );
     world.applied.insert(
         tower,
-        AppliedModifier {
+        AppliedModifiers::single(AppliedModifier {
             spec: spec(|s| s.max_hp = 15_000),
-            ticks_left: 100,
-        },
+            ticks_left: Some(100),
+            origin: AppliedOrigin::Setup,
+        }),
     );
     world.settle();
     assert_eq!(

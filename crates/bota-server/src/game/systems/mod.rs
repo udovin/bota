@@ -56,3 +56,5 @@ mod evasion_tests;
 mod pierce_tests;
 #[cfg(test)]
 mod raze_tests;
+#[cfg(test)]
+mod spawn_modifier_tests;

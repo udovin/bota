@@ -23,10 +23,13 @@ impl World {
     ///
     /// No camp is filled; the jungle has not been carried over yet.
     pub fn for_match(cfg: &MatchConfig, rng: MatchRng) -> World {
+        debug_assert!(cfg.validate().is_ok(), "the match setup was not checked");
         let map = map_of(cfg.map);
         let mut world = World::on_map(map);
         world.rng = rng;
         world.cheats = cfg.cheats;
+        world.spawn_modifiers = cfg.spawn_modifiers.clone();
+        world.apply_spawn_modifiers_to_all();
         for pick in &cfg.picks {
             let at = hero_spawn_pos(map, pick.team);
             let hero = world.spawn_hero(pick.team, at, pick.slot, pick.hero);

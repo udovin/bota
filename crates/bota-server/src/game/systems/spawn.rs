@@ -3,9 +3,10 @@
 use bota_proto::{AbilityId, Angle, Fixed, HeroId, SlotId, Team, Vec2};
 
 use crate::game::{
-    Action, ActionState, Auras, Bounty, CampHome, Def, Entity, Errand, Expiry, Health, Hull,
-    Inventory, Lane, LaneAi, Level, Mana, March, Mark, Modifiers, Motion, NeutralAi, Orders, Plan,
-    Rax, Route, Tier, Transform, UnitDef, UnitOrder, Upgrades, World, rules,
+    Action, ActionState, AppliedModifier, AppliedOrigin, Auras, Bounty, CampHome, Def, Entity,
+    Errand, Expiry, Health, Hull, Inventory, Lane, LaneAi, Level, Mana, March, Mark, Modifiers,
+    Motion, NeutralAi, Orders, Plan, Rax, Route, Tier, Transform, UnitDef, UnitOrder, Upgrades,
+    World, rules, wire_id,
 };
 
 /// Which building of a side one is.
@@ -52,7 +53,52 @@ impl World {
         if !def.auras.is_empty() {
             self.auras.insert(entity, Auras(def.auras));
         }
+        self.apply_spawn_modifiers(entity);
         entity
+    }
+
+    /// Puts every trusted match-setup modifier that takes a unit on it, each
+    /// with its own countdown, replacing what setup put there before.
+    ///
+    /// Every spawn is a fresh application: a new wave, a camp that fills
+    /// again, a tower stood up later and a respawned body all get the rules
+    /// afresh. What a cheat put on the unit is left alone.
+    pub fn apply_spawn_modifiers(&mut self, entity: Entity) {
+        if self.spawn_modifiers.is_empty() {
+            return;
+        }
+        let Some(Def(def)) = self.def.get(entity).copied() else {
+            return;
+        };
+        let team = self.team.get(entity).copied();
+        let unit = wire_id(entity);
+        let mut applied = self.applied.remove(entity).unwrap_or_default();
+        applied.retain(|held| held.origin != AppliedOrigin::Setup);
+        for rule in &self.spawn_modifiers {
+            if rule.is_valid() && rule.select.takes(def.kind, team, unit) {
+                applied.push(AppliedModifier {
+                    spec: rule.spec,
+                    ticks_left: rule.duration.ticks_left(),
+                    origin: AppliedOrigin::Setup,
+                });
+            }
+        }
+        if applied.is_empty() {
+            return;
+        }
+        self.applied.insert(entity, applied);
+    }
+
+    /// Puts the trusted match-setup modifiers on every unit already standing.
+    pub fn apply_spawn_modifiers_to_all(&mut self) {
+        if self.spawn_modifiers.is_empty() {
+            return;
+        }
+        let entities = self.take_entity_snapshot();
+        for entity in entities.iter().copied() {
+            self.apply_spawn_modifiers(entity);
+        }
+        self.recycle_entity_snapshot(entities);
     }
 
     /// The room a body takes on the ground and the edge it is reached at.

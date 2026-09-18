@@ -3,7 +3,9 @@
 
 use bota_proto::{Cheat, EventKind, ItemId, MAX_MODIFIER_TICKS, SlotId};
 
-use crate::game::{AppliedModifier, Entity, Event, EventVisibility, ItemStack, World, rules};
+use crate::game::{
+    AppliedModifier, AppliedOrigin, Entity, Event, EventVisibility, ItemStack, World, rules,
+};
 
 impl World {
     /// Carries out a cheat for a seat and the hero it drives.
@@ -30,18 +32,30 @@ impl World {
                     return;
                 }
                 if let Ok(mark) = self.cheat_target(unit, target) {
-                    self.applied.insert(
-                        mark,
-                        AppliedModifier {
-                            spec,
-                            ticks_left: ticks,
-                        },
-                    );
+                    // The cheat replaces what it put there before and leaves
+                    // whatever trusted setup put on the unit alone.
+                    let mut applied = self.applied.remove(mark).unwrap_or_default();
+                    applied.retain(|held| held.origin != AppliedOrigin::Cheat);
+                    applied.push(AppliedModifier {
+                        spec,
+                        ticks_left: Some(ticks),
+                        origin: AppliedOrigin::Cheat,
+                    });
+                    self.applied.insert(mark, applied);
                 }
             }
             Cheat::ClearModifiers { target } => {
                 if let Ok(mark) = self.cheat_target(unit, target) {
-                    self.applied.remove(mark);
+                    let empty = match self.applied.get_mut(mark) {
+                        Some(applied) => {
+                            applied.retain(|held| held.origin != AppliedOrigin::Cheat);
+                            applied.is_empty()
+                        }
+                        None => false,
+                    };
+                    if empty {
+                        self.applied.remove(mark);
+                    }
                 }
             }
         }

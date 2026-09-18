@@ -2546,10 +2546,13 @@ so that sources never compound, and the fold happens once. The magnitudes
 (`move_speed`, `max_hp`, `max_mana`) are scaled from the raised base at that
 point; flat item bonuses, strength and intelligence, and the `Slowed` or
 `Hastened` multipliers all land on top and are not scaled again. The pool
-share of a cheat-granted maximum is recorded separately (`applied_max_hp`,
+share of an applied maximum is recorded separately (`applied_max_hp`,
 `applied_max_mana`), so it raises the maximum without moving the pool: a body
-keeps the health it had when the modifier lands, and a pool left above its
-maximum comes down to it when the modifier lifts. The mechanics are real
+keeps the health it had when the modifier lands, a pool already standing at
+the raised maximum stays there, and a pool left above the maximum comes down
+to it when the modifier lifts. A respawned body is filled to its effective
+maximum after every source has been folded, so it stands full and never has
+to regenerate up to it. The mechanics are real
 derived stats, neutral by default: `Stats` gains `status_resist_bp`,
 `physical_amp_bp`, `magic_amp_bp`, `pure_amp_bp`, `cooldown_rate_bp` and
 `mana_cost_rate_bp`, while magic resistance was already a stat and the spec
@@ -2584,3 +2587,19 @@ bounties and are left alone. A stat change applied mid-tick is seen by
 everything derived or read after it; a disable put on before the first derive
 in that tick (a hook stun beside the application) is the one boundary that
 still reads the previous tick's resistance.
+
+**Trusted setup can put modifiers on spawns.** A match description carries a
+bounded list of spawn modifiers (`SpawnModifier`), each a selector (a side, an
+exact kind or category, or one unit handle), an existing `ModifierSpec` and a
+duration: `MatchLong` until the body falls, or a tick count. `World::for_match`
+copies the list into the world, puts it on every unit already standing
+(buildings included) and, through `spawn_body`, on every unit stood up later;
+each wave, each camp, each building and each respawned body gets the rules
+afresh, with the tick count of a `Ticks` rule restarting on the new body. The
+cheat order path is untouched and independent: a unit may carry both, and
+clearing a cheat leaves what trusted setup put there alone.
+`MatchConfig::validate` refuses a spec outside the bounds the cheat gate uses,
+a duration outside `1..=MAX_MODIFIER_TICKS`, and a list past
+`MAX_SPAWN_MODIFIERS`, naming the rule that failed; a setup that does not carry
+the list at all behaves exactly as before, and the empty-list guards keep the
+default game paying nothing.
