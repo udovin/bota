@@ -271,6 +271,11 @@ impl World {
                     fnv.u32(many);
                 }
             }
+            if let Some(applied) = &seat.applied {
+                fnv.u8(1);
+                hash_modifier_spec(&mut fnv, applied.spec);
+                fnv.u32(applied.ticks_left);
+            }
         }
         fnv.done()
     }

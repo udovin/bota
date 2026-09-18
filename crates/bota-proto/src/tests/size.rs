@@ -69,7 +69,7 @@ fn an_order_stays_small() {
 #[test]
 fn a_modifier_cheat_encodes_canonically() {
     // Postcard: order tag 10, cheat tag 4, target tag 2, entity idx and
-    // generation varints, seven zigzag varints, then the tick count. The
+    // generation varints, eleven zigzag varints, then the tick count. The
     // bytes are pinned so a field change cannot pass unnoticed.
     let order = Order::Cheat {
         cheat: Cheat::ApplyModifier {
@@ -82,6 +82,10 @@ fn a_modifier_cheat_encodes_canonically() {
                 pure_damage: 13_000,
                 cooldown_rate: 9_000,
                 mana_cost_rate: 8_000,
+                move_speed: 8_500,
+                max_hp: 11_000,
+                max_mana: 12_000,
+                gold_income: 7_500,
             },
             ticks: 900,
         },
@@ -90,7 +94,7 @@ fn a_modifier_cheat_encodes_canonically() {
     assert_eq!(
         bytes,
         vec![
-            25, 0, 0, 0,  // frame length
+            36, 0, 0, 0,  // frame length
             10, // Order::Cheat
             4,  // Cheat::ApplyModifier
             2, 7, 1, // Target::Unit(entity(7))
@@ -101,6 +105,10 @@ fn a_modifier_cheat_encodes_canonically() {
             0x90, 0xCB, 0x01, // pure_damage 13_000 zigzag
             0xD0, 0x8C, 0x01, // cooldown_rate 9_000 zigzag
             0x80, 0x7D, // mana_cost_rate 8_000 zigzag
+            0xE8, 0x84, 0x01, // move_speed 8_500 zigzag
+            0xF0, 0xAB, 0x01, // max_hp 11_000 zigzag
+            0xC0, 0xBB, 0x01, // max_mana 12_000 zigzag
+            0x98, 0x75, // gold_income 7_500 zigzag
             0x84, 0x07, // ticks 900
         ]
     );

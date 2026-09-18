@@ -1,6 +1,6 @@
 //! Working out what each entity fights by, from scratch, every tick.
 
-use bota_proto::{Attributes, Fixed};
+use bota_proto::{Attributes, Fixed, ModifierSpec};
 
 use crate::game::rules;
 use crate::game::{
@@ -81,6 +81,11 @@ fn derive_stats_impl<const APPLIED: bool>(cx: StatsCx<'_>) {
         let levels = level.get(entity).map_or(0, |l| i32::from(l.0.max(1) - 1));
         let steps = upgrades.get(entity).map_or(0, |u| u.0 as i32);
         let mut now = raised(kind, levels, steps);
+        // A cheat-granted change is folded in first and additively. Items,
+        // attributes and every multiplier below land on top of it.
+        if APPLIED && let Some(on_it) = applied.get(entity) {
+            apply_modifiers(&mut now, on_it.spec);
+        }
         let carried = inventory
             .get(entity)
             .filter(|_| !kind.porter)
@@ -121,16 +126,6 @@ fn derive_stats_impl<const APPLIED: bool>(cx: StatsCx<'_>) {
                 * (100 - rules::FLESH_HEAP_MAGIC_RESIST_PCT[level])
                 / 100;
             now.magic_resist_pct = 100 - kept_through;
-        }
-        if APPLIED && let Some(on_it) = applied.get(entity) {
-            let spec = on_it.spec;
-            now.magic_resist_pct = (now.magic_resist_pct + spec.magic_resist / 100).clamp(0, 100);
-            now.status_resist_bp += spec.status_resist;
-            now.physical_amp_bp += spec.physical_damage - rules::NOMINAL_BP;
-            now.magic_amp_bp += spec.magic_damage - rules::NOMINAL_BP;
-            now.pure_amp_bp += spec.pure_damage - rules::NOMINAL_BP;
-            now.cooldown_rate_bp += spec.cooldown_rate - rules::NOMINAL_BP;
-            now.mana_cost_rate_bp += spec.mana_cost_rate - rules::NOMINAL_BP;
         }
         from_attributes(&mut now);
         // A share of the base pace and of what agility adds, and of nothing
@@ -206,6 +201,33 @@ fn derive_stats_impl<const APPLIED: bool>(cx: StatsCx<'_>) {
             };
         }
         stats.insert(entity, now);
+    }
+}
+
+/// Folds one cheat-granted spec into a freshly raised stat block.
+///
+/// Resistances are added and scales are taken as deltas of the nominal, so
+/// several sources never compound. Everything the rest of the pipeline adds
+/// or multiplies lands on top of the result.
+fn apply_modifiers(now: &mut Stats, spec: ModifierSpec) {
+    now.magic_resist_pct = (now.magic_resist_pct + spec.magic_resist / 100).clamp(0, 100);
+    now.status_resist_bp += spec.status_resist;
+    now.physical_amp_bp += spec.physical_damage - rules::NOMINAL_BP;
+    now.magic_amp_bp += spec.magic_damage - rules::NOMINAL_BP;
+    now.pure_amp_bp += spec.pure_damage - rules::NOMINAL_BP;
+    now.cooldown_rate_bp += spec.cooldown_rate - rules::NOMINAL_BP;
+    now.mana_cost_rate_bp += spec.mana_cost_rate - rules::NOMINAL_BP;
+    now.move_speed = scaled_bp(now.move_speed, spec.move_speed);
+    now.max_hp = scaled_bp(now.max_hp, spec.max_hp);
+    now.max_mana = scaled_bp(now.max_mana, spec.max_mana);
+}
+
+/// A value at a basis-point scale, where [`rules::NOMINAL_BP`] leaves it as
+/// it is.
+fn scaled_bp(value: Fixed, bp: i32) -> Fixed {
+    let raw = i64::from(value.raw) * i64::from(bp) / i64::from(rules::NOMINAL_BP);
+    Fixed {
+        raw: raw.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
     }
 }
 

@@ -7,7 +7,7 @@ use crate::game::{Entity, Stats, World, ability_cooldown, ability_mana_cost, ite
 
 impl World {
     /// Runs every cheat-granted stat change one tick down and drops what has
-    /// run out.
+    /// run out, on units and on seats alike.
     pub fn tick_applied(&mut self) {
         let entities = self.take_entity_snapshot();
         for entity in entities.iter().copied() {
@@ -23,6 +23,35 @@ impl World {
             }
         }
         self.recycle_entity_snapshot(entities);
+        for seat in self.seats.iter_mut() {
+            let Some(applied) = seat.applied.as_mut() else {
+                continue;
+            };
+            applied.ticks_left = applied.ticks_left.saturating_sub(1);
+            if applied.ticks_left == 0 {
+                seat.applied = None;
+            }
+        }
+    }
+
+    /// What a seat's gold income is scaled by, in basis points.
+    pub fn seat_income_bp(&self, index: usize) -> i32 {
+        self.seats
+            .get(index)
+            .and_then(|seat| seat.applied)
+            .map_or(rules::NOMINAL_BP, |applied| applied.spec.gold_income)
+    }
+
+    /// Gold earned by a seat after its income scale.
+    pub fn income_after(&self, index: usize, base: i32) -> i32 {
+        (i64::from(base) * i64::from(self.seat_income_bp(index)) / i64::from(rules::NOMINAL_BP))
+            .clamp(0, i64::from(i32::MAX)) as i32
+    }
+
+    /// Ticks between passive payouts at a seat's income scale.
+    pub fn income_period(&self, index: usize) -> u32 {
+        let scale = self.seat_income_bp(index).max(1) as u32;
+        (rules::PASSIVE_GOLD_PERIOD_TICKS * rules::NOMINAL_BP as u32 / scale).max(1)
     }
 
     /// Mana one cast of an ability costs an entity, after its mana cost rate.

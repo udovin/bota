@@ -4,7 +4,7 @@ use bota_proto::{HeroId, SlotId, Team};
 
 use bota_proto::ItemId;
 
-use crate::game::{AbilityBook, Entity, Inventory, Stacks};
+use crate::game::{AbilityBook, AppliedModifier, Entity, Inventory, Stacks};
 
 /// What a body leaves behind while it is gone.
 ///
@@ -48,6 +48,9 @@ pub struct Seat {
     pub stash: Inventory,
     /// What the body left behind, while it is gone.
     pub kept: Option<Kept>,
+    /// The cheat-granted change put on the unit the seat drives, for what
+    /// belongs to the seat rather than to the body. It outlives the body.
+    pub applied: Option<AppliedModifier>,
     /// The courier it owns, while one stands.
     pub courier: Option<Entity>,
     /// Ticks before the courier comes back. Zero while one stands.
@@ -87,6 +90,7 @@ impl Seat {
             respawn_left: 0,
             stash: Inventory::empty(stash_slots),
             kept: None,
+            applied: None,
             courier: None,
             courier_left: 0,
             courier_kept: None,

@@ -8,15 +8,20 @@ use crate::game::{Event, EventVisibility, hero_spawn_pos, rules};
 impl World {
     /// Hands out the gold that arrives on its own: one a period, to every
     /// seat.
+    ///
+    /// A seat's period follows its income scale, which keeps the long-run
+    /// rate exact without keeping a rounding remainder.
     pub fn passive_gold(&mut self) {
-        if self.tick <= rules::PREGAME_TICKS
-            || !(self.tick - rules::PREGAME_TICKS).is_multiple_of(rules::PASSIVE_GOLD_PERIOD_TICKS)
-        {
+        if self.tick <= rules::PREGAME_TICKS {
             return;
         }
-        for seat in self.seats.iter_mut() {
-            seat.gold += 1;
-            seat.net_worth += 1;
+        let elapsed = self.tick - rules::PREGAME_TICKS;
+        for index in 0..self.seats.len() {
+            if !elapsed.is_multiple_of(self.income_period(index)) {
+                continue;
+            }
+            self.seats[index].gold += 1;
+            self.seats[index].net_worth += 1;
         }
     }
 
@@ -72,9 +77,9 @@ impl World {
                 } else {
                     self.seats[index].last_hits += 1;
                 }
-                self.seats[index].gold += bounty.gold;
-                self.seats[index].net_worth += bounty.gold;
-                paid = bounty.gold;
+                paid = self.income_after(index, bounty.gold);
+                self.seats[index].gold += paid;
+                self.seats[index].net_worth += paid;
             }
         }
         if denied {

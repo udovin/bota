@@ -33,10 +33,11 @@ const NOMINAL_RATE: i32 = 10_000;
 
 /// Bounded stat changes a cheat may put on one unit.
 ///
-/// Rates and amplifications are in basis points of the nominal 10_000, so
-/// 100 is one percent and a value below nominal shortens or cheapens.
-/// Resistances are additive hundredths of a percentage point. Every field
-/// at its neutral value changes nothing.
+/// Rates, amplifications and magnitudes are scales in basis points of the
+/// nominal 10_000, so 100 is one percent and a value below nominal reduces.
+/// Scales add as deltas of the nominal, so two sources never compound.
+/// Resistances are additive hundredths of a percentage point. Every field at
+/// its neutral value changes nothing.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ModifierSpec {
     /// Magic resistance added, in hundredths of a percentage point.
@@ -54,6 +55,14 @@ pub struct ModifierSpec {
     pub cooldown_rate: i32,
     /// Scale on every mana cost the unit pays, 10_000 nominal.
     pub mana_cost_rate: i32,
+    /// Scale on the unit's movement speed, 10_000 nominal.
+    pub move_speed: i32,
+    /// Scale on the maximum health the unit is raised with, 10_000 nominal.
+    pub max_hp: i32,
+    /// Scale on the maximum mana the unit is raised with, 10_000 nominal.
+    pub max_mana: i32,
+    /// Scale on the gold the unit's seat earns, 10_000 nominal.
+    pub gold_income: i32,
 }
 
 impl ModifierSpec {
@@ -66,15 +75,19 @@ impl ModifierSpec {
         pure_damage: NOMINAL_RATE,
         cooldown_rate: NOMINAL_RATE,
         mana_cost_rate: NOMINAL_RATE,
+        move_speed: NOMINAL_RATE,
+        max_hp: NOMINAL_RATE,
+        max_mana: NOMINAL_RATE,
+        gold_income: NOMINAL_RATE,
     };
 
     /// The widest magic resistance delta accepted, either way.
     pub const MAX_RESIST: i32 = 10_000;
     /// The most status resistance accepted.
     pub const MAX_STATUS_RESIST: i32 = 9_000;
-    /// The lowest scale accepted for damage, cooldown and mana rates.
+    /// The lowest scale accepted for every scale field.
     pub const MIN_SCALE: i32 = 2_500;
-    /// The highest scale accepted for damage, cooldown and mana rates.
+    /// The highest scale accepted for every scale field.
     pub const MAX_SCALE: i32 = 40_000;
 
     /// Whether every field lies within the accepted bounds.
@@ -88,6 +101,10 @@ impl ModifierSpec {
             && bounded_scale(self.pure_damage)
             && bounded_scale(self.cooldown_rate)
             && bounded_scale(self.mana_cost_rate)
+            && bounded_scale(self.move_speed)
+            && bounded_scale(self.max_hp)
+            && bounded_scale(self.max_mana)
+            && bounded_scale(self.gold_income)
     }
 
     /// Whether every field is neutral.
@@ -99,6 +116,10 @@ impl ModifierSpec {
             && self.pure_damage == NOMINAL_RATE
             && self.cooldown_rate == NOMINAL_RATE
             && self.mana_cost_rate == NOMINAL_RATE
+            && self.move_speed == NOMINAL_RATE
+            && self.max_hp == NOMINAL_RATE
+            && self.max_mana == NOMINAL_RATE
+            && self.gold_income == NOMINAL_RATE
     }
 }
 

@@ -3,13 +3,17 @@
 use crate::*;
 
 /// One spec per scale field, all others nominal, the named one set to `scale`.
-fn with_scale(scale: i32) -> [ModifierSpec; 5] {
-    let mut specs = [ModifierSpec::NOMINAL; 5];
+fn with_scale(scale: i32) -> [ModifierSpec; 9] {
+    let mut specs = [ModifierSpec::NOMINAL; 9];
     specs[0].physical_damage = scale;
     specs[1].magic_damage = scale;
     specs[2].pure_damage = scale;
     specs[3].cooldown_rate = scale;
     specs[4].mana_cost_rate = scale;
+    specs[5].move_speed = scale;
+    specs[6].max_hp = scale;
+    specs[7].max_mana = scale;
+    specs[8].gold_income = scale;
     specs
 }
 

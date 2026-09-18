@@ -2514,17 +2514,19 @@ fifteen-minute cap including continuation through the old ten-minute boundary.
 
 ## Cheat-granted unit modifiers, and the general stats behind them
 
-The foundation for domain-randomized training is a per-unit stat change that
-only a cheat can put on and only its countdown or the fall of the body can take
-away. It is carried in `World::applied`, a table of `AppliedModifier` values
-apart from `Modifiers`, so no ability, item, dispel or ordinary expiry reaches
-it; the hash includes it when a unit carries one and nothing in `MatchInfo` or
-`UnitView.effects` names it. An applied change survives every purge and is
-removed on `despawn`, so a respawned body starts clean and re-application is the
-cheat caller's business. The countdown runs at the end of the tick that applies
-it, so `ticks` counts the applying tick as the first.
+A modifier is a bounded stat change that only a cheat can put on and only its
+countdown or the fall of the body can take away. Units carry theirs in
+`World::applied`, a table of `AppliedModifier` values apart from `Modifiers`, so
+no ability, item, dispel or ordinary expiry reaches it. A seat carries the copy
+that belongs to the seat rather than to the body (`Seat::applied`), so a gold
+income change outlives the hero it was aimed at. Neither copy shows in
+`MatchInfo` or `UnitView.effects`, and the hash includes one only when it is
+present, so an unmodified world hashes as it always did. A unit's copy is
+removed on `despawn`, so a respawned body starts clean and re-application is
+the cheat caller's business. The countdown runs at the end of the tick that
+applies it, so `ticks` counts the applying tick as the first.
 
-**The payload is a bounded spec, not eleven cheats.** `Cheat::ApplyModifier`
+**The payload is a bounded spec, not one cheat per stat.** `Cheat::ApplyModifier`
 carries a `ModifierSpec` of signed basis-point fields (10,000 nominal for
 scales, hundredths of a percentage point for resistances) plus a tick count
 bounded by `MAX_MODIFIER_TICKS`; `Cheat::ClearModifiers` takes the change away.
@@ -2536,37 +2538,49 @@ allows 64 bytes for cheat orders and keeps 32 for everything else, because a
 whole spec no longer fits the old room, and the canonical bytes of one spec
 order are pinned in `bota-proto`.
 
-**The mechanics are real derived stats, neutral by default.** `Stats` gains
-`status_resist_bp`, `physical_amp_bp`, `magic_amp_bp`, `pure_amp_bp`,
-`cooldown_rate_bp` and `mana_cost_rate_bp`; magic resistance was already a stat
-and the spec adds to it. `derive_stats` folds the applied change in after the
-Flesh Heap multiply and before anything reads the block, and it compiles the
-fold out when the whole table is empty, so the default game pays nothing.
-Hitting compiles its share out the same way: the amplification multiply runs
-only in a world where some applied change exists. Future items, auras or
-abilities can add to the same fields without touching any consumer.
+**Modifiers are folded first and additively.** `derive_stats` applies a unit's
+spec immediately after the raised base block and before carried items,
+attributes, auras, slows and every other stage, so the modifier is part of the
+base the rest of the pipeline works on. Every family is summed as a delta:
+resistances add in their own units, scales add as deltas of the nominal 10,000
+so that sources never compound, and the fold happens once. The magnitudes
+(`move_speed`, `max_hp`, `max_mana`) are scaled from the raised base at that
+point; flat item bonuses, strength and intelligence, and the `Slowed` or
+`Hastened` multipliers all land on top and are not scaled again. The mechanics
+are real derived stats, neutral by default: `Stats` gains `status_resist_bp`,
+`physical_amp_bp`, `magic_amp_bp`, `pure_amp_bp`, `cooldown_rate_bp` and
+`mana_cost_rate_bp`, while magic resistance was already a stat and the spec adds
+to it. The fold compiles out when the whole table is empty, so the default game
+pays nothing; hitting compiles its share out the same way, because the
+amplification multiply runs only in a world where some applied change exists.
+Future items, auras or abilities can add to the same fields without touching any
+consumer.
 
-**Each stat has one reading.** Magic resistance is added as a delta, clamped to
-`0..=100` percent, so mitigation, projection and the bots agree. Damage
-amplification scales a blow before armor and resistance, after Shadowraze stack
-composition, per the dealing unit's kind field; a blow with no source is left
-alone, and pure damage stays unmitigated but still scales. Status resistance
-scales the ticks of `Stunned`, `Feared` and `Slowed` as they are put on or
-extended, down to one tick, and never touches buffs; the time already held is
-not shortened a second time when a disable is extended. Channel-managed
-disables (Dismember, the hook grab) are out of its reach, as they are managed by
-their channel rather than by a debuff timer. Cooldown rate scales every
-cooldown at the moment it is set: a cast, an item use, a shared item wait and
-the break-on-damage mute, with a floor of one tick for a cooldown that was set
-at all. It never scales the decrement, so a cooldown keeps its stored value and
-every view of it stays exact. Mana cost rate scales every read of a cost: the
-order gate, the cast and use that charge it, `AbilityView.mana_cost` and
-`ItemView.mana_cost`, so an action the view calls affordable is accepted and
-charged the same amount. A stat change applied mid-tick is seen by everything
-derived or read after it; a disable put on before the first derive in that tick
-(a hook stun beside the application) is the one boundary that still reads the
-previous tick's resistance.
+**Each stat has one reading.** Magic resistance is added as a delta and clamped
+to `0..=100` percent before Flesh Heap multiplies it, so mitigation, projection
+and the bots agree. Damage amplification scales a blow before armor and
+resistance, after Shadowraze stack composition, per the dealing unit's kind
+field; a blow with no source is left alone, and pure damage stays unmitigated
+but still scales. Status resistance scales the ticks of `Stunned`, `Feared` and
+`Slowed` as they are put on or extended, down to one tick, and never touches
+buffs; the time already held is not shortened a second time when a disable is
+extended. Channel-managed disables (Dismember, the hook grab) are out of its
+reach, as they are managed by their channel rather than by a debuff timer.
+Cooldown rate scales every cooldown at the moment it is set: a cast, an item
+use, a shared item wait and the break-on-damage mute, with a floor of one tick
+for a cooldown that was set at all. It never scales the decrement, so a cooldown
+keeps its stored value and every view of it stays exact. Mana cost rate scales
+every read of a cost: the order gate, the cast and use that charge it,
+`AbilityView.mana_cost` and `ItemView.mana_cost`, so an action the view calls
+affordable is accepted and charged the same amount. Gold income is
+seat-scoped: `passive_gold` stretches or shortens the payout period by the
+scale in whole ticks, which spreads the rate without a per-payout rounding
+bias, and `pay_for` scales a bounty as it is paid. What was held at the start,
+what is refunded on a sale and what a death takes away are not income and are
+left alone. A stat change applied mid-tick is seen by everything derived or
+read after it; a disable put on before the first derive in that tick (a hook
+stun beside the application) is the one boundary that still reads the previous
+tick's resistance.
 
-Not yet covered by the mechanism: gold from any source, movement speed, creep
-health and damage, tower health, and the drysua-side sampling and annealing
-schedule. Each is a follow-up slice through the same spec and stat block.
+Still to come through the same mechanism: creep health and damage, and tower
+health.

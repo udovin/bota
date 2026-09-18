@@ -6,8 +6,9 @@ use bota_proto::{
 };
 
 use crate::game::{
-    AppliedModifier, Entity, ITEMS, ItemStack, MELEE_CREEP, Modifier, ModifierKind, World, ability,
-    ability_cooldown, ability_mana_cost, rules, wire_id,
+    AppliedModifier, Entity, ITEMS, ItemStack, MELEE_CREEP, Modifier, ModifierKind, StackKind,
+    Stacks, World, ability, ability_cooldown, ability_mana_cost, cooldown_after, cost_after, rules,
+    wire_id,
 };
 
 /// A world with a hero and a creep standing well apart.
@@ -375,4 +376,163 @@ fn nothing_a_normal_modifier_does_reaches_a_cheat_modifier() {
         Some(35),
         "and its stat still applies"
     );
+}
+
+/// A Pudge with Flesh Heap learned and souls in the heap.
+fn pudge_with_a_heap() -> (World, Entity) {
+    let mut world = World::new();
+    let pudge = world.spawn_hero(
+        Team::Radiant,
+        Vec2::from_ints(7000, 7000),
+        SlotId(0),
+        HeroId(1),
+    );
+    if let Some(book) = world.abilities.get_mut(pudge) {
+        book.slots[2].level = 1;
+    }
+    let mut stacks = Stacks::default();
+    stacks.set(StackKind::FleshHeap, 10);
+    world.stacks.insert(pudge, stacks);
+    world.settle();
+    (world, pudge)
+}
+
+#[test]
+fn magic_resistance_adds_before_the_flesh_heap_multiplies() {
+    let (mut world, pudge) = pudge_with_a_heap();
+    let base = world.stats.get(pudge).expect("settled").magic_resist_pct;
+    apply(&mut world, pudge, spec(|s| s.magic_resist = 5_000), 10);
+    let before_heap = (rules::HERO_MAGIC_RESIST_PCT + 50).clamp(0, 100);
+    let kept = (100 - before_heap) * (100 - rules::FLESH_HEAP_MAGIC_RESIST_PCT[0]) / 100;
+    let folded_first = 100 - kept;
+    assert_eq!(
+        world.stats.get(pudge).map(|stats| stats.magic_resist_pct),
+        Some(folded_first),
+        "the heap multiplies what the modifier added"
+    );
+    assert!(
+        folded_first < base + 50,
+        "adding after the heap would give {}, which would let the modifier dodge it",
+        base + 50
+    );
+}
+
+#[test]
+fn magic_resistance_is_clamped_before_the_flesh_heap_multiplies() {
+    let (mut world, pudge) = pudge_with_a_heap();
+    apply(
+        &mut world,
+        pudge,
+        spec(|s| s.magic_resist = ModifierSpec::MAX_RESIST),
+        10,
+    );
+    assert_eq!(
+        world.stats.get(pudge).map(|stats| stats.magic_resist_pct),
+        Some(100),
+        "the added delta is clamped at immunity and stays there"
+    );
+}
+
+#[test]
+fn movement_speed_adds_before_items_and_slows() {
+    let (mut world, hero, _creep) = arena();
+    give(&mut world, hero, crate::game::ITEM_BOOTS);
+    apply(&mut world, hero, spec(|s| s.move_speed = 15_000), 10);
+    let carried = rules::HERO_MOVE_SPEED * 3 / 2 + 45;
+    assert_eq!(
+        world.stats.get(hero).map(|stats| stats.move_speed.to_int()),
+        Some(carried),
+        "half again the base, then the boots"
+    );
+    world.put_modifier(
+        hero,
+        Modifier {
+            kind: ModifierKind::Slowed { pct: 50 },
+            source: None,
+            ticks_left: Some(10),
+        },
+    );
+    world.settle();
+    assert_eq!(
+        world.stats.get(hero).map(|stats| stats.move_speed.to_int()),
+        Some(carried / 2),
+        "the slow multiplies what stands after both"
+    );
+}
+
+#[test]
+fn max_health_scales_the_raised_base_before_items() {
+    let (mut world, hero, _creep) = arena();
+    give(&mut world, hero, crate::game::ITEM_BRACER);
+    apply(&mut world, hero, spec(|s| s.max_hp = 20_000), 10);
+    let expected = rules::HERO_HP * 2 + rules::HP_PER_STRENGTH * 26;
+    assert_eq!(
+        world.stats.get(hero).map(|stats| stats.max_hp.to_int()),
+        Some(expected),
+        "the base is doubled first, then the bracer's strength pays"
+    );
+}
+
+#[test]
+fn max_mana_scales_the_raised_base_before_items() {
+    let (mut world, hero, _creep) = arena();
+    give(&mut world, hero, crate::game::ITEM_NULL_TALISMAN);
+    apply(&mut world, hero, spec(|s| s.max_mana = 20_000), 10);
+    let expected = rules::HERO_MANA * 2 + rules::MANA_PER_INTELLIGENCE * 24;
+    assert_eq!(
+        world.stats.get(hero).map(|stats| stats.max_mana.to_int()),
+        Some(expected),
+        "the base is doubled first, then the talisman's intelligence pays"
+    );
+}
+
+#[test]
+fn a_nominal_spec_leaves_the_new_stats_alone() {
+    let (plain, hero, _creep) = arena();
+    let (mut world, twin, _creep) = arena();
+    apply(&mut world, twin, ModifierSpec::NOMINAL, 10);
+    let plain = *plain.stats.get(hero).expect("settled");
+    let scaled = *world.stats.get(twin).expect("settled");
+    assert_eq!(plain.max_hp, scaled.max_hp);
+    assert_eq!(plain.max_mana, scaled.max_mana);
+    assert_eq!(plain.move_speed, scaled.move_speed);
+}
+
+#[test]
+fn damage_amplification_multiplies_the_whole_damage_before_mitigation() {
+    let (mut world, hero, creep) = arena();
+    give(&mut world, hero, crate::game::ITEM_PHASE_BOOTS);
+    apply(&mut world, hero, spec(|s| s.pure_damage = 15_000), 10);
+    let damage = world.stats.get(hero).expect("settled").damage;
+    assert!(
+        damage > rules::HERO_ATTACK_DAMAGE,
+        "the item is in the blow"
+    );
+    let expected = (i64::from(damage) * 15_000 / 10_000) as i32;
+    assert_eq!(
+        dealt(&mut world, hero, creep, damage, DamageKind::Pure),
+        expected,
+        "the whole blow, item damage included, is scaled before anything else"
+    );
+}
+
+#[test]
+fn rate_scales_floor_only_after_the_rate_is_applied() {
+    assert_eq!(
+        cooldown_after(1, ModifierSpec::MIN_SCALE),
+        1,
+        "a cooldown that was set keeps a tick"
+    );
+    assert_eq!(
+        cooldown_after(0, ModifierSpec::MAX_SCALE),
+        0,
+        "no cooldown stays none"
+    );
+    assert_eq!(cooldown_after(100, ModifierSpec::MIN_SCALE), 25);
+    assert_eq!(
+        cost_after(1, ModifierSpec::MIN_SCALE),
+        0,
+        "a cost may reach nothing"
+    );
+    assert_eq!(cost_after(100, 0), 0, "a zero rate is nothing");
 }
