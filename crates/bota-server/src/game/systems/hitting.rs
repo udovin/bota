@@ -76,7 +76,10 @@ pub struct HitCx<'a> {
 /// A blow at something already down, or at something damage passes by, is
 /// given up unfelt. Every blow leaves the queue either way: none survives the
 /// tick that resolves it.
-pub fn hitting_system(cx: HitCx<'_>) {
+///
+/// The source's damage amplification is compiled out when no unit in the
+/// world carries any cheat-granted change.
+pub fn hitting_system<const AMPLIFIED: bool>(cx: HitCx<'_>) {
     let HitCx {
         hits,
         landed,
@@ -115,6 +118,15 @@ pub fn hitting_system(cx: HitCx<'_>) {
             continue;
         }
         let amount = amplified_damage(blow, on_it);
+        let amount = if AMPLIFIED {
+            amplify(
+                amount,
+                blow.kind,
+                blow.source.and_then(|from| stats.get(from)),
+            )
+        } else {
+            amount
+        };
         let taken = mitigate(amount, blow.kind, stat.armor, stat.magic_resist_pct);
         let Some(pool) = health.get_mut(blow.target) else {
             continue;
@@ -172,6 +184,23 @@ fn amplified_damage(blow: Hit, on_it: Option<&Modifiers>) -> i32 {
     let caster = blow.source.expect("a Shadowraze hit has a caster");
     let stacks = on_it.map_or(0, |on_it| on_it.raze_stacks(caster));
     blow.amount + i32::from(stacks) * rules::RAZE_STACK_DAMAGE[usize::from(level)]
+}
+
+/// Damage after the dealing unit's amplification of its kind.
+fn amplify(amount: i32, kind: DamageKind, source: Option<&Stats>) -> i32 {
+    let Some(source) = source else {
+        return amount;
+    };
+    let bp = match kind {
+        DamageKind::Physical => source.physical_amp_bp,
+        DamageKind::Magical => source.magic_amp_bp,
+        DamageKind::Pure => source.pure_amp_bp,
+    };
+    if bp == rules::NOMINAL_BP {
+        return amount;
+    }
+    (i64::from(amount) * i64::from(bp) / i64::from(rules::NOMINAL_BP))
+        .clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
 }
 
 /// Applies a damaging hit's modifier to a surviving target.

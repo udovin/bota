@@ -25,6 +25,88 @@ pub enum Target {
     Unit(EntityId),
 }
 
+/// The longest a cheat-granted modifier may be put on for, in ticks.
+pub const MAX_MODIFIER_TICKS: u32 = 1_000_000;
+
+/// What a scale is worth at nominal, in basis points.
+const NOMINAL_RATE: i32 = 10_000;
+
+/// Bounded stat changes a cheat may put on one unit.
+///
+/// Rates and amplifications are in basis points of the nominal 10_000, so
+/// 100 is one percent and a value below nominal shortens or cheapens.
+/// Resistances are additive hundredths of a percentage point. Every field
+/// at its neutral value changes nothing.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ModifierSpec {
+    /// Magic resistance added, in hundredths of a percentage point.
+    pub magic_resist: i32,
+    /// Share taken off the duration of stuns, fears and slows, in basis
+    /// points: 1_000 makes a five-tick stun four ticks long.
+    pub status_resist: i32,
+    /// Scale on physical damage dealt before mitigation, 10_000 nominal.
+    pub physical_damage: i32,
+    /// Scale on magical damage dealt before mitigation, 10_000 nominal.
+    pub magic_damage: i32,
+    /// Scale on pure damage dealt before mitigation, 10_000 nominal.
+    pub pure_damage: i32,
+    /// Scale on every cooldown set on the unit, 10_000 nominal.
+    pub cooldown_rate: i32,
+    /// Scale on every mana cost the unit pays, 10_000 nominal.
+    pub mana_cost_rate: i32,
+}
+
+impl ModifierSpec {
+    /// Every field neutral: no stat changes at all.
+    pub const NOMINAL: Self = Self {
+        magic_resist: 0,
+        status_resist: 0,
+        physical_damage: NOMINAL_RATE,
+        magic_damage: NOMINAL_RATE,
+        pure_damage: NOMINAL_RATE,
+        cooldown_rate: NOMINAL_RATE,
+        mana_cost_rate: NOMINAL_RATE,
+    };
+
+    /// The widest magic resistance delta accepted, either way.
+    pub const MAX_RESIST: i32 = 10_000;
+    /// The most status resistance accepted.
+    pub const MAX_STATUS_RESIST: i32 = 9_000;
+    /// The lowest scale accepted for damage, cooldown and mana rates.
+    pub const MIN_SCALE: i32 = 2_500;
+    /// The highest scale accepted for damage, cooldown and mana rates.
+    pub const MAX_SCALE: i32 = 40_000;
+
+    /// Whether every field lies within the accepted bounds.
+    pub const fn is_bounded(&self) -> bool {
+        self.magic_resist >= -Self::MAX_RESIST
+            && self.magic_resist <= Self::MAX_RESIST
+            && self.status_resist >= 0
+            && self.status_resist <= Self::MAX_STATUS_RESIST
+            && bounded_scale(self.physical_damage)
+            && bounded_scale(self.magic_damage)
+            && bounded_scale(self.pure_damage)
+            && bounded_scale(self.cooldown_rate)
+            && bounded_scale(self.mana_cost_rate)
+    }
+
+    /// Whether every field is neutral.
+    pub const fn is_nominal(&self) -> bool {
+        self.magic_resist == 0
+            && self.status_resist == 0
+            && self.physical_damage == NOMINAL_RATE
+            && self.magic_damage == NOMINAL_RATE
+            && self.pure_damage == NOMINAL_RATE
+            && self.cooldown_rate == NOMINAL_RATE
+            && self.mana_cost_rate == NOMINAL_RATE
+    }
+}
+
+/// Whether one scale field lies within the accepted bounds.
+const fn bounded_scale(value: i32) -> bool {
+    value >= ModifierSpec::MIN_SCALE && value <= ModifierSpec::MAX_SCALE
+}
+
 /// A shortcut round the rules, honoured only in a match started with
 /// cheats on. Anywhere else it is rejected with
 /// [`RejectReason::NoCheats`](crate::RejectReason::NoCheats).
@@ -48,6 +130,23 @@ pub enum Cheat {
     Item {
         /// Which item.
         item: ItemId,
+    },
+    /// A stat change put on one unit for a time, replacing whatever this
+    /// cheat put there before.
+    ApplyModifier {
+        /// Which unit it lands on. Nothing means the hero the order is for.
+        target: Target,
+        /// What it changes. Outside its bounds it is rejected with
+        /// [`RejectReason::BadCheat`](crate::RejectReason::BadCheat).
+        spec: ModifierSpec,
+        /// Ticks it runs, `1..=MAX_MODIFIER_TICKS`.
+        ticks: u32,
+    },
+    /// Takes the stat change this cheat put on one unit away.
+    ClearModifiers {
+        /// Which unit it is taken off. Nothing means the hero the order is
+        /// for.
+        target: Target,
     },
 }
 

@@ -171,6 +171,11 @@ impl World {
                     fnv.u32(held.ticks_left.unwrap_or(0));
                 }
             }
+            if let Some(applied) = self.applied.get(entity) {
+                fnv.u8(1);
+                hash_modifier_spec(&mut fnv, applied.spec);
+                fnv.u32(applied.ticks_left);
+            }
             if let Some(bag) = self.inventory.get(entity) {
                 hash_bag(&mut fnv, bag);
             }
@@ -398,6 +403,17 @@ fn hash_modifier_kind(fnv: &mut Fnv, kind: ModifierKind) {
         }
         ModifierKind::Feared => fnv.u8(15),
     }
+}
+
+/// A cheat-granted stat change, field by field in declaration order.
+fn hash_modifier_spec(fnv: &mut Fnv, spec: bota_proto::ModifierSpec) {
+    fnv.i32(spec.magic_resist);
+    fnv.i32(spec.status_resist);
+    fnv.i32(spec.physical_damage);
+    fnv.i32(spec.magic_damage);
+    fnv.i32(spec.pure_damage);
+    fnv.i32(spec.cooldown_rate);
+    fnv.i32(spec.mana_cost_rate);
 }
 
 /// Every slot of a bag, empty ones counted so slots keep their numbers.

@@ -4,8 +4,8 @@ use bota_proto::{Attributes, Fixed};
 
 use crate::game::rules;
 use crate::game::{
-    AbilityBook, Def, EntityAllocator, Growth, Health, Inventory, Level, Mana, ModifierKind,
-    Modifiers, Ratio, StackKind, Stacks, Stats, Table, UnitDef, Upgrades,
+    AbilityBook, AppliedModifier, Def, EntityAllocator, Growth, Health, Inventory, Level, Mana,
+    ModifierKind, Modifiers, Ratio, StackKind, Stacks, Stats, Table, UnitDef, Upgrades,
 };
 
 /// What working out stats reads and writes.
@@ -28,6 +28,8 @@ pub struct StatsCx<'a> {
     pub inventory: &'a Table<Inventory>,
     /// What is on each entity.
     pub modifiers: &'a Table<Modifiers>,
+    /// Cheat-granted stat changes on each entity.
+    pub applied: &'a Table<AppliedModifier>,
     /// What each entity has learned, for what its passives are worth.
     pub abilities: &'a Table<AbilityBook>,
     /// What each entity has kept of the deaths around it.
@@ -48,6 +50,16 @@ pub struct StatsCx<'a> {
 /// move alone. An entity with no stats behind it yet has just been stood up,
 /// and stands up full.
 pub fn derive_stats(cx: StatsCx<'_>) {
+    if cx.applied.is_empty() {
+        derive_stats_impl::<false>(cx);
+    } else {
+        derive_stats_impl::<true>(cx);
+    }
+}
+
+/// The body of [`derive_stats`], with cheat-granted changes compiled out when
+/// no unit carries any.
+fn derive_stats_impl<const APPLIED: bool>(cx: StatsCx<'_>) {
     let StatsCx {
         entities,
         def,
@@ -55,6 +67,7 @@ pub fn derive_stats(cx: StatsCx<'_>) {
         upgrades,
         inventory,
         modifiers,
+        applied,
         abilities,
         stacks,
         stats,
@@ -108,6 +121,16 @@ pub fn derive_stats(cx: StatsCx<'_>) {
                 * (100 - rules::FLESH_HEAP_MAGIC_RESIST_PCT[level])
                 / 100;
             now.magic_resist_pct = 100 - kept_through;
+        }
+        if APPLIED && let Some(on_it) = applied.get(entity) {
+            let spec = on_it.spec;
+            now.magic_resist_pct = (now.magic_resist_pct + spec.magic_resist / 100).clamp(0, 100);
+            now.status_resist_bp += spec.status_resist;
+            now.physical_amp_bp += spec.physical_damage - rules::NOMINAL_BP;
+            now.magic_amp_bp += spec.magic_damage - rules::NOMINAL_BP;
+            now.pure_amp_bp += spec.pure_damage - rules::NOMINAL_BP;
+            now.cooldown_rate_bp += spec.cooldown_rate - rules::NOMINAL_BP;
+            now.mana_cost_rate_bp += spec.mana_cost_rate - rules::NOMINAL_BP;
         }
         from_attributes(&mut now);
         // A share of the base pace and of what agility adds, and of nothing
@@ -239,6 +262,12 @@ fn raised(kind: &UnitDef, levels: i32, steps: i32) -> Stats {
         projectile_speed: kind.projectile_speed.map(Fixed::from_int),
         armor: Fixed::from_ratio(kind.armor * 2 + up.armor_halves, 2),
         magic_resist_pct: kind.magic_resist_pct,
+        status_resist_bp: 0,
+        physical_amp_bp: rules::NOMINAL_BP,
+        magic_amp_bp: rules::NOMINAL_BP,
+        pure_amp_bp: rules::NOMINAL_BP,
+        cooldown_rate_bp: rules::NOMINAL_BP,
+        mana_cost_rate_bp: rules::NOMINAL_BP,
         evasion: Ratio::NEVER,
         pierce: Ratio::NEVER,
         pierce_damage: 0,

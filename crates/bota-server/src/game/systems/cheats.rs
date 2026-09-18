@@ -1,9 +1,9 @@
 //! Shortcuts round the rules, for trying things out in a match that allows
 //! them.
 
-use bota_proto::{Cheat, EventKind, ItemId, SlotId};
+use bota_proto::{Cheat, EventKind, ItemId, MAX_MODIFIER_TICKS, SlotId};
 
-use crate::game::{Entity, Event, EventVisibility, ItemStack, World, rules};
+use crate::game::{AppliedModifier, Entity, Event, EventVisibility, ItemStack, World, rules};
 
 impl World {
     /// Carries out a cheat for a seat and the hero it drives.
@@ -19,6 +19,31 @@ impl World {
             Cheat::Levels { count } => self.raise_levels(seat, count, events),
             Cheat::Refresh => self.refresh(seat, unit),
             Cheat::Item { item } => self.hand_out(seat, item, events),
+            Cheat::ApplyModifier {
+                target,
+                spec,
+                ticks,
+            } => {
+                // The order gate rejects unbounded payloads; a caller that
+                // came another way is turned away rather than trusted.
+                if !spec.is_bounded() || ticks == 0 || ticks > MAX_MODIFIER_TICKS {
+                    return;
+                }
+                if let Ok(mark) = self.cheat_target(unit, target) {
+                    self.applied.insert(
+                        mark,
+                        AppliedModifier {
+                            spec,
+                            ticks_left: ticks,
+                        },
+                    );
+                }
+            }
+            Cheat::ClearModifiers { target } => {
+                if let Ok(mark) = self.cheat_target(unit, target) {
+                    self.applied.remove(mark);
+                }
+            }
         }
     }
 

@@ -1,11 +1,14 @@
 //! Cheats: what each one does, and that a match without them refuses them.
 
 use bota_proto::{
-    Cheat, EventKind, Fixed, HeroId, ItemId, MapId, Order, Pick, RejectReason, SlotId, Team,
-    TickMode,
+    AbilitySlot, Cheat, DamageKind, EventKind, Fixed, HeroId, ItemId, MapId, ModifierSpec, Order,
+    Pick, RejectReason, SlotId, Target, Team, TickMode, Vec2,
 };
 
-use crate::game::{Command, Entity, Event, ITEM_BUTTERFLY, ItemStack, MatchConfig, World, rules};
+use crate::game::{
+    Command, Entity, Event, ITEM_BUTTERFLY, ItemStack, MatchConfig, World, ability,
+    ability_mana_cost, rules, wire_id,
+};
 
 /// A one-seat match on the demo map, with or without cheats.
 fn config(cheats: bool) -> MatchConfig {
@@ -149,4 +152,309 @@ fn a_match_without_cheats_refuses_them_and_one_with_them_takes_them() {
     );
     let (world, _hero) = cheating_world();
     assert_eq!(world.validate_order(SlotId(0), None, &order), Ok(()));
+}
+
+/// A spec with a non-neutral value in every field, inside the bounds.
+fn a_spec() -> ModifierSpec {
+    ModifierSpec {
+        magic_resist: 1_000,
+        status_resist: 2_000,
+        physical_damage: 11_000,
+        magic_damage: 12_000,
+        pure_damage: 13_000,
+        cooldown_rate: 9_000,
+        mana_cost_rate: 8_000,
+    }
+}
+
+/// A modifier order aimed at the seat's own hero.
+fn modifier_order(spec: ModifierSpec, ticks: u32) -> Order {
+    Order::Cheat {
+        cheat: Cheat::ApplyModifier {
+            target: Target::None,
+            spec,
+            ticks,
+        },
+    }
+}
+
+/// Hands one order to the seat and runs the tick it lands in.
+fn hand(world: &mut World, order: Order) -> Vec<Event> {
+    world.advance(&[Command {
+        slot: SlotId(0),
+        unit: None,
+        order,
+    }])
+}
+
+#[test]
+fn a_modifier_cheat_is_refused_without_cheats_and_taken_with_them() {
+    let order = modifier_order(a_spec(), 10);
+    let cfg = config(false);
+    let world = World::for_match(&cfg, cfg.rng());
+    assert_eq!(
+        world.validate_order(SlotId(0), None, &order),
+        Err(RejectReason::NoCheats)
+    );
+    let (world, _hero) = cheating_world();
+    assert_eq!(world.validate_order(SlotId(0), None, &order), Ok(()));
+}
+
+#[test]
+fn a_modifier_cheat_lands_on_the_named_unit_alone() {
+    let (mut world, hero) = cheating_world();
+    let creep = world.spawn_unit(
+        &crate::game::MELEE_CREEP,
+        Team::Dire,
+        Vec2::from_ints(7000, 7000),
+    );
+    world.settle();
+    let order = Order::Cheat {
+        cheat: Cheat::ApplyModifier {
+            target: Target::Unit(wire_id(creep)),
+            spec: a_spec(),
+            ticks: 10,
+        },
+    };
+    assert_eq!(world.validate_order(SlotId(0), None, &order), Ok(()));
+    hand(&mut world, order);
+    assert_eq!(
+        world.applied.get(creep).map(|applied| applied.spec),
+        Some(a_spec())
+    );
+    assert!(!world.applied.contains(hero), "and nowhere else");
+}
+
+#[test]
+fn an_out_of_bounds_spec_is_refused_as_a_bad_cheat() {
+    let (world, _hero) = cheating_world();
+    let mut specs = Vec::new();
+    let mut magic = a_spec();
+    magic.magic_resist = ModifierSpec::MAX_RESIST + 1;
+    specs.push(magic);
+    let mut status_low = a_spec();
+    status_low.status_resist = -1;
+    specs.push(status_low);
+    let mut status_high = a_spec();
+    status_high.status_resist = ModifierSpec::MAX_STATUS_RESIST + 1;
+    specs.push(status_high);
+    let mut physical = a_spec();
+    physical.physical_damage = ModifierSpec::MIN_SCALE - 1;
+    specs.push(physical);
+    let mut magical = a_spec();
+    magical.magic_damage = ModifierSpec::MAX_SCALE + 1;
+    specs.push(magical);
+    let mut pure = a_spec();
+    pure.pure_damage = 0;
+    specs.push(pure);
+    let mut cooldown = a_spec();
+    cooldown.cooldown_rate = ModifierSpec::MIN_SCALE - 1;
+    specs.push(cooldown);
+    let mut mana = a_spec();
+    mana.mana_cost_rate = ModifierSpec::MAX_SCALE + 1;
+    specs.push(mana);
+    for spec in specs {
+        assert_eq!(
+            world.validate_order(SlotId(0), None, &modifier_order(spec, 10)),
+            Err(RejectReason::BadCheat),
+            "{spec:?}"
+        );
+    }
+}
+
+#[test]
+fn a_modifier_duration_outside_its_bounds_is_refused_as_a_bad_cheat() {
+    let (world, _hero) = cheating_world();
+    for ticks in [0, bota_proto::MAX_MODIFIER_TICKS + 1] {
+        assert_eq!(
+            world.validate_order(SlotId(0), None, &modifier_order(a_spec(), ticks)),
+            Err(RejectReason::BadCheat),
+            "{ticks} ticks"
+        );
+    }
+    assert_eq!(
+        world.validate_order(
+            SlotId(0),
+            None,
+            &modifier_order(a_spec(), bota_proto::MAX_MODIFIER_TICKS)
+        ),
+        Ok(())
+    );
+}
+
+#[test]
+fn a_modifier_cheat_aimed_at_the_ground_is_the_wrong_target_kind() {
+    let (world, _hero) = cheating_world();
+    let order = Order::Cheat {
+        cheat: Cheat::ApplyModifier {
+            target: Target::Pos(Vec2::from_ints(100, 100)),
+            spec: a_spec(),
+            ticks: 10,
+        },
+    };
+    assert_eq!(
+        world.validate_order(SlotId(0), None, &order),
+        Err(RejectReason::WrongTargetKind)
+    );
+}
+
+#[test]
+fn a_modifier_cheat_aimed_at_nobody_is_an_unknown_target() {
+    let (world, _hero) = cheating_world();
+    let order = Order::Cheat {
+        cheat: Cheat::ApplyModifier {
+            target: Target::Unit(bota_proto::EntityId {
+                idx: 999,
+                generation: 3,
+            }),
+            spec: a_spec(),
+            ticks: 10,
+        },
+    };
+    assert_eq!(
+        world.validate_order(SlotId(0), None, &order),
+        Err(RejectReason::UnknownTarget)
+    );
+}
+
+#[test]
+fn a_modifier_cheat_runs_for_its_ticks_and_then_lifts() {
+    let (mut world, hero) = cheating_world();
+    cheat(
+        &mut world,
+        Cheat::ApplyModifier {
+            target: Target::None,
+            spec: a_spec(),
+            ticks: 2,
+        },
+    );
+    assert_eq!(
+        world.applied.get(hero).map(|applied| applied.ticks_left),
+        Some(1),
+        "the tick that applied it is one of its own"
+    );
+    world.step();
+    assert!(!world.applied.contains(hero), "two ticks only");
+}
+
+#[test]
+fn a_clear_cheat_takes_the_modifier_off_and_is_harmless_without_one() {
+    let (mut world, hero) = cheating_world();
+    cheat(
+        &mut world,
+        Cheat::ApplyModifier {
+            target: Target::None,
+            spec: a_spec(),
+            ticks: 100,
+        },
+    );
+    assert!(world.applied.contains(hero));
+    cheat(
+        &mut world,
+        Cheat::ClearModifiers {
+            target: Target::None,
+        },
+    );
+    assert!(!world.applied.contains(hero));
+    cheat(
+        &mut world,
+        Cheat::ClearModifiers {
+            target: Target::None,
+        },
+    );
+    assert!(!world.applied.contains(hero));
+}
+
+#[test]
+fn a_fallen_hero_takes_its_modifier_with_it_and_respawns_clean() {
+    let (mut world, hero) = cheating_world();
+    cheat(
+        &mut world,
+        Cheat::ApplyModifier {
+            target: Target::None,
+            spec: a_spec(),
+            ticks: 100_000,
+        },
+    );
+    assert!(world.applied.contains(hero));
+    world.push_hit(None, hero, 100_000, DamageKind::Pure);
+    world.step();
+    assert!(!world.alive(hero), "the blow was fatal");
+    assert!(!world.applied.contains(hero), "the body took it with it");
+    let wait = world.seats[0].respawn_left;
+    assert!(wait > 0);
+    for _ in 0..=wait {
+        world.step();
+    }
+    let reborn = world.seats[0].unit.expect("the hero comes back");
+    assert!(!world.applied.contains(reborn), "and starts clean");
+}
+
+#[test]
+fn a_scaled_mana_cost_is_what_the_cast_checks_and_spends() {
+    let (mut world, hero) = cheating_world();
+    if let Some(book) = world.abilities.get_mut(hero) {
+        book.slots[1].level = 1;
+    }
+    let full = ability_mana_cost(ability::FRENZY, 1);
+    let mut spec = ModifierSpec::NOMINAL;
+    spec.mana_cost_rate = 5_000;
+    cheat(
+        &mut world,
+        Cheat::ApplyModifier {
+            target: Target::None,
+            spec,
+            ticks: 100,
+        },
+    );
+    let cast = Order::Cast {
+        slot: AbilitySlot(1),
+        target: Target::None,
+    };
+    world.mana.get_mut(hero).expect("has mana").mana = Fixed::from_int(full / 2);
+    assert_eq!(
+        world.validate_order(SlotId(0), None, &cast),
+        Ok(()),
+        "the scaled cost is affordable"
+    );
+    assert!(world.begin_ability(hero, AbilitySlot(1), Target::None));
+    assert_eq!(
+        world.mana.get(hero).map(|mana| mana.mana),
+        Some(Fixed::ZERO),
+        "and it was the scaled cost that went"
+    );
+    if let Some(book) = world.abilities.get_mut(hero) {
+        book.slots[1].cooldown = 0;
+    }
+    world.mana.get_mut(hero).expect("has mana").mana = Fixed::from_int(full / 2 - 1);
+    assert_eq!(
+        world.validate_order(SlotId(0), None, &cast),
+        Err(RejectReason::NotEnoughMana),
+        "a hair short of it is not"
+    );
+}
+
+#[test]
+fn two_runs_with_the_same_cheat_modifier_hash_the_same() {
+    let run = |modifier: bool| {
+        let cfg = config(true);
+        let mut world = World::for_match(&cfg, cfg.rng());
+        if modifier {
+            cheat(
+                &mut world,
+                Cheat::ApplyModifier {
+                    target: Target::None,
+                    spec: a_spec(),
+                    ticks: 100_000,
+                },
+            );
+        }
+        for _ in 0..300 {
+            world.step();
+        }
+        world.hash()
+    };
+    assert_eq!(run(true), run(true), "the same cheats, the same world");
+    assert_eq!(run(false), run(false), "and none, and none");
+    assert_ne!(run(true), run(false), "a modifier is part of the world");
 }

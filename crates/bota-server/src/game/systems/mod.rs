@@ -1,4 +1,5 @@
 mod actions;
+mod applied;
 mod aura;
 mod cast;
 mod cheats;
@@ -28,6 +29,7 @@ mod walk;
 mod ward;
 mod wave;
 
+pub use applied::*;
 pub use aura::*;
 pub use gear::*;
 pub use hitting::*;
@@ -40,6 +42,8 @@ pub use visibility::*;
 
 #[cfg(test)]
 mod actions_tests;
+#[cfg(test)]
+mod applied_tests;
 #[cfg(test)]
 mod cast_tests;
 #[cfg(test)]

@@ -58,6 +58,24 @@ pub struct Stats {
     pub armor: Fixed,
     /// Magic resistance, percent.
     pub magic_resist_pct: i32,
+    /// Share taken off the durations of stuns, fears and slows, in basis
+    /// points where 10_000 is everything and zero is nothing.
+    pub status_resist_bp: i32,
+    /// Scale on physical damage it deals, in basis points where 10_000 is
+    /// nominal.
+    pub physical_amp_bp: i32,
+    /// Scale on magical damage it deals, in basis points where 10_000 is
+    /// nominal.
+    pub magic_amp_bp: i32,
+    /// Scale on pure damage it deals, in basis points where 10_000 is
+    /// nominal.
+    pub pure_amp_bp: i32,
+    /// Scale on every cooldown set on it, in basis points where 10_000 is
+    /// nominal.
+    pub cooldown_rate_bp: i32,
+    /// Scale on every mana cost it pays, in basis points where 10_000 is
+    /// nominal.
+    pub mana_cost_rate_bp: i32,
     /// Share of attacks at it that miss.
     pub evasion: Ratio,
     /// Share of its attacks that pierce: go through evasion and an uphill

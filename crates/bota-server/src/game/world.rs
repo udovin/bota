@@ -5,12 +5,12 @@ use std::collections::VecDeque;
 use bota_proto::{HeroId, SlotId, Team, UnitKind};
 
 use crate::game::{
-    AbilityBook, Action, AuraCx, Auras, Bounty, CampHome, Def, Entity, EntityAllocator, Errand,
-    Expiry, Forest, Handling, Health, Hit, Hook, Hull, Inventory, Landed, Lane, LaneAi, Level,
-    Loot, Mana, March, Mark, Missed, Modifier, Modifiers, Motion, NeutralAi, Orders, Place, Plan,
-    Projectile, Rax, RequiemLine, Route, Seat, SightCx, SightScratch, Stacks, Stats, StatsCx,
-    Table, Target, Tier, Transform, UnitOrder, Upgrades, Visibility, aura_system, derive_stats,
-    hitting_system, missile_system, regenerate, visibility_system,
+    AbilityBook, Action, AppliedModifier, AuraCx, Auras, Bounty, CampHome, Def, Entity,
+    EntityAllocator, Errand, Expiry, Forest, Handling, Health, Hit, Hook, Hull, Inventory, Landed,
+    Lane, LaneAi, Level, Loot, Mana, March, Mark, Missed, Modifier, Modifiers, Motion, NeutralAi,
+    Orders, Place, Plan, Projectile, Rax, RequiemLine, Route, Seat, SightCx, SightScratch, Stacks,
+    Stats, StatsCx, Table, Target, Tier, Transform, UnitOrder, Upgrades, Visibility, aura_system,
+    derive_stats, hitting_system, missile_system, regenerate, visibility_system,
 };
 use crate::game::{HitCx, MissileCx};
 
@@ -104,6 +104,9 @@ pub struct World {
     pub stats: Table<Stats>,
     /// What is on each entity.
     pub modifiers: Table<Modifiers>,
+    /// Cheat-granted stat changes on each entity, apart from what abilities,
+    /// items and dispels may touch.
+    pub applied: Table<AppliedModifier>,
     /// The hook each entity that is one is flying.
     pub hook: Table<Hook>,
     /// What each entity that is an ability's mark shows.
@@ -224,6 +227,7 @@ impl World {
             tier: Table::new(),
             stats: Table::new(),
             modifiers: Table::new(),
+            applied: Table::new(),
             hook: Table::new(),
             mark: Table::new(),
             requiem_line: Table::new(),
@@ -355,11 +359,13 @@ impl World {
     /// Takes an entity out of the world. False when the handle named nobody
     /// live.
     ///
-    /// What sides could see of it is given up here. What it held besides stays
-    /// where it is; the slot's next tenant carries a raised generation, so none
-    /// of it reads back as that tenant's own.
+    /// What sides could see of it is given up here, and so is any
+    /// cheat-granted stat change. What it held besides stays where it is; the
+    /// slot's next tenant carries a raised generation, so none of it reads
+    /// back as that tenant's own.
     pub fn despawn(&mut self, entity: Entity) -> bool {
         self.visibility.remove(entity);
+        self.applied.remove(entity);
         self.entities.free(entity)
     }
 
@@ -530,6 +536,7 @@ impl World {
             upgrades: &self.upgrades,
             inventory: &self.inventory,
             modifiers: &self.modifiers,
+            applied: &self.applied,
             abilities: &self.abilities,
             stacks: &self.stacks,
             stats: &mut self.stats,
@@ -590,6 +597,7 @@ impl World {
             upgrades: &self.upgrades,
             inventory: &self.inventory,
             modifiers: &self.modifiers,
+            applied: &self.applied,
             abilities: &self.abilities,
             stacks: &self.stacks,
             stats: &mut self.stats,
@@ -598,6 +606,7 @@ impl World {
         });
         self.guard_structures();
         self.step_combat(&mut events);
+        self.tick_applied();
         events
     }
 
@@ -647,7 +656,7 @@ impl World {
     }
 
     fn step_damage(&mut self, events: &mut Vec<crate::game::Event>) {
-        hitting_system(HitCx {
+        let cx = HitCx {
             hits: &mut self.hits,
             landed: &mut self.landed,
             transform: &self.transform,
@@ -658,7 +667,12 @@ impl World {
             rng: &self.rng,
             evasion: &mut self.evasion,
             missed: &mut self.missed,
-        });
+        };
+        if self.applied.is_empty() {
+            hitting_system::<false>(cx);
+        } else {
+            hitting_system::<true>(cx);
+        }
         let felt: Vec<Landed> = self.landed.drain(..).collect();
         self.break_on_blows(&felt);
         self.rouse_camps(&felt);

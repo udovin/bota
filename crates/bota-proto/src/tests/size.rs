@@ -49,14 +49,61 @@ fn a_1v1_snapshot_fits_in_a_tcp_burst() {
 #[test]
 fn an_order_stays_small() {
     for order in all_orders() {
+        // Cheats may carry a whole modifier spec; ordinary orders may not
+        // grow into that room.
+        let budget = if matches!(order, Order::Cheat { .. }) {
+            64
+        } else {
+            32
+        };
         let msg = ClientMsg::Order {
             seq: 12345,
             unit: None,
             order,
         };
         let len = encoded_len(&msg);
-        assert!(len <= 32, "order encoded to {len} bytes: {msg:?}");
+        assert!(len <= budget, "order encoded to {len} bytes: {msg:?}");
     }
+}
+
+#[test]
+fn a_modifier_cheat_encodes_canonically() {
+    // Postcard: order tag 10, cheat tag 4, target tag 2, entity idx and
+    // generation varints, seven zigzag varints, then the tick count. The
+    // bytes are pinned so a field change cannot pass unnoticed.
+    let order = Order::Cheat {
+        cheat: Cheat::ApplyModifier {
+            target: Target::Unit(entity(7)),
+            spec: ModifierSpec {
+                magic_resist: 1_000,
+                status_resist: 2_000,
+                physical_damage: 11_000,
+                magic_damage: 12_000,
+                pure_damage: 13_000,
+                cooldown_rate: 9_000,
+                mana_cost_rate: 8_000,
+            },
+            ticks: 900,
+        },
+    };
+    let bytes = encode_frame_to_vec(&order).expect("encode");
+    assert_eq!(
+        bytes,
+        vec![
+            25, 0, 0, 0,  // frame length
+            10, // Order::Cheat
+            4,  // Cheat::ApplyModifier
+            2, 7, 1, // Target::Unit(entity(7))
+            0xD0, 0x0F, // magic_resist 1_000 zigzag
+            0xA0, 0x1F, // status_resist 2_000 zigzag
+            0xF0, 0xAB, 0x01, // physical_damage 11_000 zigzag
+            0xC0, 0xBB, 0x01, // magic_damage 12_000 zigzag
+            0x90, 0xCB, 0x01, // pure_damage 13_000 zigzag
+            0xD0, 0x8C, 0x01, // cooldown_rate 9_000 zigzag
+            0x80, 0x7D, // mana_cost_rate 8_000 zigzag
+            0x84, 0x07, // ticks 900
+        ]
+    );
 }
 
 #[test]

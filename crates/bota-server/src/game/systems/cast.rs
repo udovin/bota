@@ -2,9 +2,7 @@
 
 use bota_proto::{AbilitySlot, DamageKind, EventKind, Fixed, Target, Team};
 
-use crate::game::{
-    Entity, Modifier, ModifierKind, Projectile, World, ability_cooldown, ability_mana_cost, wire_id,
-};
+use crate::game::{Entity, Modifier, ModifierKind, Projectile, World, wire_id};
 use crate::game::{Event, rules};
 
 impl World {
@@ -44,11 +42,11 @@ impl World {
         if def.passive || ability.level == 0 || ability.cooldown > 0 {
             return false;
         }
-        let cost = ability_mana_cost(ability.id, ability.level);
+        let cost = self.ability_mana_cost(entity, ability.id, ability.level);
         if self.mana.get(entity).map_or(0, |m| m.mana.to_int()) < cost {
             return false;
         }
-        let cooldown = ability_cooldown(ability.id, ability.level);
+        let cooldown = self.ability_cooldown(entity, ability.id, ability.level);
         if !(def.on_cast)(self, entity, target) {
             return false;
         }
