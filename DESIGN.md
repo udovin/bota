@@ -2515,16 +2515,15 @@ fifteen-minute cap including continuation through the old ten-minute boundary.
 ## Cheat-granted unit modifiers, and the general stats behind them
 
 A modifier is a bounded stat change that only a cheat can put on and only its
-countdown or the fall of the body can take away. Units carry theirs in
-`World::applied`, a table of `AppliedModifier` values apart from `Modifiers`, so
-no ability, item, dispel or ordinary expiry reaches it. A seat carries the copy
-that belongs to the seat rather than to the body (`Seat::applied`), so a gold
-income change outlives the hero it was aimed at. Neither copy shows in
-`MatchInfo` or `UnitView.effects`, and the hash includes one only when it is
-present, so an unmodified world hashes as it always did. A unit's copy is
-removed on `despawn`, so a respawned body starts clean and re-application is
-the cheat caller's business. The countdown runs at the end of the tick that
-applies it, so `ticks` counts the applying tick as the first.
+countdown or the fall of the body can take away. Every modifier has unit
+scope: it is carried in `World::applied`, a table of `AppliedModifier` values
+apart from `Modifiers`, so no ability, item, dispel or ordinary expiry reaches
+it. It does not show in `MatchInfo` or `UnitView.effects`, and the hash
+includes one only when it is present, so an unmodified world hashes as it
+always did. A unit's copy is removed on `despawn`, so a respawned body starts
+clean and re-application is the cheat caller's business. The countdown runs at
+the end of the tick that applies it, so `ticks` counts the applying tick as
+the first.
 
 **The payload is a bounded spec, not one cheat per stat.** `Cheat::ApplyModifier`
 carries a `ModifierSpec` of signed basis-point fields (10,000 nominal for
@@ -2546,15 +2545,20 @@ resistances add in their own units, scales add as deltas of the nominal 10,000
 so that sources never compound, and the fold happens once. The magnitudes
 (`move_speed`, `max_hp`, `max_mana`) are scaled from the raised base at that
 point; flat item bonuses, strength and intelligence, and the `Slowed` or
-`Hastened` multipliers all land on top and are not scaled again. The mechanics
-are real derived stats, neutral by default: `Stats` gains `status_resist_bp`,
+`Hastened` multipliers all land on top and are not scaled again. The pool
+share of a cheat-granted maximum is recorded separately (`applied_max_hp`,
+`applied_max_mana`), so it raises the maximum without moving the pool: a body
+keeps the health it had when the modifier lands, and a pool left above its
+maximum comes down to it when the modifier lifts. The mechanics are real
+derived stats, neutral by default: `Stats` gains `status_resist_bp`,
 `physical_amp_bp`, `magic_amp_bp`, `pure_amp_bp`, `cooldown_rate_bp` and
-`mana_cost_rate_bp`, while magic resistance was already a stat and the spec adds
-to it. The fold compiles out when the whole table is empty, so the default game
-pays nothing; hitting compiles its share out the same way, because the
+`mana_cost_rate_bp`, while magic resistance was already a stat and the spec
+adds to it. The fold compiles out when the whole table is empty, so the default
+game pays nothing; hitting compiles its share out the same way, because the
 amplification multiply runs only in a world where some applied change exists.
-Future items, auras or abilities can add to the same fields without touching any
-consumer.
+Future items, auras or abilities can add to the same fields without touching
+any consumer. Every unit kind walks the same derive, so one `max_hp` scale
+covers heroes, lane and neutral creeps, and buildings alike.
 
 **Each stat has one reading.** Magic resistance is added as a delta and clamped
 to `0..=100` percent before Flesh Heap multiplies it, so mitigation, projection
@@ -2572,15 +2576,11 @@ for a cooldown that was set at all. It never scales the decrement, so a cooldown
 keeps its stored value and every view of it stays exact. Mana cost rate scales
 every read of a cost: the order gate, the cast and use that charge it,
 `AbilityView.mana_cost` and `ItemView.mana_cost`, so an action the view calls
-affordable is accepted and charged the same amount. Gold income is
-seat-scoped: `passive_gold` stretches or shortens the payout period by the
-scale in whole ticks, which spreads the rate without a per-payout rounding
-bias, and `pay_for` scales a bounty as it is paid. What was held at the start,
-what is refunded on a sale and what a death takes away are not income and are
-left alone. A stat change applied mid-tick is seen by everything derived or
-read after it; a disable put on before the first derive in that tick (a hook
-stun beside the application) is the one boundary that still reads the previous
-tick's resistance.
-
-Still to come through the same mechanism: creep health and damage, and tower
-health.
+affordable is accepted and charged the same amount. Gold income scales the
+bounty a killing unit is paid: `pay_for` scales the composed bounty once as it
+is credited to the killer, so bringing down a creep, hero or building earns
+more. Passive gold, starting gold, sale refunds and death losses are not
+bounties and are left alone. A stat change applied mid-tick is seen by
+everything derived or read after it; a disable put on before the first derive
+in that tick (a hook stun beside the application) is the one boundary that
+still reads the previous tick's resistance.

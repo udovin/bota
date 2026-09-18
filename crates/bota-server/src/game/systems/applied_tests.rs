@@ -517,6 +517,147 @@ fn damage_amplification_multiplies_the_whole_damage_before_mitigation() {
 }
 
 #[test]
+fn a_creep_keeps_its_health_when_a_modifier_raises_its_maximum() {
+    let (mut world, _hero, creep) = arena();
+    let before = world.health.get(creep).expect("standing").hp;
+    apply(&mut world, creep, spec(|s| s.max_hp = 20_000), 10);
+    assert_eq!(
+        world.stats.get(creep).map(|stats| stats.max_hp.to_int()),
+        Some(rules::MELEE_CREEP_HP * 2)
+    );
+    assert_eq!(
+        world.health.get(creep).expect("standing").hp,
+        before,
+        "the pool does not follow the cheat-granted share"
+    );
+}
+
+#[test]
+fn a_creep_comes_down_to_its_maximum_when_the_modifier_lifts() {
+    let (mut world, _hero, creep) = arena();
+    let base = world.stats.get(creep).expect("settled").max_hp;
+    apply(&mut world, creep, spec(|s| s.max_hp = 20_000), 10);
+    world.health.get_mut(creep).expect("standing").hp = base + base - Fixed::ONE;
+    apply(&mut world, creep, ModifierSpec::NOMINAL, 10);
+    assert_eq!(
+        world.stats.get(creep).map(|stats| stats.max_hp),
+        Some(base),
+        "the maximum returns to what it was"
+    );
+    assert_eq!(
+        world.health.get(creep).map(|health| health.hp),
+        Some(base),
+        "a pool left above it comes down to it"
+    );
+}
+
+#[test]
+fn a_creep_spawned_with_a_modifier_is_raised_with_it() {
+    let mut world = World::new();
+    let creep = world.spawn_creep(&MELEE_CREEP, Team::Dire, Vec2::from_ints(1000, 1000), 0, 0);
+    world.applied.insert(
+        creep,
+        AppliedModifier {
+            spec: spec(|s| s.max_hp = 12_500),
+            ticks_left: 100,
+        },
+    );
+    world.settle();
+    let max = rules::MELEE_CREEP_HP * 12_500 / 10_000;
+    assert_eq!(
+        world.stats.get(creep).map(|stats| stats.max_hp.to_int()),
+        Some(max),
+        "the first derive already carries it"
+    );
+    assert_eq!(
+        world.health.get(creep).map(|health| health.hp.to_int()),
+        Some(max),
+        "it stands up full at its raised maximum"
+    );
+}
+
+#[test]
+fn a_tower_takes_the_same_maximum_health_modifier() {
+    let mut world = World::on_map(crate::game::map_of(bota_proto::MapId(0)));
+    let tower = world
+        .entities
+        .iter()
+        .find(|entity| world.kind.get(*entity) == Some(&UnitKind::Tower))
+        .expect("the map stands towers");
+    let base = world.stats.get(tower).expect("settled").max_hp;
+    let before = world.health.get(tower).expect("standing").hp;
+    apply(&mut world, tower, spec(|s| s.max_hp = 15_000), 10);
+    let expected = Fixed {
+        raw: (i64::from(base.raw) * 15_000 / 10_000) as i32,
+    };
+    assert_eq!(
+        world.stats.get(tower).map(|stats| stats.max_hp),
+        Some(expected)
+    );
+    assert_eq!(
+        world.health.get(tower).map(|health| health.hp),
+        Some(before),
+        "a tower keeps what it had"
+    );
+    let view = world.view_full();
+    assert_eq!(
+        view.units
+            .iter()
+            .find(|unit| unit.id == wire_id(tower))
+            .map(|unit| unit.max_hp),
+        Some(expected.to_int()),
+        "and the projection shows it"
+    );
+}
+
+#[test]
+fn a_tower_spawned_with_a_modifier_is_raised_with_it() {
+    let mut world = World::new();
+    let def = crate::game::tower_def(1);
+    let tower = world.spawn_building(
+        def,
+        Team::Radiant,
+        Vec2::from_ints(5000, 5000),
+        crate::game::Place::Tower { lane: 0, tier: 1 },
+    );
+    world.applied.insert(
+        tower,
+        AppliedModifier {
+            spec: spec(|s| s.max_hp = 15_000),
+            ticks_left: 100,
+        },
+    );
+    world.settle();
+    assert_eq!(
+        world.stats.get(tower).map(|stats| stats.max_hp.to_int()),
+        Some(def.max_hp * 15_000 / 10_000),
+        "the first derive already carries it"
+    );
+}
+
+#[test]
+fn an_amplified_creep_deals_more_damage() {
+    let blow = |modifier: ModifierSpec| {
+        let mut world = World::new();
+        let attacker = world.spawn_unit(&MELEE_CREEP, Team::Radiant, Vec2::from_ints(1000, 1000));
+        let target = world.spawn_unit(&MELEE_CREEP, Team::Dire, Vec2::from_ints(2000, 2000));
+        world.settle();
+        if !modifier.is_nominal() {
+            apply(&mut world, attacker, modifier, 10);
+        }
+        dealt(&mut world, attacker, target, 100, DamageKind::Physical)
+    };
+    let neutral = blow(ModifierSpec::NOMINAL);
+    let amplified = blow(spec(|s| s.physical_damage = 20_000));
+    assert!(neutral > 0);
+    assert_eq!(
+        amplified,
+        2 * neutral,
+        "the attacking creep's own modifier scales its blow"
+    );
+}
+
+#[test]
 fn rate_scales_floor_only_after_the_rate_is_applied() {
     assert_eq!(
         cooldown_after(1, ModifierSpec::MIN_SCALE),

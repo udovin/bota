@@ -47,8 +47,10 @@ pub struct StatsCx<'a> {
 ///
 /// A pool follows its maximum: when the maximum moves, the pool keeps its
 /// filled fraction, and a pool that held anything is never left empty by the
-/// move alone. An entity with no stats behind it yet has just been stood up,
-/// and stands up full.
+/// move alone. A cheat-granted share of a maximum is held apart: it raises
+/// the maximum without moving the pool, and a pool left above its maximum
+/// comes down to it. An entity with no stats behind it yet has just been
+/// stood up, and stands up full.
 pub fn derive_stats(cx: StatsCx<'_>) {
     if cx.applied.is_empty() {
         derive_stats_impl::<false>(cx);
@@ -190,13 +192,23 @@ fn derive_stats_impl<const APPLIED: bool>(cx: StatsCx<'_>) {
         let before = stats.get(entity).copied();
         if let Some(hp) = health.get_mut(entity) {
             hp.hp = match before {
-                Some(before) => follow(hp.hp, before.max_hp, now.max_hp),
+                Some(before) => follow(
+                    hp.hp,
+                    before.max_hp - before.applied_max_hp,
+                    now.max_hp - now.applied_max_hp,
+                )
+                .min(now.max_hp),
                 None => now.max_hp,
             };
         }
         if let Some(mp) = mana.get_mut(entity) {
             mp.mana = match before {
-                Some(before) => follow(mp.mana, before.max_mana, now.max_mana),
+                Some(before) => follow(
+                    mp.mana,
+                    before.max_mana - before.applied_max_mana,
+                    now.max_mana - now.applied_max_mana,
+                )
+                .min(now.max_mana),
                 None => now.max_mana,
             };
         }
@@ -218,8 +230,12 @@ fn apply_modifiers(now: &mut Stats, spec: ModifierSpec) {
     now.cooldown_rate_bp += spec.cooldown_rate - rules::NOMINAL_BP;
     now.mana_cost_rate_bp += spec.mana_cost_rate - rules::NOMINAL_BP;
     now.move_speed = scaled_bp(now.move_speed, spec.move_speed);
+    let raised_hp = now.max_hp;
     now.max_hp = scaled_bp(now.max_hp, spec.max_hp);
+    now.applied_max_hp += now.max_hp - raised_hp;
+    let raised_mana = now.max_mana;
     now.max_mana = scaled_bp(now.max_mana, spec.max_mana);
+    now.applied_max_mana += now.max_mana - raised_mana;
 }
 
 /// A value at a basis-point scale, where [`rules::NOMINAL_BP`] leaves it as
@@ -270,7 +286,9 @@ fn raised(kind: &UnitDef, levels: i32, steps: i32) -> Stats {
         attributes: kind.attributes + up.attributes,
         primary: kind.primary,
         max_hp: Fixed::from_int(kind.max_hp + up.hp),
+        applied_max_hp: Fixed::ZERO,
         max_mana: Fixed::from_int(kind.max_mana + up.mana),
+        applied_max_mana: Fixed::ZERO,
         hp_regen: kind.hp_regen,
         mana_regen: kind.mana_regen,
         damage: kind.damage + up.damage,

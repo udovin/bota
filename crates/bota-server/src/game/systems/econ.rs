@@ -8,20 +8,15 @@ use crate::game::{Event, EventVisibility, hero_spawn_pos, rules};
 impl World {
     /// Hands out the gold that arrives on its own: one a period, to every
     /// seat.
-    ///
-    /// A seat's period follows its income scale, which keeps the long-run
-    /// rate exact without keeping a rounding remainder.
     pub fn passive_gold(&mut self) {
-        if self.tick <= rules::PREGAME_TICKS {
+        if self.tick <= rules::PREGAME_TICKS
+            || !(self.tick - rules::PREGAME_TICKS).is_multiple_of(rules::PASSIVE_GOLD_PERIOD_TICKS)
+        {
             return;
         }
-        let elapsed = self.tick - rules::PREGAME_TICKS;
-        for index in 0..self.seats.len() {
-            if !elapsed.is_multiple_of(self.income_period(index)) {
-                continue;
-            }
-            self.seats[index].gold += 1;
-            self.seats[index].net_worth += 1;
+        for seat in self.seats.iter_mut() {
+            seat.gold += 1;
+            seat.net_worth += 1;
         }
     }
 
@@ -34,6 +29,9 @@ impl World {
     /// A hero's head is priced by its streak, which ends with it, and its
     /// death costs it gold by its level — whoever struck the blow, and never
     /// more than it holds.
+    ///
+    /// The killing unit's gold income modifier scales the bounty once, after
+    /// the bounty is composed and before it is credited.
     pub fn pay_for(
         &mut self,
         fallen: Entity,
@@ -77,7 +75,7 @@ impl World {
                 } else {
                     self.seats[index].last_hits += 1;
                 }
-                paid = self.income_after(index, bounty.gold);
+                paid = self.bounty_after(killer, bounty.gold);
                 self.seats[index].gold += paid;
                 self.seats[index].net_worth += paid;
             }

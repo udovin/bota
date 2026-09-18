@@ -1,7 +1,7 @@
 //! Shortcuts round the rules, for trying things out in a match that allows
 //! them.
 
-use bota_proto::{Cheat, EventKind, ItemId, MAX_MODIFIER_TICKS, ModifierSpec, SlotId};
+use bota_proto::{Cheat, EventKind, ItemId, MAX_MODIFIER_TICKS, SlotId};
 
 use crate::game::{AppliedModifier, Entity, Event, EventVisibility, ItemStack, World, rules};
 
@@ -37,40 +37,13 @@ impl World {
                             ticks_left: ticks,
                         },
                     );
-                    self.apply_to_seat(mark, spec, ticks);
                 }
             }
             Cheat::ClearModifiers { target } => {
                 if let Ok(mark) = self.cheat_target(unit, target) {
                     self.applied.remove(mark);
-                    self.clear_from_seat(mark);
                 }
             }
-        }
-    }
-
-    /// Puts the same spec on the seat that drives a unit, when a seat does,
-    /// for what belongs to the seat rather than to the body.
-    fn apply_to_seat(&mut self, unit: Entity, spec: ModifierSpec, ticks: u32) {
-        let Some(slot) = self.owner.get(unit).copied() else {
-            return;
-        };
-        if let Some(seat) = self.seats.iter_mut().find(|seat| seat.slot == slot) {
-            seat.applied = Some(AppliedModifier {
-                spec,
-                ticks_left: ticks,
-            });
-        }
-    }
-
-    /// Takes the seat's copy off the seat that drives a unit, when a seat
-    /// does.
-    fn clear_from_seat(&mut self, unit: Entity) {
-        let Some(slot) = self.owner.get(unit).copied() else {
-            return;
-        };
-        if let Some(seat) = self.seats.iter_mut().find(|seat| seat.slot == slot) {
-            seat.applied = None;
         }
     }
 

@@ -148,7 +148,9 @@ fn a_table_answers_for_the_handle_it_is_given_not_for_the_living() {
 fn stats() -> Stats {
     Stats {
         max_hp: Fixed::from_int(20),
+        applied_max_hp: Fixed::ZERO,
         max_mana: Fixed::from_int(20),
+        applied_max_mana: Fixed::ZERO,
         hp_regen: Fixed::ZERO,
         mana_regen: Fixed::ZERO,
         damage: 0,

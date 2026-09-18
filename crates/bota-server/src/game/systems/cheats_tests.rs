@@ -349,10 +349,8 @@ fn a_modifier_cheat_runs_for_its_ticks_and_then_lifts() {
         Some(1),
         "the tick that applied it is one of its own"
     );
-    assert!(world.seats[0].applied.is_some(), "the seat carries it too");
     world.step();
     assert!(!world.applied.contains(hero), "two ticks only");
-    assert!(world.seats[0].applied.is_none(), "on the seat as well");
 }
 
 #[test]
@@ -367,7 +365,6 @@ fn a_clear_cheat_takes_the_modifier_off_and_is_harmless_without_one() {
         },
     );
     assert!(world.applied.contains(hero));
-    assert!(world.seats[0].applied.is_some());
     cheat(
         &mut world,
         Cheat::ClearModifiers {
@@ -375,7 +372,6 @@ fn a_clear_cheat_takes_the_modifier_off_and_is_harmless_without_one() {
         },
     );
     assert!(!world.applied.contains(hero));
-    assert!(world.seats[0].applied.is_none(), "off the seat as well");
     cheat(
         &mut world,
         Cheat::ClearModifiers {
@@ -383,11 +379,10 @@ fn a_clear_cheat_takes_the_modifier_off_and_is_harmless_without_one() {
         },
     );
     assert!(!world.applied.contains(hero));
-    assert!(world.seats[0].applied.is_none());
 }
 
 #[test]
-fn a_fallen_hero_takes_its_unit_modifier_with_it_and_respawns_clean() {
+fn a_fallen_hero_takes_its_modifier_with_it_and_respawns_clean() {
     let (mut world, hero) = cheating_world();
     cheat(
         &mut world,
@@ -402,10 +397,6 @@ fn a_fallen_hero_takes_its_unit_modifier_with_it_and_respawns_clean() {
     world.step();
     assert!(!world.alive(hero), "the blow was fatal");
     assert!(!world.applied.contains(hero), "the body took it with it");
-    assert!(
-        world.seats[0].applied.is_some(),
-        "what belongs to the seat stays"
-    );
     let wait = world.seats[0].respawn_left;
     assert!(wait > 0);
     for _ in 0..=wait {
@@ -413,49 +404,29 @@ fn a_fallen_hero_takes_its_unit_modifier_with_it_and_respawns_clean() {
     }
     let reborn = world.seats[0].unit.expect("the hero comes back");
     assert!(!world.applied.contains(reborn), "and starts clean");
-    assert!(
-        world.seats[0].applied.is_some(),
-        "the seat still carries it"
-    );
+}
+
+/// A two-seat match, both seats holding cheats, so a hero can fall.
+fn two_seat_config() -> MatchConfig {
+    let mut cfg = config(true);
+    cfg.picks.push(Pick {
+        slot: SlotId(1),
+        team: Team::Dire,
+        hero: HeroId(0),
+    });
+    cfg
 }
 
 #[test]
-fn gold_income_scales_passive_income_by_its_period() {
-    let (mut world, _hero) = cheating_world();
-    assert_eq!(world.income_period(0), rules::PASSIVE_GOLD_PERIOD_TICKS);
-    let mut spec = a_spec();
-    spec.gold_income = 12_500;
-    cheat(
-        &mut world,
-        Cheat::ApplyModifier {
-            target: Target::None,
-            spec,
-            ticks: 1_000,
-        },
-    );
-    assert_eq!(world.income_period(0), 24, "a quarter more, a fifth sooner");
-    let before = world.seats[0].gold;
-    world.tick = rules::PREGAME_TICKS + 30;
-    world.passive_gold();
-    assert_eq!(world.seats[0].gold, before, "not its period yet");
-    world.tick = rules::PREGAME_TICKS + 24;
-    world.passive_gold();
-    assert_eq!(world.seats[0].gold, before + 1, "at its own period");
-}
-
-#[test]
-fn gold_income_scales_a_bounty() {
-    let (mut world, hero) = cheating_world();
-    let creep = world.spawn_unit(
-        &crate::game::MELEE_CREEP,
-        Team::Dire,
-        Vec2::from_ints(7000, 7000),
-    );
-    world
-        .bounty
-        .insert(creep, crate::game::Bounty { gold: 100, xp: 0 });
-    let mut spec = a_spec();
-    spec.gold_income = 20_000;
+fn gold_income_scales_the_bounty_a_kill_pays() {
+    let cfg = two_seat_config();
+    let mut world = World::for_match(&cfg, cfg.rng());
+    let killer = world.seats[0].unit.expect("the killer stands");
+    let victim = world.seats[1].unit.expect("the victim stands");
+    world.seats[1].streak = 3;
+    let composed = World::hero_bounty(3);
+    let mut spec = ModifierSpec::NOMINAL;
+    spec.gold_income = 15_000;
     cheat(
         &mut world,
         Cheat::ApplyModifier {
@@ -466,12 +437,56 @@ fn gold_income_scales_a_bounty() {
     );
     let before = world.seats[0].gold;
     let net_worth = world.seats[0].net_worth;
-    world.pay_for(creep, Some(hero), &mut Vec::new());
-    assert_eq!(world.seats[0].gold, before + 200);
+    world.push_hit(Some(killer), victim, 100_000, DamageKind::Pure);
+    let events = world.step();
+    let expected = composed * 15_000 / 10_000;
     assert_eq!(
-        world.seats[0].net_worth,
-        net_worth + 200,
-        "earned, not minted"
+        world.seats[0].gold,
+        before + expected,
+        "the composed bounty of {composed} is scaled once"
+    );
+    assert_eq!(world.seats[0].net_worth, net_worth + expected);
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event.kind, EventKind::Died { gold, .. } if gold == expected)),
+        "the death tells of what was paid"
+    );
+}
+
+#[test]
+fn gold_income_leaves_starting_passive_and_refunded_gold_alone() {
+    let (mut world, hero) = cheating_world();
+    let mut spec = ModifierSpec::NOMINAL;
+    spec.gold_income = 20_000;
+    let before = world.seats[0].gold;
+    cheat(
+        &mut world,
+        Cheat::ApplyModifier {
+            target: Target::None,
+            spec,
+            ticks: 1_000,
+        },
+    );
+    assert_eq!(world.seats[0].gold, before, "no gold arrives with it");
+    world.tick = rules::PREGAME_TICKS + rules::PASSIVE_GOLD_PERIOD_TICKS;
+    world.passive_gold();
+    assert_eq!(
+        world.seats[0].gold,
+        before + 1,
+        "passive income is one a period either way"
+    );
+    let mut stack = ItemStack::bought(ItemId(ITEM_BUTTERFLY), SlotId(0), world.tick)
+        .expect("the Butterfly is sold");
+    stack.touched = true;
+    world.inventory.get_mut(hero).expect("has a bag").slots[0] = Some(stack);
+    let price = crate::game::ITEMS[usize::from(ITEM_BUTTERFLY)].cost;
+    let gold = world.seats[0].gold;
+    assert!(world.sell_item(SlotId(0), hero, 0), "it sells at the shop");
+    assert_eq!(
+        world.seats[0].gold,
+        gold + price * rules::SELL_PCT / 100,
+        "a refund is the same either way"
     );
 }
 
