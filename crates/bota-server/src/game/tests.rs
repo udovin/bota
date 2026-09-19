@@ -71,6 +71,29 @@ fn live_entities_come_out_in_slot_order() {
 }
 
 #[test]
+fn the_integer_square_root_is_the_floor_of_the_real_one() {
+    for n in 0..4096i64 {
+        let root = crate::game::isqrt64(n);
+        assert!(root * root <= n, "root squared must not pass n: {n}");
+        assert!((root + 1) * (root + 1) > n, "the root must be the floor");
+    }
+    let mut seed = 0x1234_5678_9abc_def0u64;
+    let mut draw = || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed
+    };
+    for _ in 0..16_384 {
+        let n = (draw() >> 1) as i64;
+        let root = i128::from(crate::game::isqrt64(n));
+        assert!(root * root <= i128::from(n));
+        assert!((root + 1) * (root + 1) > i128::from(n));
+    }
+    assert_eq!(crate::game::isqrt64(i64::MAX), 3_037_000_499);
+}
+
+#[test]
 fn a_table_holds_a_component_for_the_entity_that_owns_it() {
     let mut entities = EntityAllocator::new();
     let mine = entities.alloc();
@@ -1889,6 +1912,7 @@ fn an_order_at_something_a_side_cannot_see_is_refused() {
         ground: &world.ground,
         sight_block: &world.sight_block,
         visibility: &mut world.visibility,
+        sight: &mut world.sight_scratch,
     });
     let order = bota_proto::Order::Attack {
         target: bota_proto::Target::Unit(crate::game::wire_id(hidden)),
@@ -9474,6 +9498,43 @@ fn a_walk_to_where_no_way_leads_ends_at_the_nearest_spot_got_to() {
     );
 }
 
+#[test]
+fn a_capsule_is_stopped_by_a_circle_exactly_where_the_circle_stops_it() {
+    let at = bota_proto::Vec2::from_ints(3000, 4000);
+    let theirs = Fixed::from_int(48);
+    let field = crate::game::Clearance::build(crate::game::CellGrid::open(), vec![(at, theirs)]);
+    let radius = Fixed::from_int(8);
+    let mut seed = 0x0dd0_5eed_1234_5678u64;
+    let mut draw = || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed
+    };
+    let mut stopped = 0;
+    let mut free = 0;
+    for _ in 0..4096 {
+        let from = bota_proto::Vec2::from_ints(
+            (draw() % rules::MAP_SIZE as u64) as i32,
+            (draw() % rules::MAP_SIZE as u64) as i32,
+        );
+        let to = bota_proto::Vec2::from_ints(
+            (draw() % rules::MAP_SIZE as u64) as i32,
+            (draw() % rules::MAP_SIZE as u64) as i32,
+        );
+        let reference = !field.circles().iter().any(|&(centre, their)| {
+            crate::game::circle_stops(centre, their, from, to, radius, true)
+        });
+        assert_eq!(
+            field.capsule_clear(from, to, radius),
+            reference,
+            "from {from:?} to {to:?}"
+        );
+        if reference { free += 1 } else { stopped += 1 }
+    }
+    assert!(stopped > 0 && free > 0, "both answers have to be seen");
+}
+
 /// The bug this guards against: the lane routes were laid once with every
 /// tower's footprint in them, and a wave kept walking round the ground a
 /// fallen tower had stood on.
@@ -10629,4 +10690,48 @@ fn every_hero_sent_at_a_tower_from_afar_walks_into_reach_and_strikes() {
             "hero {id} never struck the tower within eight seconds"
         );
     }
+}
+
+/// The dummy match the criterion benches also play.
+#[path = "../../benches/dummy/scenario.rs"]
+#[allow(dead_code)]
+mod dummy_scenario;
+
+/// Ticks the determinism test plays.
+const SHORT_TICKS: u32 = 300;
+
+#[test]
+fn the_dummy_scenario_is_deterministic() {
+    let first = short_digest();
+    let second = short_digest();
+    assert_eq!(first.0, second.0, "the world digest must not move");
+    assert_eq!(first.1, second.1, "the view digest must not move");
+}
+
+/// The world and view fingerprints of a short window.
+fn short_digest() -> (u64, u64) {
+    let mut dummy = dummy_scenario::Dummy::build(true);
+    for _ in 0..SHORT_TICKS {
+        dummy.step();
+    }
+    dummy.digest()
+}
+
+#[test]
+fn a_sentry_reveals_the_observer_it_stands_beside() {
+    let mut dummy = dummy_scenario::Dummy::build(false);
+    assert!(
+        dummy.world.can_see(Team::Dire, dummy.observers[0]),
+        "the dire sentry must find the radiant observer"
+    );
+    assert!(
+        dummy.world.can_see(Team::Radiant, dummy.observers[1]),
+        "the radiant sentry must find the dire observer"
+    );
+    dummy.world.despawn(dummy.sentries[0]);
+    dummy.world.settle();
+    assert!(
+        !dummy.world.can_see(Team::Dire, dummy.observers[0]),
+        "without the sentry the observer hides again"
+    );
 }
