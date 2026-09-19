@@ -2533,9 +2533,10 @@ The server gate rejects out-of-bounds specs and tick counts with
 `RejectReason::BadCheat` before the world ever sees them, and `World::cheat`
 turns away anything unbounded that arrived another way. The variants are
 appended, so existing cheat tags keep their numbers; the order budget test now
-allows 64 bytes for cheat orders and keeps 32 for everything else, because a
-whole spec no longer fits the old room, and the canonical bytes of one spec
-order are pinned in `bota-proto`.
+allows 80 bytes for cheat orders and keeps 32 for everything else, because a
+whole spec no longer fits the old room; the widest possible order (every
+number at its wire maximum) measures 70 bytes and is pinned, and the canonical
+bytes of one spec order are pinned in `bota-proto`.
 
 **Modifiers are folded first and additively.** `derive_stats` applies a unit's
 spec immediately after the raised base block and before carried items,
@@ -2608,3 +2609,6 @@ reaches a spawn unchecked does the same. The hash covers every spec field and
 the rule list itself while any of it is present, so an unmodified world hashes
 as it always did; a setup that does not carry the list at all behaves exactly
 as before, and the empty-list guards keep the default game paying nothing.
+The server binary does not expose the list: the TCP lobby always starts with
+an empty one, and the entry point is the library value a setup builds in
+process.

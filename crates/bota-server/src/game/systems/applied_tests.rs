@@ -319,6 +319,50 @@ fn cooldown_rate_shortens_what_an_item_use_sets() {
 }
 
 #[test]
+fn a_shared_item_wait_is_scaled_with_the_cooldown_rate() {
+    let (mut world, hero, _creep) = arena();
+    world.spawn_building(
+        crate::game::tower_def(1),
+        Team::Radiant,
+        Vec2::from_ints(7300, 7000),
+        crate::game::Place::Tower { lane: 0, tier: 1 },
+    );
+    let mut seat = crate::game::Seat::new(
+        SlotId(0),
+        Team::Radiant,
+        HeroId(0),
+        rules::STARTING_GOLD,
+        rules::STASH_SLOTS,
+    );
+    seat.unit = Some(hero);
+    world.seats.push(seat);
+    give(&mut world, hero, crate::game::ITEM_TOWN_PORTAL_SCROLL);
+    apply(&mut world, hero, spec(|s| s.cooldown_rate = 5_000), 10);
+    let at = world.transform.get(hero).expect("standing").pos;
+    assert!(
+        world.begin_item(hero, 0, Target::Pos(at)),
+        "the scroll reads beside the tower"
+    );
+    assert_eq!(
+        world.seats[0].item_clocks,
+        vec![(
+            ItemId(crate::game::ITEM_TOWN_PORTAL_SCROLL),
+            rules::SCROLL_WAIT_TICKS / 2
+        )],
+        "the wait on the kind of item is halved"
+    );
+    assert_eq!(
+        world
+            .inventory
+            .get(hero)
+            .and_then(|bag| bag.slots[0])
+            .map(|stack| stack.cooldown),
+        Some(0),
+        "a shared wait lives on the seat, not on the stack"
+    );
+}
+
+#[test]
 fn a_blow_sets_a_muted_item_back_by_the_cooldown_rate() {
     let (mut world, hero, _creep) = arena();
     give(&mut world, hero, crate::game::ITEM_BLINK_DAGGER);

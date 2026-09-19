@@ -52,7 +52,7 @@ fn an_order_stays_small() {
         // Cheats may carry a whole modifier spec; ordinary orders may not
         // grow into that room.
         let budget = if matches!(order, Order::Cheat { .. }) {
-            64
+            80
         } else {
             32
         };
@@ -64,6 +64,44 @@ fn an_order_stays_small() {
         let len = encoded_len(&msg);
         assert!(len <= budget, "order encoded to {len} bytes: {msg:?}");
     }
+}
+
+/// The widest a cheat order can be: every number at its wire maximum.
+#[test]
+fn the_widest_cheat_order_fits_its_budget() {
+    let widest = EntityId {
+        idx: u32::MAX,
+        generation: u32::MAX,
+    };
+    let msg = ClientMsg::Order {
+        seq: u32::MAX,
+        unit: Some(widest),
+        order: Order::Cheat {
+            cheat: Cheat::ApplyModifier {
+                target: Target::Unit(widest),
+                spec: ModifierSpec {
+                    magic_resist: ModifierSpec::MAX_RESIST,
+                    status_resist: ModifierSpec::MAX_STATUS_RESIST,
+                    physical_damage: ModifierSpec::MAX_SCALE,
+                    magic_damage: ModifierSpec::MAX_SCALE,
+                    pure_damage: ModifierSpec::MAX_SCALE,
+                    cooldown_rate: ModifierSpec::MAX_SCALE,
+                    mana_cost_rate: ModifierSpec::MAX_SCALE,
+                    move_speed: ModifierSpec::MAX_SCALE,
+                    max_hp: ModifierSpec::MAX_SCALE,
+                    max_mana: ModifierSpec::MAX_SCALE,
+                    gold_income: ModifierSpec::MAX_SCALE,
+                },
+                ticks: MAX_MODIFIER_TICKS,
+            },
+        },
+    };
+    let len = encoded_len(&msg);
+    assert_eq!(
+        len, 70,
+        "the widest cheat order is pinned so it cannot creep"
+    );
+    assert!(len <= 80, "the widest cheat order grew to {len} bytes");
 }
 
 #[test]

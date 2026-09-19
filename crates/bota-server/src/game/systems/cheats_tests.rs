@@ -391,6 +391,104 @@ fn a_clear_cheat_takes_the_modifier_off_and_is_harmless_without_one() {
 }
 
 #[test]
+fn an_unbounded_cheat_is_turned_away_even_when_it_skips_the_gate() {
+    let (mut world, hero) = cheating_world();
+    let mut unbounded = a_spec();
+    unbounded.max_hp = ModifierSpec::MAX_SCALE + 1;
+    world.cheat(
+        SlotId(0),
+        hero,
+        Cheat::ApplyModifier {
+            target: Target::None,
+            spec: unbounded,
+            ticks: 10,
+        },
+        &mut Vec::new(),
+    );
+    assert!(!world.applied.contains(hero), "the spec was refused");
+    world.cheat(
+        SlotId(0),
+        hero,
+        Cheat::ApplyModifier {
+            target: Target::None,
+            spec: a_spec(),
+            ticks: 0,
+        },
+        &mut Vec::new(),
+    );
+    assert!(!world.applied.contains(hero), "the duration was refused");
+}
+
+#[test]
+fn a_modifier_cheat_aimed_at_something_that_is_not_a_unit_is_an_unknown_target() {
+    let (mut world, _hero) = cheating_world();
+    let mark = world.spawn();
+    let order = Order::Cheat {
+        cheat: Cheat::ApplyModifier {
+            target: Target::Unit(wire_id(mark)),
+            spec: a_spec(),
+            ticks: 10,
+        },
+    };
+    assert_eq!(
+        world.validate_order(SlotId(0), None, &order),
+        Err(RejectReason::UnknownTarget)
+    );
+}
+
+#[test]
+fn a_kept_kit_is_projected_after_the_body_falls() {
+    let (mut world, hero) = cheating_world();
+    if let Some(book) = world.abilities.get_mut(hero) {
+        book.slots[1].level = 1;
+    }
+    let stack = ItemStack::bought(ItemId(ITEM_BUTTERFLY), SlotId(0), world.tick)
+        .expect("the Butterfly is sold");
+    world.inventory.get_mut(hero).expect("has a bag").slots[0] = Some(stack);
+    let mut spec = ModifierSpec::NOMINAL;
+    spec.mana_cost_rate = 5_000;
+    cheat(
+        &mut world,
+        Cheat::ApplyModifier {
+            target: Target::None,
+            spec,
+            ticks: 100,
+        },
+    );
+    let live = world.view_full();
+    let unit = live
+        .units
+        .iter()
+        .find(|unit| unit.id == wire_id(hero))
+        .expect("the hero is in the view");
+    assert_eq!(
+        unit.abilities[1].mana_cost,
+        ability_mana_cost(ability::FRENZY, 1) / 2,
+        "the living view carries the rate"
+    );
+    assert_eq!(
+        unit.items[0].as_ref().map(|item| item.mana_cost),
+        Some(0),
+        "and the item's own cost"
+    );
+    world.push_hit(None, hero, 1_000_000, DamageKind::Pure);
+    world.step();
+    let fallen = world.view_full();
+    let seat = fallen
+        .players
+        .iter()
+        .find(|player| player.slot == SlotId(0))
+        .expect("the seat is in the view");
+    let kit = seat.kit.as_ref().expect("the kit outlives the body");
+    assert_eq!(
+        kit.abilities[1].mana_cost,
+        ability_mana_cost(ability::FRENZY, 1),
+        "the modifier fell with the body, so the kept kit is nominal"
+    );
+    assert_eq!(kit.items[0].as_ref().map(|item| item.mana_cost), Some(0));
+}
+
+#[test]
 fn a_fallen_hero_takes_its_modifier_with_it_and_respawns_clean() {
     let (mut world, hero) = cheating_world();
     cheat(
