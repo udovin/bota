@@ -517,31 +517,32 @@ impl World {
         if (def.charges > 0 || def.cast_charges > 0) && stack.charges == 0 {
             return false;
         }
-        if def.mana_cost > 0
+        let cost = self.item_mana_cost(entity, stack.id);
+        if cost > 0
             && self
                 .mana
                 .get(entity)
-                .is_none_or(|pool| pool.mana < Fixed::from_int(def.mana_cost))
+                .is_none_or(|pool| pool.mana < Fixed::from_int(cost))
         {
             return false;
         }
         if !(def.on_use)(self, entity, slot, target) {
             return false;
         }
-        if def.mana_cost > 0
+        if cost > 0
             && let Some(pool) = self.mana.get_mut(entity)
         {
-            pool.mana -= Fixed::from_int(def.mana_cost);
+            pool.mana -= Fixed::from_int(cost);
         }
-        let cooldown = if def.shared_wait { 0 } else { def.cooldown };
+        let cooldown = self.item_cooldown(entity, stack.id);
         if def.shared_wait {
-            self.owe_wait(entity, stack.id, def.cooldown);
+            self.owe_wait(entity, stack.id, cooldown);
         }
         if let Some(bag) = self.inventory.get_mut(entity)
             && let Some(held) = bag.slots.get_mut(slot)
             && let Some(stack) = held
         {
-            stack.cooldown = cooldown;
+            stack.cooldown = if def.shared_wait { 0 } else { cooldown };
             stack.touched = true;
             stack.charges = match def.spends {
                 Spends::Nothing => stack.charges,

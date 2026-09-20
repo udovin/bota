@@ -163,6 +163,12 @@ fn stats() -> Stats {
         projectile_speed: None,
         armor: Fixed::ZERO,
         magic_resist_pct: 0,
+        status_resist_bp: 0,
+        physical_amp_bp: rules::NOMINAL_BP,
+        magic_amp_bp: rules::NOMINAL_BP,
+        pure_amp_bp: rules::NOMINAL_BP,
+        cooldown_rate_bp: rules::NOMINAL_BP,
+        mana_cost_rate_bp: rules::NOMINAL_BP,
         move_speed: Fixed::ZERO,
         turn_rate: 0,
         damage_to_creeps: 0,
@@ -1971,6 +1977,7 @@ fn config() -> crate::game::MatchConfig {
         mode: bota_proto::TickMode::Lockstep,
         ack_timeout_ticks: 30,
         cheats: false,
+        spawn_modifiers: Vec::new(),
     }
 }
 
@@ -2031,12 +2038,14 @@ fn world_with_projectile_uphill_state(launch_tier: u8, can_miss_uphill: bool) ->
             target,
             damage: 1,
             kind: bota_proto::DamageKind::Physical,
+            damage_amp_bp: rules::NOMINAL_BP,
             ability: None,
             launch_tier,
             can_miss_uphill,
             crit: false,
             pierces: false,
             pierce_damage: 0,
+            pierce_amp_bp: rules::NOMINAL_BP,
             bounces_left: 0,
             bounce_range: 0,
             bounced: Vec::new(),
@@ -2508,6 +2517,7 @@ fn critical_hits_keep_their_flag_in_damage_events() {
         target,
         amount: 10,
         kind: bota_proto::DamageKind::Physical,
+        damage_amp_bp: rules::NOMINAL_BP,
         crit: true,
         attack: true,
         pierces: false,
@@ -9297,6 +9307,7 @@ fn no_creep_of_the_first_waves_is_left_wrestling_its_own_base() {
         mode: bota_proto::TickMode::Realtime,
         ack_timeout_ticks: 0,
         cheats: false,
+        spawn_modifiers: Vec::new(),
     };
     let mut world = World::for_match(&cfg, cfg.rng());
     for _ in 0..=rules::FIRST_WAVE_TICK {
@@ -9430,6 +9441,7 @@ fn a_hero_told_to_walk_into_a_tower_walks_up_to_it_and_stands() {
         mode: bota_proto::TickMode::Realtime,
         ack_timeout_ticks: 0,
         cheats: false,
+        spawn_modifiers: Vec::new(),
     };
     let mut world = World::for_match(&cfg, cfg.rng());
     let (_, _, tower) = rules::RADIANT_TOWERS[2];
@@ -9549,6 +9561,7 @@ fn a_wave_walks_over_where_its_tower_stood_once_it_has_fallen() {
         mode: bota_proto::TickMode::Realtime,
         ack_timeout_ticks: 0,
         cheats: false,
+        spawn_modifiers: Vec::new(),
     };
     let mut world = World::for_match(&cfg, cfg.rng());
     let (lane, _, tower) = rules::RADIANT_TOWERS[2];
@@ -9733,6 +9746,7 @@ fn a_fallen_barracks_turns_the_waves_against_it_super_and_all_of_them_mega() {
         mode: bota_proto::TickMode::Realtime,
         ack_timeout_ticks: 0,
         cheats: false,
+        spawn_modifiers: Vec::new(),
     };
     let mut world = World::for_match(&cfg, cfg.rng());
     // Whole barracks: plain waves.
@@ -9796,6 +9810,7 @@ fn the_demo_waves_march_out_and_meet_between_the_towers() {
         mode: bota_proto::TickMode::Realtime,
         ack_timeout_ticks: 0,
         cheats: false,
+        spawn_modifiers: Vec::new(),
     };
     let mut world = World::for_match(&cfg, cfg.rng());
     for _ in 0..=rules::FIRST_WAVE_TICK {
@@ -9854,6 +9869,7 @@ fn the_fountain_melts_whoever_steps_into_its_reach_and_spares_who_stays_out() {
         mode: bota_proto::TickMode::Realtime,
         ack_timeout_ticks: 0,
         cheats: false,
+        spawn_modifiers: Vec::new(),
     };
     let mut world = World::for_match(&cfg, cfg.rng());
     let hero = world.seats[0].unit.expect("stood up");
@@ -10327,12 +10343,14 @@ fn manual_projectile_damage(
                 target,
                 damage: 1,
                 kind: bota_proto::DamageKind::Physical,
+                damage_amp_bp: rules::NOMINAL_BP,
                 ability: None,
                 launch_tier,
                 can_miss_uphill: true,
                 crit: false,
                 pierces,
                 pierce_damage: 0,
+                pierce_amp_bp: rules::NOMINAL_BP,
                 bounces_left: 0,
                 bounce_range: 0,
                 bounced: Vec::new(),

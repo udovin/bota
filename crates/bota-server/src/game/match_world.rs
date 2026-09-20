@@ -1,6 +1,6 @@
 //! The surface a match runs a world through: what the game loop asks of it.
 
-use bota_proto::{Aim, MatchStats, Order, RejectReason, SlotId, SlotStats, Target, Team};
+use bota_proto::{Aim, Cheat, MatchStats, Order, RejectReason, SlotId, SlotStats, Target, Team};
 
 use crate::game::{BAG_SLOTS, Command, Event, MatchConfig, MatchRng, hero_spawn_pos, in_backpack};
 use crate::game::{Entity, PendingCast, Seat, UnitOrder, World};
@@ -23,10 +23,15 @@ impl World {
     ///
     /// No camp is filled; the jungle has not been carried over yet.
     pub fn for_match(cfg: &MatchConfig, rng: MatchRng) -> World {
+        if let Err(error) = cfg.validate() {
+            panic!("the match setup was refused: {error}");
+        }
         let map = map_of(cfg.map);
         let mut world = World::on_map(map);
         world.rng = rng;
         world.cheats = cfg.cheats;
+        world.spawn_modifiers = cfg.spawn_modifiers.clone();
+        world.apply_spawn_modifiers_to_all();
         for pick in &cfg.picks {
             let at = hero_spawn_pos(map, pick.team);
             let hero = world.spawn_hero(pick.team, at, pick.slot, pick.hero);
@@ -215,6 +220,24 @@ impl World {
         self.seats.iter().find(|s| s.slot == slot)
     }
 
+    /// The unit a cheat names, or why it cannot land there.
+    ///
+    /// Nothing names the unit the cheat was issued for. Only something that
+    /// is a unit can be aimed at; a position names nothing at all.
+    pub fn cheat_target(&self, unit: Entity, target: Target) -> Result<Entity, RejectReason> {
+        match target {
+            Target::None => Ok(unit),
+            Target::Unit(id) => {
+                let mark = self.of_wire(id).ok_or(RejectReason::UnknownTarget)?;
+                if self.def.get(mark).is_none() {
+                    return Err(RejectReason::UnknownTarget);
+                }
+                Ok(mark)
+            }
+            Target::Pos(_) => Err(RejectReason::WrongTargetKind),
+        }
+    }
+
     /// Whether a seat may issue an order right now.
     ///
     /// A seat with no body standing may order nothing, and a target it cannot
@@ -292,7 +315,7 @@ impl World {
                     }
                 }
                 let held_mana = self.mana.get(unit).map_or(0, |mana| mana.mana.to_int());
-                if held_mana < crate::game::ability_mana_cost(held.id, held.level) {
+                if held_mana < self.ability_mana_cost(unit, held.id, held.level) {
                     return Err(RejectReason::NotEnoughMana);
                 }
                 Ok(())
@@ -447,7 +470,9 @@ impl World {
                 {
                     return Err(RejectReason::UnknownTarget);
                 }
-                if self.mana.get(unit).map_or(0, |pool| pool.mana.to_int()) < def.mana_cost {
+                if self.mana.get(unit).map_or(0, |pool| pool.mana.to_int())
+                    < self.item_mana_cost(unit, stack.id)
+                {
                     return Err(RejectReason::NotEnoughMana);
                 }
                 if self.held(unit) || self.feared(unit) || self.is_channelling(unit) {
@@ -458,12 +483,27 @@ impl World {
                 }
                 Ok(())
             }
-            Order::Cheat { .. } => {
-                if self.cheats {
-                    Ok(())
-                } else {
-                    Err(RejectReason::NoCheats)
+            Order::Cheat { cheat } => {
+                if !self.cheats {
+                    return Err(RejectReason::NoCheats);
                 }
+                match cheat {
+                    Cheat::ApplyModifier {
+                        target,
+                        spec,
+                        ticks,
+                    } => {
+                        if !spec.is_bounded() || !bota_proto::modifier_ticks_bounded(*ticks) {
+                            return Err(RejectReason::BadCheat);
+                        }
+                        self.cheat_target(unit, *target)?;
+                    }
+                    Cheat::ClearModifiers { target } => {
+                        self.cheat_target(unit, *target)?;
+                    }
+                    _ => {}
+                }
+                Ok(())
             }
             _ => Ok(()),
         }
