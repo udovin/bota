@@ -183,15 +183,6 @@ fn modifier_order(spec: ModifierSpec, ticks: u32) -> Order {
     }
 }
 
-/// Hands one order to the seat and runs the tick it lands in.
-fn hand(world: &mut World, order: Order) -> Vec<Event> {
-    world.advance(&[Command {
-        slot: SlotId(0),
-        unit: None,
-        order,
-    }])
-}
-
 #[test]
 fn a_modifier_cheat_is_refused_without_cheats_and_taken_with_them() {
     let order = modifier_order(a_spec(), 10);
@@ -222,7 +213,11 @@ fn a_modifier_cheat_lands_on_the_named_unit_alone() {
         },
     };
     assert_eq!(world.validate_order(SlotId(0), None, &order), Ok(()));
-    hand(&mut world, order);
+    world.advance(&[Command {
+        slot: SlotId(0),
+        unit: None,
+        order,
+    }]);
     assert_eq!(
         world
             .applied

@@ -1,4 +1,4 @@
-//! Cheat-granted stat changes: what each is worth and what it ignores.
+//! Applied stat changes: what each is worth and what it ignores.
 
 use bota_proto::{
     AbilitySlot, DamageKind, Fixed, HeroId, ItemId, ModifierSpec, SlotId, Target, Team, UnitKind,
@@ -7,8 +7,9 @@ use bota_proto::{
 
 use crate::game::{
     AppliedModifier, AppliedModifiers, AppliedOrigin, Aura, AuraCx, Auras, Entity, ITEMS,
-    ItemStack, MELEE_CREEP, Modifier, ModifierKind, Reach, StackKind, Stacks, World, ability,
-    ability_cooldown, ability_mana_cost, aura_system, cooldown_after, cost_after, rules, wire_id,
+    ItemStack, MAX_APPLIED_MODIFIERS_PER_UNIT, MAX_COMBINED_MODIFIER_SCALE, MELEE_CREEP, Modifier,
+    ModifierKind, Reach, StackKind, Stacks, World, ability, ability_cooldown, ability_mana_cost,
+    aura_system, cooldown_after, cost_after, rules, wire_id,
 };
 
 /// A world with a hero and a creep standing well apart.
@@ -32,16 +33,54 @@ fn spec(change: impl FnOnce(&mut ModifierSpec)) -> ModifierSpec {
     spec
 }
 
+/// One setup entry in an applied set.
+fn one_applied(spec: ModifierSpec, ticks: u32) -> AppliedModifiers {
+    let mut applied = AppliedModifiers::default();
+    applied.push(AppliedModifier {
+        spec,
+        ticks_left: Some(ticks),
+        origin: AppliedOrigin::Setup,
+    });
+    applied
+}
+
+/// One extreme spec, with every scale at `scale`.
+fn extreme_spec(scale: i32, magic_resist: i32, status_resist: i32) -> ModifierSpec {
+    ModifierSpec {
+        magic_resist,
+        status_resist,
+        physical_damage: scale,
+        magic_damage: scale,
+        pure_damage: scale,
+        cooldown_rate: scale,
+        mana_cost_rate: scale,
+        move_speed: scale,
+        max_hp: scale,
+        max_mana: scale,
+        gold_income: scale,
+    }
+}
+
+/// A full per-unit set, every setup source and the one cheat source.
+fn full_applied(spec: ModifierSpec) -> AppliedModifiers {
+    let mut applied = AppliedModifiers::default();
+    for at in 0..MAX_APPLIED_MODIFIERS_PER_UNIT {
+        applied.push(AppliedModifier {
+            spec,
+            ticks_left: None,
+            origin: if at + 1 == MAX_APPLIED_MODIFIERS_PER_UNIT {
+                AppliedOrigin::Cheat
+            } else {
+                AppliedOrigin::Setup
+            },
+        });
+    }
+    applied
+}
+
 /// Puts a spec on a unit and works its stats out again.
 fn apply(world: &mut World, on: Entity, spec: ModifierSpec, ticks: u32) {
-    world.applied.insert(
-        on,
-        AppliedModifiers::single(AppliedModifier {
-            spec,
-            ticks_left: Some(ticks),
-            origin: AppliedOrigin::Setup,
-        }),
-    );
+    world.applied.insert(on, one_applied(spec, ticks));
     world.settle();
 }
 
@@ -51,6 +90,43 @@ fn dealt(world: &mut World, from: Entity, to: Entity, amount: i32, kind: DamageK
     world.push_hit(Some(from), to, amount, kind);
     world.step();
     (before - world.health.get(to).expect("standing").hp).to_int()
+}
+
+/// A magical bounce in flight, its source carrying double amplification.
+fn amplified_bounce(ticks: u32) -> (World, Entity, Entity, Entity) {
+    let mut world = World::new();
+    let caster = world.spawn_hero(
+        Team::Radiant,
+        Vec2::from_ints(5000, 5000),
+        SlotId(0),
+        HeroId(0),
+    );
+    let target = world.spawn_unit(&MELEE_CREEP, Team::Dire, Vec2::from_ints(5500, 5000));
+    world.settle();
+    apply(&mut world, caster, spec(|s| s.magic_damage = 20_000), ticks);
+    assert!(world.cast_bounce(caster, 0, Target::Unit(wire_id(target))));
+    let missile = world
+        .entities
+        .iter()
+        .find(|entity| world.projectile.get(*entity).is_some())
+        .expect("the bounce is in flight");
+    let shot = world.projectile.get_mut(missile).expect("in flight");
+    shot.bounces_left = 0;
+    assert_eq!(shot.damage_amp_bp, 20_000);
+    (world, caster, target, missile)
+}
+
+/// Runs one launched bounce to impact and returns health it took.
+fn land_bounce(world: &mut World, target: Entity, missile: Entity) -> i32 {
+    let before = world.health.get(target).expect("standing").hp;
+    for _ in 0..64 {
+        world.step();
+        if world.projectile.get(missile).is_none() {
+            let after = world.health.get(target).expect("survives").hp;
+            return (before - after).to_int();
+        }
+    }
+    panic!("the bounce did not land inside its bounded flight")
 }
 
 /// A stun of `ticks` ticks.
@@ -81,6 +157,98 @@ fn give(world: &mut World, on: Entity, item: u16) {
     if let Some(bag) = world.inventory.get_mut(on) {
         bag.slots[0] = Some(stack);
     }
+}
+
+#[test]
+fn every_combined_modifier_family_has_an_explicit_upper_bound() {
+    let (mut world, hero, _creep) = arena();
+    world.applied.insert(
+        hero,
+        full_applied(extreme_spec(
+            ModifierSpec::MAX_SCALE,
+            ModifierSpec::MAX_RESIST,
+            ModifierSpec::MAX_STATUS_RESIST,
+        )),
+    );
+    world.settle();
+    let stats = *world.stats.get(hero).expect("settled");
+    assert_eq!(stats.magic_resist_pct, 100);
+    assert_eq!(stats.status_resist_bp, rules::NOMINAL_BP - 1);
+    assert_eq!(stats.physical_amp_bp, MAX_COMBINED_MODIFIER_SCALE);
+    assert_eq!(stats.magic_amp_bp, MAX_COMBINED_MODIFIER_SCALE);
+    assert_eq!(stats.pure_amp_bp, MAX_COMBINED_MODIFIER_SCALE);
+    assert_eq!(stats.cooldown_rate_bp, MAX_COMBINED_MODIFIER_SCALE);
+    assert_eq!(stats.mana_cost_rate_bp, MAX_COMBINED_MODIFIER_SCALE);
+    assert_eq!(
+        stats.move_speed.to_int(),
+        rules::HERO_MOVE_SPEED * ModifierSpec::MAX_SCALE / rules::NOMINAL_BP,
+        "world magnitudes saturate at one source's 4x bound"
+    );
+    assert_eq!(
+        stats.max_hp.to_int(),
+        rules::HERO_HP * ModifierSpec::MAX_SCALE / rules::NOMINAL_BP + rules::HP_PER_STRENGTH * 20
+    );
+    assert_eq!(
+        stats.max_mana.to_int(),
+        rules::HERO_MANA * ModifierSpec::MAX_SCALE / rules::NOMINAL_BP
+            + rules::MANA_PER_INTELLIGENCE * 18
+    );
+    assert_eq!(
+        world.bounty_after(Some(hero), 100),
+        100 * MAX_COMBINED_MODIFIER_SCALE / rules::NOMINAL_BP,
+        "bounty keeps every bounded additive source"
+    );
+    assert_eq!(
+        world.applied.get(hero).map(|held| held.iter().count()),
+        Some(MAX_APPLIED_MODIFIERS_PER_UNIT)
+    );
+}
+
+#[test]
+fn every_combined_modifier_family_has_an_explicit_lower_bound() {
+    let (mut world, hero, _creep) = arena();
+    world.applied.insert(
+        hero,
+        full_applied(extreme_spec(
+            ModifierSpec::MIN_SCALE,
+            -ModifierSpec::MAX_RESIST,
+            ModifierSpec::MAX_STATUS_RESIST,
+        )),
+    );
+    world.settle();
+    let stats = *world.stats.get(hero).expect("settled");
+    assert_eq!(stats.magic_resist_pct, 0);
+    assert_eq!(stats.status_resist_bp, rules::NOMINAL_BP - 1);
+    assert_eq!(stats.physical_amp_bp, 0);
+    assert_eq!(stats.magic_amp_bp, 0);
+    assert_eq!(stats.pure_amp_bp, 0);
+    assert_eq!(stats.cooldown_rate_bp, 1);
+    assert_eq!(stats.mana_cost_rate_bp, 1);
+    assert_eq!(
+        stats.move_speed.to_int(),
+        rules::HERO_MOVE_SPEED * ModifierSpec::MIN_SCALE / rules::NOMINAL_BP
+    );
+    assert_eq!(
+        stats.max_hp.to_int(),
+        rules::HERO_HP * ModifierSpec::MIN_SCALE / rules::NOMINAL_BP + rules::HP_PER_STRENGTH * 20
+    );
+    assert_eq!(
+        stats.max_mana.to_int(),
+        rules::HERO_MANA * ModifierSpec::MIN_SCALE / rules::NOMINAL_BP
+            + rules::MANA_PER_INTELLIGENCE * 18
+    );
+    assert_eq!(world.bounty_after(Some(hero), 100), 0);
+}
+
+#[test]
+#[should_panic(expected = "a unit may carry at most 65 applied modifiers")]
+fn a_unit_refuses_one_applied_entry_past_its_bound() {
+    let mut applied = full_applied(ModifierSpec::NOMINAL);
+    applied.push(AppliedModifier {
+        spec: ModifierSpec::NOMINAL,
+        ticks_left: None,
+        origin: AppliedOrigin::Setup,
+    });
 }
 
 #[test]
@@ -165,6 +333,53 @@ fn amplification_of_one_kind_leaves_the_other_kinds_alone() {
         100
     );
     assert_eq!(dealt(&mut world, hero, creep, 100, DamageKind::Pure), 100);
+}
+
+#[test]
+fn a_projectile_keeps_its_launch_amplification_after_the_attacker_falls() {
+    let (mut world, caster, target, missile) = amplified_bounce(100);
+    world.push_hit(None, caster, 1_000_000, DamageKind::Pure);
+    world.step();
+    assert!(!world.alive(caster), "the caster fell before impact");
+    let before = world.health.get(target).expect("standing").hp;
+    let taken = land_bounce(&mut world, target, missile);
+    assert_eq!(taken, rules::SYLLA_BOUNCE_DAMAGE[0] * 2);
+    assert_eq!(
+        world.health.get(target).expect("survives").hp,
+        before - Fixed::from_int(taken)
+    );
+}
+
+#[test]
+fn a_projectile_keeps_its_launch_amplification_after_the_modifier_lifts() {
+    let (mut world, caster, target, missile) = amplified_bounce(1);
+    world.step();
+    assert!(world.alive(caster));
+    assert!(!world.applied.contains(caster), "the modifier has run out");
+    assert_eq!(
+        land_bounce(&mut world, target, missile),
+        rules::SYLLA_BOUNCE_DAMAGE[0] * 2
+    );
+}
+
+#[test]
+fn a_projectile_keeps_its_launch_amplification_when_the_source_slot_is_reused() {
+    let (mut world, caster, target, missile) = amplified_bounce(100);
+    world.push_hit(None, caster, 1_000_000, DamageKind::Pure);
+    world.step();
+    assert!(!world.alive(caster));
+    let replacement = world.spawn_unit(&MELEE_CREEP, Team::Radiant, Vec2::from_ints(3000, 3000));
+    assert_eq!(
+        replacement.index(),
+        caster.index(),
+        "the free slot is reused"
+    );
+    assert_ne!(replacement.generation(), caster.generation());
+    world.settle();
+    assert_eq!(
+        land_bounce(&mut world, target, missile),
+        rules::SYLLA_BOUNCE_DAMAGE[0] * 2
+    );
 }
 
 #[test]
@@ -652,14 +867,9 @@ fn a_mana_pool_keeps_its_fraction_too() {
 fn a_creep_spawned_with_a_modifier_is_raised_with_it() {
     let mut world = World::new();
     let creep = world.spawn_creep(&MELEE_CREEP, Team::Dire, Vec2::from_ints(1000, 1000), 0, 0);
-    world.applied.insert(
-        creep,
-        AppliedModifiers::single(AppliedModifier {
-            spec: spec(|s| s.max_hp = 12_500),
-            ticks_left: Some(100),
-            origin: AppliedOrigin::Setup,
-        }),
-    );
+    world
+        .applied
+        .insert(creep, one_applied(spec(|s| s.max_hp = 12_500), 100));
     world.settle();
     let max = rules::MELEE_CREEP_HP * 12_500 / 10_000;
     assert_eq!(
@@ -722,14 +932,9 @@ fn a_tower_spawned_with_a_modifier_is_raised_with_it() {
         Vec2::from_ints(5000, 5000),
         crate::game::Place::Tower { lane: 0, tier: 1 },
     );
-    world.applied.insert(
-        tower,
-        AppliedModifiers::single(AppliedModifier {
-            spec: spec(|s| s.max_hp = 15_000),
-            ticks_left: Some(100),
-            origin: AppliedOrigin::Setup,
-        }),
-    );
+    world
+        .applied
+        .insert(tower, one_applied(spec(|s| s.max_hp = 15_000), 100));
     world.settle();
     assert_eq!(
         world.stats.get(tower).map(|stats| stats.max_hp.to_int()),

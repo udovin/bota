@@ -69,15 +69,20 @@ impl World {
         if self.spawn_modifiers.is_empty() {
             return;
         }
+        assert!(
+            self.spawn_modifiers.len() <= crate::game::MAX_SPAWN_MODIFIERS,
+            "a match may carry at most {} spawn modifiers",
+            crate::game::MAX_SPAWN_MODIFIERS
+        );
         let Some(Def(def)) = self.def.get(entity).copied() else {
             return;
         };
         let team = self.team.get(entity).copied();
         let mut applied = self.applied.remove(entity).unwrap_or_default();
         applied.retain(|held| held.origin != AppliedOrigin::Setup);
-        for rule in &self.spawn_modifiers {
+        for (at, rule) in self.spawn_modifiers.iter().enumerate() {
             if let Err(error) = crate::game::check_spawn_modifier(rule) {
-                panic!("a spawn modifier was applied without being checked: {error}");
+                panic!("spawn modifier {at} was applied without being checked: {error}");
             }
             if rule.select.takes(def.kind, team) {
                 applied.push(AppliedModifier {

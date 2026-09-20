@@ -5,7 +5,7 @@ use bota_proto::{
     UnitView, WorldView,
 };
 
-use crate::game::{Entity, ModifierKind, StackKind, World, ability_mana_cost, item_views, rules};
+use crate::game::{Entity, ModifierKind, StackKind, World, ability_mana_cost, item_views};
 
 /// Shadowraze amplification; each anonymous source row carries both ticks and stacks.
 pub const EFFECT_SHADOWRAZE: u16 = 15;
@@ -130,7 +130,7 @@ impl World {
                     },
                     stash: match viewer {
                         Some(team) if team != seat.team => None,
-                        _ => Some(item_views(&seat.stash, self.mana_rate_of(seat.unit))),
+                        _ => Some(item_views(&seat.stash, self.mana_cost_rate_of(seat.unit))),
                     },
                     // What a fallen body left is told to its own side alone.
                     // The other side is left with whatever it saw last, which
@@ -138,8 +138,8 @@ impl World {
                     kit: match viewer {
                         Some(team) if team != seat.team => None,
                         _ => seat.kept.as_ref().map(|kept| bota_proto::Kit {
-                            abilities: ability_views(&kept.book, self.mana_rate_of(seat.unit)),
-                            items: item_views(&kept.bag, self.mana_rate_of(seat.unit)),
+                            abilities: ability_views(&kept.book, self.mana_cost_rate_of(seat.unit)),
+                            items: item_views(&kept.bag, self.mana_cost_rate_of(seat.unit)),
                         }),
                     },
                     kills: seat.kills,
@@ -216,25 +216,16 @@ impl World {
                             ability,
                             self.ability_on(entity, ability.id),
                             self.can_level(entity, ability.id, ability.level),
-                            self.mana_rate_of(Some(entity)),
+                            self.mana_cost_rate_of(Some(entity)),
                         )
                     })
                     .collect()
             }),
             items: self.inventory.get(entity).map_or_else(Vec::new, |bag| {
-                item_views(bag, self.mana_rate_of(Some(entity)))
+                item_views(bag, self.mana_cost_rate_of(Some(entity)))
             }),
             effects: self.effects_on(entity),
         })
-    }
-
-    /// The mana cost rate a unit's projected costs carry. Nominal for a unit
-    /// with no stats.
-    fn mana_rate_of(&self, entity: Option<Entity>) -> i32 {
-        entity
-            .and_then(|entity| self.stats.get(entity))
-            .map_or(rules::NOMINAL_BP, |stats| stats.mana_cost_rate_bp)
-            .max(1)
     }
 }
 

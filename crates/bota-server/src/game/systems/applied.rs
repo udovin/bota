@@ -1,9 +1,12 @@
-//! Cheat-granted stat changes: their countdown and the rates they leave.
+//! Applied stat changes: their countdown and the rates they leave.
 
-use bota_proto::{AbilityId, ItemId};
+use bota_proto::{AbilityId, DamageKind, ItemId};
 
 use crate::game::rules;
-use crate::game::{Entity, Stats, World, ability_cooldown, ability_mana_cost, item_def};
+use crate::game::{
+    Entity, MAX_COMBINED_MODIFIER_SCALE, Stats, World, ability_cooldown, ability_mana_cost,
+    item_def,
+};
 
 impl World {
     /// Runs every applied stat change one tick down and drops what has run
@@ -42,9 +45,19 @@ impl World {
                     sum.saturating_add(held.spec.gold_income - rules::NOMINAL_BP)
                 })
             })
-            .clamp(0, i32::MAX);
+            .clamp(0, MAX_COMBINED_MODIFIER_SCALE);
         (i64::from(base) * i64::from(scale) / i64::from(rules::NOMINAL_BP))
             .clamp(0, i64::from(i32::MAX)) as i32
+    }
+
+    /// Outgoing damage amplification captured while a source is still live.
+    /// A delayed carrier keeps this value if the source later falls or its
+    /// slot changes hands.
+    pub fn outgoing_damage_amp_bp(&self, source: Option<Entity>, kind: DamageKind) -> i32 {
+        source
+            .filter(|source| self.entities.contains(*source))
+            .and_then(|source| self.stats.get(source))
+            .map_or(rules::NOMINAL_BP, |stats| stats.damage_amp_bp(kind))
     }
 
     /// Mana one cast of an ability costs an entity, after its mana cost rate.
@@ -70,20 +83,26 @@ impl World {
 
     /// A base mana cost after the entity's mana cost rate.
     pub fn cost_after_rate(&self, entity: Entity, base: i32) -> i32 {
-        let rate = self.rate_of(entity, |stats| stats.mana_cost_rate_bp);
+        let rate = self.mana_cost_rate_of(Some(entity));
         cost_after(base, rate)
     }
 
     /// A base cooldown after the entity's cooldown rate.
     pub fn cooldown_after_rate(&self, entity: Entity, base: u32) -> u32 {
-        let rate = self.rate_of(entity, |stats| stats.cooldown_rate_bp);
+        let rate = self.rate_of(Some(entity), |stats| stats.cooldown_rate_bp);
         cooldown_after(base, rate)
     }
 
-    /// A rate stat of an entity, nominal when it has no stats.
-    fn rate_of(&self, entity: Entity, pick: fn(&Stats) -> i32) -> i32 {
-        self.stats
-            .get(entity)
+    /// The mana cost rate a unit's projections and charges carry. Nominal
+    /// when there is no body or it has no stats.
+    pub(crate) fn mana_cost_rate_of(&self, entity: Option<Entity>) -> i32 {
+        self.rate_of(entity, |stats| stats.mana_cost_rate_bp)
+    }
+
+    /// One rate stat of an optional entity, nominal when it has no stats.
+    fn rate_of(&self, entity: Option<Entity>, pick: fn(&Stats) -> i32) -> i32 {
+        entity
+            .and_then(|entity| self.stats.get(entity))
             .map_or(rules::NOMINAL_BP, pick)
             .max(1)
     }

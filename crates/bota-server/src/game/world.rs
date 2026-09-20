@@ -310,11 +310,25 @@ impl World {
         amount: i32,
         kind: bota_proto::DamageKind,
     ) {
+        let damage_amp_bp = self.outgoing_damage_amp_bp(source, kind);
+        self.push_hit_with_amp(source, target, amount, kind, damage_amp_bp);
+    }
+
+    /// Leaves a blow carrying amplification captured by an in-flight source.
+    pub(crate) fn push_hit_with_amp(
+        &mut self,
+        source: Option<Entity>,
+        target: Entity,
+        amount: i32,
+        kind: bota_proto::DamageKind,
+        damage_amp_bp: i32,
+    ) {
         self.hits.push_back(Hit {
             source,
             target,
             amount,
             kind,
+            damage_amp_bp,
             crit: false,
             attack: false,
             pierces: false,
@@ -364,7 +378,7 @@ impl World {
     /// live.
     ///
     /// What sides could see of it is given up here, and so is any
-    /// cheat-granted stat change. What it held besides stays where it is; the
+    /// applied stat change. What it held besides stays where it is; the
     /// slot's next tenant carries a raised generation, so none of it reads
     /// back as that tenant's own.
     pub fn despawn(&mut self, entity: Entity) -> bool {
@@ -661,6 +675,10 @@ impl World {
     }
 
     fn step_damage(&mut self, events: &mut Vec<crate::game::Event>) {
+        let amplified = self
+            .hits
+            .iter()
+            .any(|hit| hit.damage_amp_bp != crate::game::rules::NOMINAL_BP);
         let cx = HitCx {
             hits: &mut self.hits,
             landed: &mut self.landed,
@@ -673,10 +691,10 @@ impl World {
             evasion: &mut self.evasion,
             missed: &mut self.missed,
         };
-        if self.applied.is_empty() {
-            hitting_system::<false>(cx);
-        } else {
+        if amplified {
             hitting_system::<true>(cx);
+        } else {
+            hitting_system::<false>(cx);
         }
         let felt: Vec<Landed> = self.landed.drain(..).collect();
         self.break_on_blows(&felt);

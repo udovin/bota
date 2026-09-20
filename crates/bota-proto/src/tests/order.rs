@@ -1,4 +1,4 @@
-//! The bounds a cheat-granted modifier spec must stay within.
+//! The bounds an applied modifier spec must stay within.
 
 use crate::*;
 

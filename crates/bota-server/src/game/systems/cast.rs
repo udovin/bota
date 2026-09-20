@@ -150,6 +150,7 @@ impl World {
         ) else {
             return false;
         };
+        let damage_amp_bp = self.outgoing_damage_amp_bp(Some(caster), DamageKind::Magical);
         let missile = self.spawn();
         self.transform.insert(missile, at);
         self.set_team(missile, side);
@@ -161,12 +162,14 @@ impl World {
                 target: mark,
                 damage: rules::SYLLA_BOUNCE_DAMAGE[level],
                 kind: DamageKind::Magical,
+                damage_amp_bp,
                 ability: Some(bota_proto::AbilityId(2)),
                 launch_tier: 0,
                 can_miss_uphill: false,
                 crit: false,
                 pierces: false,
                 pierce_damage: 0,
+                pierce_amp_bp: rules::NOMINAL_BP,
                 bounces_left: rules::SYLLA_BOUNCE_COUNT[level],
                 bounce_range: rules::SYLLA_BOUNCE_RANGE,
                 bounced: vec![mark],

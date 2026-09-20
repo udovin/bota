@@ -7,8 +7,8 @@ use bota_proto::{
 
 use crate::game::{
     AppliedModifier, AppliedModifiers, AppliedOrigin, Command, Def, Entity, MAX_SPAWN_MODIFIERS,
-    MatchConfig, MatchConfigError, ModifierDuration, SpawnCategory, SpawnModifier,
-    SpawnModifierError, SpawnSelector, SpawnTarget, World, rules,
+    MAX_SPAWN_TARGETS, MatchConfig, MatchConfigError, ModifierDuration, SpawnCategory,
+    SpawnModifier, SpawnModifierError, SpawnSelector, SpawnTarget, World, rules,
 };
 
 /// A spec with one change on it, everything else neutral.
@@ -21,7 +21,10 @@ fn spec(change: impl FnOnce(&mut ModifierSpec)) -> ModifierSpec {
 /// A rule taking everything either side, running until the body falls.
 fn a_rule(spec: ModifierSpec) -> SpawnModifier {
     SpawnModifier {
-        select: SpawnSelector::default(),
+        select: SpawnSelector {
+            team: None,
+            targets: Vec::new(),
+        },
         spec,
         duration: ModifierDuration::MatchLong,
     }
@@ -427,6 +430,73 @@ fn a_respawned_hero_never_stands_above_a_shrunk_maximum() {
 }
 
 #[test]
+fn a_ticks_rule_restarts_its_full_duration_on_every_respawn() {
+    let cfg = config(
+        false,
+        vec![SpawnModifier {
+            select: SpawnSelector {
+                team: None,
+                targets: vec![SpawnTarget::Category(SpawnCategory::Hero)],
+            },
+            spec: spec(|s| s.max_hp = 12_500),
+            duration: ModifierDuration::Ticks(3),
+        }],
+    );
+    let mut world = World::for_match(&cfg, cfg.rng());
+    let first = world.seats[0].unit.expect("stood up");
+    assert_eq!(
+        world
+            .applied
+            .get(first)
+            .and_then(|applied| applied.iter().next())
+            .and_then(|held| held.ticks_left),
+        Some(3)
+    );
+    world.push_hit(None, first, 1_000_000, DamageKind::Pure);
+    world.step();
+    world.seats[0].respawn_left = 1;
+    world.tick_respawns();
+    let second = world.seats[0].unit.expect("respawned");
+    assert_eq!(
+        world
+            .applied
+            .get(second)
+            .and_then(|applied| applied.iter().next())
+            .and_then(|held| held.ticks_left),
+        Some(3),
+        "a new body starts the rule over"
+    );
+    for expected in [2, 1] {
+        world.step();
+        assert_eq!(
+            world
+                .applied
+                .get(second)
+                .and_then(|applied| applied.iter().next())
+                .and_then(|held| held.ticks_left),
+            Some(expected)
+        );
+    }
+    world.step();
+    assert!(!world.applied.contains(second), "three ticks have run");
+
+    world.push_hit(None, second, 1_000_000, DamageKind::Pure);
+    world.step();
+    world.seats[0].respawn_left = 1;
+    world.tick_respawns();
+    let third = world.seats[0].unit.expect("respawned again");
+    assert_eq!(
+        world
+            .applied
+            .get(third)
+            .and_then(|applied| applied.iter().next())
+            .and_then(|held| held.ticks_left),
+        Some(3),
+        "every respawn starts it over"
+    );
+}
+
+#[test]
 fn an_empty_rule_list_leaves_the_world_alone() {
     let cfg = config(false, Vec::new());
     let world = World::for_match(&cfg, cfg.rng());
@@ -445,14 +515,13 @@ fn hash_with_spec(spec: ModifierSpec) -> u64 {
         Team::Dire,
         Vec2::from_ints(2000, 2000),
     );
-    world.applied.insert(
-        creep,
-        AppliedModifiers::single(AppliedModifier {
-            spec,
-            ticks_left: Some(10),
-            origin: AppliedOrigin::Setup,
-        }),
-    );
+    let mut applied = AppliedModifiers::default();
+    applied.push(AppliedModifier {
+        spec,
+        ticks_left: Some(10),
+        origin: AppliedOrigin::Setup,
+    });
+    world.applied.insert(creep, applied);
     world.settle();
     world.hash()
 }
@@ -597,6 +666,23 @@ fn invalid_rules_are_refused_at_setup() {
             error: SpawnModifierError::BadDuration,
         })
     );
+    cfg.spawn_modifiers[0].duration = ModifierDuration::MatchLong;
+    cfg.spawn_modifiers[0].select.targets =
+        vec![SpawnTarget::Kind(UnitKind::Hero); MAX_SPAWN_TARGETS];
+    assert_eq!(cfg.validate(), Ok(()), "the selector bound is allowed");
+    cfg.spawn_modifiers[0]
+        .select
+        .targets
+        .push(SpawnTarget::Kind(UnitKind::Hero));
+    assert_eq!(
+        cfg.validate(),
+        Err(MatchConfigError::SpawnModifier {
+            at: 0,
+            error: SpawnModifierError::TooManyTargets {
+                count: MAX_SPAWN_TARGETS + 1,
+            },
+        })
+    );
     cfg.spawn_modifiers = vec![a_rule(ModifierSpec::NOMINAL); MAX_SPAWN_MODIFIERS + 1];
     assert_eq!(
         cfg.validate(),
@@ -606,6 +692,45 @@ fn invalid_rules_are_refused_at_setup() {
     );
     cfg.spawn_modifiers = vec![a_rule(ModifierSpec::NOMINAL); MAX_SPAWN_MODIFIERS];
     assert_eq!(cfg.validate(), Ok(()), "the bound itself is allowed");
+}
+
+#[test]
+#[should_panic(
+    expected = "the match setup was refused: spawn modifier 0 is refused: 17 selector targets exceed the 16 a rule may carry"
+)]
+fn for_match_refuses_an_oversized_selector_loudly() {
+    let mut rule = a_rule(ModifierSpec::NOMINAL);
+    rule.select.targets = vec![SpawnTarget::Kind(UnitKind::Hero); MAX_SPAWN_TARGETS + 1];
+    let cfg = config(false, vec![rule]);
+    let _ = World::for_match(&cfg, cfg.rng());
+}
+
+#[test]
+#[should_panic(
+    expected = "the match setup was refused: 65 spawn modifiers exceed the 64 a match may carry"
+)]
+fn for_match_refuses_an_oversized_rule_list_loudly() {
+    let cfg = config(
+        false,
+        vec![a_rule(ModifierSpec::NOMINAL); MAX_SPAWN_MODIFIERS + 1],
+    );
+    let _ = World::for_match(&cfg, cfg.rng());
+}
+
+#[test]
+#[should_panic(
+    expected = "spawn modifier 1 was applied without being checked: 17 selector targets exceed the 16 a rule may carry"
+)]
+fn a_spawn_refuses_an_unchecked_rule_with_its_index_and_reason() {
+    let mut invalid = a_rule(ModifierSpec::NOMINAL);
+    invalid.select.targets = vec![SpawnTarget::Kind(UnitKind::CreepMelee); MAX_SPAWN_TARGETS + 1];
+    let mut world = World::new();
+    world.spawn_modifiers = vec![a_rule(ModifierSpec::NOMINAL), invalid];
+    world.spawn_unit(
+        &crate::game::MELEE_CREEP,
+        Team::Dire,
+        Vec2::from_ints(2000, 2000),
+    );
 }
 
 #[test]

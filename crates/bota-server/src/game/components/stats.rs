@@ -1,6 +1,6 @@
 //! The numbers an entity fights by, worked out afresh every tick.
 
-use bota_proto::{Attribute, Attributes, Fixed};
+use bota_proto::{Attribute, Attributes, DamageKind, Fixed};
 
 use crate::game::Ratio;
 
@@ -99,4 +99,15 @@ pub struct Stats {
     pub phased: bool,
     /// Whether damage passes it by.
     pub invulnerable: bool,
+}
+
+impl Stats {
+    /// Outgoing damage amplification of one kind, in basis points.
+    pub fn damage_amp_bp(&self, kind: DamageKind) -> i32 {
+        match kind {
+            DamageKind::Physical => self.physical_amp_bp,
+            DamageKind::Magical => self.magic_amp_bp,
+            DamageKind::Pure => self.pure_amp_bp,
+        }
+    }
 }

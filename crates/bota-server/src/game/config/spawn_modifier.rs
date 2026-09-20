@@ -2,10 +2,17 @@
 
 use bota_proto::{ModifierSpec, Team, UnitKind, modifier_ticks_bounded};
 
-use crate::game::is_structure;
+use crate::game::{is_structure, rules};
 
 /// The most rules one match setup may carry.
 pub const MAX_SPAWN_MODIFIERS: usize = 64;
+/// The most exact kinds and categories one selector may walk.
+pub const MAX_SPAWN_TARGETS: usize = 16;
+/// The most entries one unit may carry: every setup rule and one cheat.
+pub const MAX_APPLIED_MODIFIERS_PER_UNIT: usize = MAX_SPAWN_MODIFIERS + 1;
+/// The highest additive scale all entries on one unit can reach.
+pub const MAX_COMBINED_MODIFIER_SCALE: i32 = rules::NOMINAL_BP
+    + MAX_APPLIED_MODIFIERS_PER_UNIT as i32 * (ModifierSpec::MAX_SCALE - rules::NOMINAL_BP);
 
 /// One rule: what to put on which spawns, and for how long.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -18,13 +25,6 @@ pub struct SpawnModifier {
     pub duration: ModifierDuration,
 }
 
-impl SpawnModifier {
-    /// Whether the rule is one a match setup may carry.
-    pub fn is_valid(&self) -> bool {
-        check_spawn_modifier(self).is_ok()
-    }
-}
-
 /// Which units one spawn modifier lands on.
 ///
 /// An absent field takes everything that field could name; the fields narrow
@@ -33,13 +33,18 @@ impl SpawnModifier {
 pub struct SpawnSelector {
     /// Which side it takes. `None` takes either side.
     pub team: Option<Team>,
-    /// Which kinds it takes. Empty takes every kind.
+    /// Which kinds it takes, `MAX_SPAWN_TARGETS` at most. Empty takes every
+    /// kind; duplicates do not apply the rule twice.
     pub targets: Vec<SpawnTarget>,
 }
 
 impl SpawnSelector {
     /// Whether a standing unit is one this selector takes.
     pub fn takes(&self, kind: UnitKind, team: Option<Team>) -> bool {
+        assert!(
+            self.targets.len() <= MAX_SPAWN_TARGETS,
+            "a selector may carry at most {MAX_SPAWN_TARGETS} targets"
+        );
         if let Some(wanted) = self.team
             && team != Some(wanted)
         {
@@ -79,10 +84,6 @@ pub enum SpawnCategory {
     NeutralCreep,
     /// Buildings: towers, ancients, barracks and fountains.
     Structure,
-    /// Observer and sentry wards.
-    Ward,
-    /// Couriers.
-    Courier,
 }
 
 impl SpawnCategory {
@@ -99,8 +100,6 @@ impl SpawnCategory {
             ),
             SpawnCategory::NeutralCreep => kind == UnitKind::CreepNeutral,
             SpawnCategory::Structure => is_structure(kind),
-            SpawnCategory::Ward => kind == UnitKind::Ward,
-            SpawnCategory::Courier => kind == UnitKind::Courier,
         }
     }
 }
@@ -136,6 +135,11 @@ impl ModifierDuration {
 /// Why one spawn modifier was refused.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SpawnModifierError {
+    /// The selector asks to walk too many exact kinds and categories.
+    TooManyTargets {
+        /// How many were offered.
+        count: usize,
+    },
     /// The spec does not lie within its bounds.
     UnboundedSpec,
     /// The duration is not one a match may carry.
@@ -145,6 +149,10 @@ pub enum SpawnModifierError {
 impl core::fmt::Display for SpawnModifierError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
+            SpawnModifierError::TooManyTargets { count } => write!(
+                f,
+                "{count} selector targets exceed the {MAX_SPAWN_TARGETS} a rule may carry"
+            ),
             SpawnModifierError::UnboundedSpec => write!(f, "the modifier spec is out of bounds"),
             SpawnModifierError::BadDuration => write!(f, "the duration is out of range"),
         }
@@ -155,6 +163,11 @@ impl std::error::Error for SpawnModifierError {}
 
 /// Why a rule is not one a match setup may carry, or nothing when it is.
 pub fn check_spawn_modifier(rule: &SpawnModifier) -> Result<(), SpawnModifierError> {
+    if rule.select.targets.len() > MAX_SPAWN_TARGETS {
+        return Err(SpawnModifierError::TooManyTargets {
+            count: rule.select.targets.len(),
+        });
+    }
     if !rule.spec.is_bounded() {
         return Err(SpawnModifierError::UnboundedSpec);
     }

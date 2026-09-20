@@ -4,8 +4,9 @@ use bota_proto::{Attributes, Fixed, ModifierSpec};
 
 use crate::game::rules;
 use crate::game::{
-    AbilityBook, AppliedModifiers, Def, EntityAllocator, Growth, Health, Inventory, Level, Mana,
-    ModifierKind, Modifiers, Ratio, StackKind, Stacks, Stats, Table, UnitDef, Upgrades,
+    AbilityBook, AppliedModifiers, Def, EntityAllocator, Growth, Health, Inventory, Level,
+    MAX_COMBINED_MODIFIER_SCALE, Mana, ModifierKind, Modifiers, Ratio, StackKind, Stacks, Stats,
+    Table, UnitDef, Upgrades,
 };
 
 /// What working out stats reads and writes.
@@ -57,7 +58,7 @@ pub fn derive_stats(cx: StatsCx<'_>) {
     }
 }
 
-/// The body of [`derive_stats`], with cheat-granted changes compiled out when
+/// The body of [`derive_stats`], with applied changes compiled out when
 /// no unit carries any.
 fn derive_stats_impl<const APPLIED: bool>(cx: StatsCx<'_>) {
     let StatsCx {
@@ -235,12 +236,30 @@ fn fold_applied(now: &mut Stats, applied: &AppliedModifiers) {
         max_mana = max_mana.saturating_add(spec.max_mana - rules::NOMINAL_BP);
     }
     now.magic_resist_pct = (now.magic_resist_pct + magic_resist / 100).clamp(0, 100);
-    now.status_resist_bp += status_resist;
-    now.physical_amp_bp = (now.physical_amp_bp + physical).max(0);
-    now.magic_amp_bp = (now.magic_amp_bp + magical).max(0);
-    now.pure_amp_bp = (now.pure_amp_bp + pure).max(0);
-    now.cooldown_rate_bp = (now.cooldown_rate_bp + cooldown).max(1);
-    now.mana_cost_rate_bp = (now.mana_cost_rate_bp + mana_cost).max(1);
+    now.status_resist_bp = now
+        .status_resist_bp
+        .saturating_add(status_resist)
+        .clamp(0, rules::NOMINAL_BP - 1);
+    now.physical_amp_bp = now
+        .physical_amp_bp
+        .saturating_add(physical)
+        .clamp(0, MAX_COMBINED_MODIFIER_SCALE);
+    now.magic_amp_bp = now
+        .magic_amp_bp
+        .saturating_add(magical)
+        .clamp(0, MAX_COMBINED_MODIFIER_SCALE);
+    now.pure_amp_bp = now
+        .pure_amp_bp
+        .saturating_add(pure)
+        .clamp(0, MAX_COMBINED_MODIFIER_SCALE);
+    now.cooldown_rate_bp = now
+        .cooldown_rate_bp
+        .saturating_add(cooldown)
+        .clamp(1, MAX_COMBINED_MODIFIER_SCALE);
+    now.mana_cost_rate_bp = now
+        .mana_cost_rate_bp
+        .saturating_add(mana_cost)
+        .clamp(1, MAX_COMBINED_MODIFIER_SCALE);
     now.move_speed = scaled_bp(now.move_speed, combined_scale(move_speed));
     now.max_hp = scaled_bp(now.max_hp, combined_scale(max_hp));
     now.max_mana = scaled_bp(now.max_mana, combined_scale(max_mana));

@@ -77,8 +77,7 @@ pub struct HitCx<'a> {
 /// given up unfelt. Every blow leaves the queue either way: none survives the
 /// tick that resolves it.
 ///
-/// The source's damage amplification is compiled out when no unit in the
-/// world carries any cheat-granted change.
+/// Outgoing amplification is compiled out when every queued blow is nominal.
 pub fn hitting_system<const AMPLIFIED: bool>(cx: HitCx<'_>) {
     let HitCx {
         hits,
@@ -117,14 +116,11 @@ pub fn hitting_system<const AMPLIFIED: bool>(cx: HitCx<'_>) {
             });
             continue;
         }
-        let amount = amplified_damage(blow, on_it);
+        let amount = stacked_damage(blow, on_it);
         let amount = if AMPLIFIED {
-            amplify(
-                amount,
-                blow.kind,
-                blow.source.and_then(|from| stats.get(from)),
-            )
+            amplify(amount, blow.damage_amp_bp)
         } else {
+            debug_assert_eq!(blow.damage_amp_bp, rules::NOMINAL_BP);
             amount
         };
         let taken = mitigate(amount, blow.kind, stat.armor, stat.magic_resist_pct);
@@ -175,7 +171,7 @@ pub fn evades(
 }
 
 /// Pre-mitigation damage including the current valid same-caster stack count.
-fn amplified_damage(blow: Hit, on_it: Option<&Modifiers>) -> i32 {
+fn stacked_damage(blow: Hit, on_it: Option<&Modifiers>) -> i32 {
     let HitEffect::Shadowraze { level } = blow.effect else {
         return blow.amount;
     };
@@ -186,16 +182,8 @@ fn amplified_damage(blow: Hit, on_it: Option<&Modifiers>) -> i32 {
     blow.amount + i32::from(stacks) * rules::RAZE_STACK_DAMAGE[usize::from(level)]
 }
 
-/// Damage after the dealing unit's amplification of its kind.
-fn amplify(amount: i32, kind: DamageKind, source: Option<&Stats>) -> i32 {
-    let Some(source) = source else {
-        return amount;
-    };
-    let bp = match kind {
-        DamageKind::Physical => source.physical_amp_bp,
-        DamageKind::Magical => source.magic_amp_bp,
-        DamageKind::Pure => source.pure_amp_bp,
-    };
+/// Damage after the outgoing amplification captured when the blow was made.
+fn amplify(amount: i32, bp: i32) -> i32 {
     if bp == rules::NOMINAL_BP {
         return amount;
     }

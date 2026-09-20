@@ -2512,10 +2512,11 @@ Rebase integration tests additionally pin simultaneous aura/raze projection and
 stat bonuses, the mana-healing wire event, Mango's embedded drawing, and the
 fifteen-minute cap including continuation through the old ten-minute boundary.
 
-## Cheat-granted unit modifiers, and the general stats behind them
+## Applied unit modifiers and the general stats behind them
 
-A modifier is a bounded stat change that only a cheat can put on and only its
-countdown or the fall of the body can take away. Every modifier has unit
+A modifier is a bounded stat change that a cheat or trusted match setup can
+put on; only its countdown or the fall of the body can take it away. Every
+modifier has unit
 scope: it is carried in `World::applied`, a table of `AppliedModifier` values
 apart from `Modifiers`, so no ability, item, dispel or ordinary expiry reaches
 it. It does not show in `MatchInfo` or `UnitView.effects`, and the hash
@@ -2564,12 +2565,29 @@ Future items, auras or abilities can add to the same fields without touching
 any consumer. Every unit kind walks the same derive, so one `max_hp` scale
 covers heroes, lane and neutral creeps, and buildings alike.
 
+**The bounds are part of composition.** A match carries at most 64 setup
+rules, one selector walks at most 16 exact kinds/categories, and one unit
+carries at most those 64 setup entries plus one cheat entry. Every sum uses
+saturating arithmetic. Magic resistance finishes in `0..=100` percent and
+status resistance in `0..=9_999` bp. The three magnitude scales (`move_speed`,
+`max_hp`, `max_mana`) saturate after addition at one source's
+`2_500..=40_000` bound, keeping world magnitudes within 0.25x..4x. Damage
+amplification, cooldown/mana rates and bounty gold deliberately retain every
+bounded additive source, up to `MAX_COMBINED_MODIFIER_SCALE = 1_960_000`
+(196x, with lower floors of zero or one). The asymmetry is intentional:
+magnitudes cap world size, while the other families preserve all bounded
+source contributions; every loop and accumulator still has a fixed ceiling.
+
 **Each stat has one reading.** Magic resistance is added as a delta and clamped
 to `0..=100` percent before Flesh Heap multiplies it, so mitigation, projection
 and the bots agree. Damage amplification scales a blow before armor and
 resistance, after Shadowraze stack composition, per the dealing unit's kind
 field; a blow with no source is left alone, and pure damage stays unmitigated
-but still scales. Status resistance scales the ticks of `Stunned`, `Feared` and
+but still scales. The outgoing scale is captured when a blow or in-flight
+carrier is created (attacks, projectiles, hooks and requiem lines), just as
+crit is: source death, modifier expiry, despawn and slot reuse cannot alter a
+hit already in flight, and immediate damage captures and consumes it once.
+Status resistance scales the ticks of `Stunned`, `Feared` and
 `Slowed` wherever they are put on — an ability, an item and an aura all pass
 through the same point — down to one tick, and never touches buffs; the time
 already held is not shortened a second time when a disable is extended. A hold
@@ -2590,6 +2608,13 @@ bounties and are left alone. A stat change applied mid-tick is seen by
 everything derived or read after it; a disable put on before the first derive
 in that tick (a hook stun beside the application) is the one boundary that
 still reads the previous tick's resistance.
+
+No item in the current catalog pays mana, so the nonzero
+`ItemView.mana_cost` case cannot be produced without inventing catalog data.
+The projection delegates directly to the pure, nonzero-tested `cost_after`
+helper; the kept-kit branch is tested and is nominal after the body (and its
+unit-scoped modifier) falls. A synthetic production item or test-only catalog
+seam would add more surface than it verifies and is not carried.
 
 **Trusted setup can put modifiers on spawns.** A match description carries a
 bounded list of spawn modifiers (`SpawnModifier`), each a selector (a side, an

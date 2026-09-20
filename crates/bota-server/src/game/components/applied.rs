@@ -2,6 +2,8 @@
 
 use bota_proto::ModifierSpec;
 
+use crate::game::MAX_APPLIED_MODIFIERS_PER_UNIT;
+
 /// One applied stat change and how long it has left.
 ///
 /// Nothing an ability, an item or a dispel does can reach it: only whatever
@@ -43,13 +45,13 @@ pub enum AppliedOrigin {
 pub struct AppliedModifiers(Vec<AppliedModifier>);
 
 impl AppliedModifiers {
-    /// A set holding one entry.
-    pub fn single(applied: AppliedModifier) -> Self {
-        Self(vec![applied])
-    }
-
-    /// Adds one entry.
+    /// Adds one entry. A unit can carry every setup rule and one cheat, no
+    /// more.
     pub fn push(&mut self, applied: AppliedModifier) {
+        assert!(
+            self.0.len() < MAX_APPLIED_MODIFIERS_PER_UNIT,
+            "a unit may carry at most {MAX_APPLIED_MODIFIERS_PER_UNIT} applied modifiers"
+        );
         self.0.push(applied);
     }
 
