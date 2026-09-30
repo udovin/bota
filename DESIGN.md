@@ -485,6 +485,14 @@ exploit any leak a human reviewer shrugs off:
   a missed one would leave parts sitting side by side. Only what a hero
   carries builds; the stash does not, since it is a shelf at the shop and not a
   pair of hands.
+  Order validation and execution use the same purchase plan: missing parts,
+  their catalog cost, and room for all of them before assembly. Requiring the
+  whole item's price at validation would refuse an affordable upgrade; counting
+  only its final slot would accept parts that cannot arrive. Owned, unmarked
+  parts in the hero's bag, backpack and stash count toward the plan. Foreign or
+  sale-marked parts do not, since assembly cannot consume them. Purchases use
+  the hero's location and storage even when the order names its courier; courier
+  cargo is neither a component source nor a purchase destination.
 - Items follow the Dota slot topology, engine in `game/systems/gear.rs`. A seat owns
   fifteen slots: six inventory, where items work; three backpack, where they ride
   inert — and a stack leaving the backpack for the inventory is muted for six
@@ -565,6 +573,13 @@ exploit any leak a human reviewer shrugs off:
   Wearing, using and handing back are all allowed on anybody's stack — the
   rule guards the till, not the hands. Ownership stays server-side; the wire
   does not carry it.
+- A courier's Burst and Shield keep its current errand running while their
+  effects and cooldowns follow the ordinary casting path. Keeping only the last
+  movement order would lose delivery and stop following a moving owner, even
+  though neither buff requests a new destination. Movement, Stop and explicit
+  errand casts still cancel or replace the errand. This exception names the two
+  auxiliary abilities, not every own-target cast: the errands themselves are
+  own-target casts and must still replace one another.
 - Fog of war is mandatory: without it a bot learns to play with full information.
 - Victory: the Ancient falls.
 
@@ -610,6 +625,11 @@ emergent, because creeps arrive first. On top of that sit the aggro calls:
   and a step deeper into anybody's circle is refused. Easing apart is a safety
   net for spawns and shoves, four units a tick; nothing else moves a body but its
   own step.
+- Target retention checks validity, the current hold and reach before ranking a
+  replacement. Once a reachable held target has class zero, the best class in
+  that unit's priority order, a full search cannot replace it: replacement needs
+  a strictly lower class. That search is skipped, without changing acquisition
+  for missing, invalid or out-of-range targets, or searches from a worse class.
 - Walking is planned in three layers, one over the other, all in integers.
   The static layer is the ground as a body meets it. Terrain closes 64-unit
   cells, met as squares; a tree is the circle of its trunk; a structure the
