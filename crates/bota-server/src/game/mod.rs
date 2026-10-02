@@ -14,6 +14,7 @@ mod progress;
 mod project;
 mod rng;
 mod seat;
+mod spots;
 mod systems;
 mod vision;
 mod world;
@@ -34,13 +35,10 @@ pub use progress::*;
 pub use project::*;
 pub use rng::*;
 pub use seat::*;
+pub use spots::*;
 pub use systems::*;
 pub use vision::*;
 pub use world::*;
 
-#[cfg(test)]
-mod map2_tests;
-#[cfg(test)]
-mod target_retention_tests;
 #[cfg(test)]
 mod tests;

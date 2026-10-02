@@ -102,6 +102,8 @@ impl MatchConfig {
             mode: self.mode,
             picks: self.picks.clone(),
             shop: crate::game::shop_entries(),
+            fountains: crate::game::map_of(self.map).fountains,
+            shop_range: crate::game::rules::SHOP_RANGE,
         }
     }
 }
@@ -117,10 +119,8 @@ pub struct Command {
     pub order: Order,
 }
 
-/// Who may learn that an event happened.
-///
-/// Spectators and the replay always see everything; this limits the player
-/// streams.
+/// Who may learn that an event happened. Limits the player streams;
+/// spectators see every event.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EventVisibility {
     /// Both teams.

@@ -5,16 +5,12 @@ use bota_proto::{Fixed, Vec2};
 
 use crate::game::{Body, Entity, World};
 use crate::game::{clamp_to_map, isqrt64, rules};
+use crate::profile::Phase;
 
 impl World {
     /// Lays the body index out from where everything with a hull stands.
     pub fn lay_bodies(&mut self) {
-        #[cfg(feature = "phase-profile")]
-        let _profile = crate::profile::ScopeGuard::new(
-            crate::profile::Phase::BodyIndex,
-            self.tick,
-            self.entities.len(),
-        );
+        let _profile = self.scope(Phase::BodyIndex);
         let mut bodies = std::mem::take(&mut self.body_scratch);
         bodies.clear();
         for entity in self.entities.iter() {
@@ -42,8 +38,8 @@ impl World {
     /// The body a step from one spot to another would walk into, the
     /// nearest to where the step begins when there are several.
     ///
-    /// A step deeper into any hull is refused; a step out of an overlap is
-    /// allowed, so nothing can wedge for good.
+    /// Only a step that ends inside a hull and nearer its centre counts; a
+    /// step out of an overlap does not.
     pub fn body_in_the_way(&self, mover: Entity, from: Vec2, next: Vec2) -> Option<Entity> {
         let mine = self.hull.get(mover)?.collision;
         let mut best: Option<(i64, Entity)> = None;
@@ -75,15 +71,10 @@ impl World {
     /// Eases apart every pair of bodies whose hulls overlap.
     ///
     /// A body moves at most [`rules::SEPARATION_STEP`] in a tick and never
-    /// onto closed ground. A building never moves: the whole correction
-    /// falls on whatever walked into it.
+    /// from open ground onto closed. A body with no move speed never moves:
+    /// the whole correction falls on whatever overlaps it.
     pub fn push_apart(&mut self) {
-        #[cfg(feature = "phase-profile")]
-        let _profile = crate::profile::ScopeGuard::new(
-            crate::profile::Phase::Separation,
-            self.tick,
-            self.entities.len(),
-        );
+        let _profile = self.scope(Phase::Separation);
         let mut bodies = std::mem::take(&mut self.body_scratch);
         bodies.clear();
         for entity in self.entities.iter() {
@@ -104,43 +95,7 @@ impl World {
             });
         }
         let cap = i64::from(rules::units(rules::SEPARATION_STEP).raw);
-        let mut push = vec![(0i64, 0i64); bodies.len()];
-        for (i, one) in bodies.iter().enumerate() {
-            if one.fixed {
-                continue;
-            }
-            if self.phased(one.entity) {
-                continue;
-            }
-            self.bodies.near(one.at, one.radius, |other| {
-                if other.entity == one.entity || self.phased(other.entity) {
-                    return;
-                }
-                let Some(there) = self.transform.get(other.entity).map(|t| t.pos) else {
-                    return;
-                };
-                let dx = i64::from(there.x.raw) - i64::from(one.at.x.raw);
-                let dy = i64::from(there.y.raw) - i64::from(one.at.y.raw);
-                let least = i64::from((one.radius + other.radius).raw);
-                let apart = dx * dx + dy * dy;
-                if apart >= least * least {
-                    return;
-                }
-                let far = isqrt64(apart);
-                // Two on one spot part along the x axis, the earlier entity
-                // westward.
-                let (ux, uy, len) = if far == 0 {
-                    (if one.entity < other.entity { 1 } else { -1 }, 0, 1)
-                } else {
-                    (dx, dy, far)
-                };
-                let gap = least - far;
-                // A fixed body takes none of it; two that walk share it.
-                let mine = if other.fixed { gap } else { gap / 2 };
-                push[i].0 -= ux * mine.min(cap) / len;
-                push[i].1 -= uy * mine.min(cap) / len;
-            });
-        }
+        let push = self.overlaps(&bodies, cap);
         for (index, body) in bodies.iter().enumerate() {
             let (mut dx, mut dy) = push[index];
             if body.fixed || (dx == 0 && dy == 0) {
@@ -167,5 +122,47 @@ impl World {
             }
         }
         self.body_scratch = bodies;
+    }
+
+    /// How far each body is pushed out of the bodies it overlaps, each push
+    /// at most a cap: a fixed body takes none of it, two that walk share
+    /// it, and two on one spot part along the x axis, the earlier entity
+    /// westward. A phased body neither pushes nor is pushed.
+    fn overlaps(&self, bodies: &[Body], cap: i64) -> Vec<(i64, i64)> {
+        let mut push = vec![(0i64, 0i64); bodies.len()];
+        for (i, one) in bodies.iter().enumerate() {
+            if one.fixed {
+                continue;
+            }
+            if self.phased(one.entity) {
+                continue;
+            }
+            self.bodies.near(one.at, one.radius, |other| {
+                if other.entity == one.entity || self.phased(other.entity) {
+                    return;
+                }
+                let Some(there) = self.transform.get(other.entity).map(|t| t.pos) else {
+                    return;
+                };
+                let dx = i64::from(there.x.raw) - i64::from(one.at.x.raw);
+                let dy = i64::from(there.y.raw) - i64::from(one.at.y.raw);
+                let least = i64::from((one.radius + other.radius).raw);
+                let apart = dx * dx + dy * dy;
+                if apart >= least * least {
+                    return;
+                }
+                let far = isqrt64(apart);
+                let (ux, uy, len) = if far == 0 {
+                    (if one.entity < other.entity { 1 } else { -1 }, 0, 1)
+                } else {
+                    (dx, dy, far)
+                };
+                let gap = least - far;
+                let mine = if other.fixed { gap } else { gap / 2 };
+                push[i].0 -= ux * mine.min(cap) / len;
+                push[i].1 -= uy * mine.min(cap) / len;
+            });
+        }
+        push
     }
 }

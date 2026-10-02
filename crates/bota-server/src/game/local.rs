@@ -49,9 +49,9 @@ pub struct Foreseen<'a> {
 }
 
 impl Foreseen<'_> {
-    /// Where the body is after a tick: by its plan while that reaches, else
-    /// its last step carried forward for [`rules::PREDICT_TICKS`] and held
-    /// there.
+    /// Where the body is after a tick: by its plan, held at the plan's end
+    /// once past it; without a plan, or before `from`, its last step carried
+    /// forward for [`rules::PREDICT_TICKS`] and held there.
     pub fn at_tick(&self, now: u32, tick: u32) -> Vec2 {
         if !self.steps.is_empty() && tick >= self.from {
             let index = (tick - self.from) as usize;
@@ -144,15 +144,12 @@ pub struct LocalScratch {
     /// turns taken, the state.
     heap: BinaryHeap<Reverse<(u32, i64, u32, u32)>>,
     /// The best state at each spot, heading and stretch of time.
-    ///
-    /// A hash map, not an ordered one: the search only looks states up, and
-    /// clearing it between plans keeps its allocation for the next search.
     seen: FxHashMap<u64, u32>,
     /// The squared distance each body must be kept at, in the order of the
     /// bodies asked about.
     need: Vec<i64>,
-    /// How far each body may stray from where it stands, in raw units,
-    /// and the distance it must be kept at.
+    /// How far each body may stray from where it stands plus the distance
+    /// it must be kept at, in raw units.
     reach: Vec<i64>,
     /// Whether any body asked about is going anywhere.
     moving: bool,
@@ -173,12 +170,60 @@ impl LocalScratch {
     pub fn new() -> LocalScratch {
         LocalScratch::default()
     }
+
+    /// Forgets the last search and works out what every stretch tried in
+    /// the next one reads: where each body stands after each tick of the
+    /// horizon, how near it may come, and the offsets of every heading.
+    fn prepare(&mut self, bodies: &[Foreseen], ask: &LocalAsk) {
+        self.nodes.clear();
+        self.trail.clear();
+        self.heap.clear();
+        self.seen.clear();
+        self.need.clear();
+        self.reach.clear();
+        self.moving = false;
+        self.foreseen.clear();
+        for body in bodies {
+            let apart = ask.from.distance_squared(body.at);
+            let need = (ask.radius + body.radius).squared_raw();
+            // A body it already overlaps stops only a step deeper into it.
+            let need = need.min(apart);
+            self.need.push(need);
+            for step in 1..=HORIZON {
+                self.foreseen.push(body.at_tick(ask.now, ask.now + step));
+            }
+            self.reach.push(body.reach(ask.now) + isqrt64(need));
+            self.moving |= body.moves();
+        }
+        debug_assert_eq!(self.foreseen.len(), bodies.len() * HORIZON as usize);
+        if self.offsets_step != Some(ask.step.raw) {
+            self.offsets.clear();
+            for heading in 0..HEADINGS {
+                let angle = Angle {
+                    brads: (heading * HEADING_BRADS) as u16,
+                };
+                let towards = heading_of(angle);
+                for k in 1..=PRIM {
+                    self.offsets.push(point_along(
+                        Vec2::ZERO,
+                        towards,
+                        Fixed {
+                            raw: ask.step.raw.saturating_mul(k as i32),
+                        },
+                    ));
+                }
+            }
+            debug_assert_eq!(self.offsets.len(), HEADINGS as usize * PRIM as usize);
+            self.offsets_step = Some(ask.step.raw);
+        }
+    }
 }
 
 /// Where the body stands after each tick of the best stretch found, and
 /// whether that gets it to the goal: there when a state gets there within
 /// the horizon and the search budget, else as near as any state got. Empty
-/// when nothing gets it anywhere, or it is there already.
+/// when nothing gets it anywhere; empty and there when it is there already
+/// or cannot step.
 pub fn plan_local(
     ob: &Obstacles,
     bodies: &[Foreseen],
@@ -188,49 +233,7 @@ pub fn plan_local(
     if ask.step.raw <= 0 || ask.from.within(ask.goal, ask.arrive) {
         return (Vec::new(), true);
     }
-    scratch.nodes.clear();
-    scratch.trail.clear();
-    scratch.heap.clear();
-    scratch.seen.clear();
-    scratch.need.clear();
-    scratch.reach.clear();
-    scratch.moving = false;
-    scratch.foreseen.clear();
-    for body in bodies {
-        let apart = ask.from.distance_squared(body.at);
-        let need = (ask.radius + body.radius).squared_raw();
-        // A body it already overlaps stops only a step deeper into it.
-        let need = need.min(apart);
-        scratch.need.push(need);
-        // Where the body stands after each tick of the horizon: the same
-        // answer for every stretch tried, so it is worked out once.
-        for step in 1..=HORIZON {
-            scratch.foreseen.push(body.at_tick(ask.now, ask.now + step));
-        }
-        scratch.reach.push(body.reach(ask.now) + isqrt64(need));
-        scratch.moving |= body.moves();
-    }
-    debug_assert_eq!(scratch.foreseen.len(), bodies.len() * HORIZON as usize);
-    if scratch.offsets_step != Some(ask.step.raw) {
-        scratch.offsets.clear();
-        for heading in 0..HEADINGS {
-            let angle = Angle {
-                brads: (heading * HEADING_BRADS) as u16,
-            };
-            let towards = heading_of(angle);
-            for k in 1..=PRIM {
-                scratch.offsets.push(point_along(
-                    Vec2::ZERO,
-                    towards,
-                    Fixed {
-                        raw: ask.step.raw.saturating_mul(k as i32),
-                    },
-                ));
-            }
-        }
-        debug_assert_eq!(scratch.offsets.len(), HEADINGS as usize * PRIM as usize);
-        scratch.offsets_step = Some(ask.step.raw);
-    }
+    scratch.prepare(bodies, ask);
     let (far, left) = goal_gap(ask, ask.from);
     let start = Node {
         pos: ask.from,
@@ -362,32 +365,31 @@ fn try_heading(
     if node.t + ticks > HORIZON {
         return;
     }
-    let mut steps = std::mem::take(&mut scratch.steps);
-    steps.clear();
-    if heading < HEADINGS {
-        let from = (heading * PRIM) as usize;
-        for offset in &scratch.offsets[from..from + PRIM as usize] {
-            steps.push(node.pos + *offset);
-        }
-    } else {
-        let towards = node.pos + heading_of(angle);
-        for k in 1..=PRIM {
-            steps.push(point_along(
+    let towards = node.pos + heading_of(angle);
+    let step_at = |k: u32| -> Vec2 {
+        if heading < HEADINGS {
+            node.pos + scratch.offsets[(heading * PRIM + k - 1) as usize]
+        } else {
+            point_along(
                 node.pos,
                 towards,
                 Fixed {
                     raw: ask.step.raw.saturating_mul(k as i32),
                 },
-            ));
+            )
         }
+    };
+    let end = step_at(PRIM);
+    if !worth(scratch, end, heading, node.t + ticks) || !ob.clear(node.pos, end, ask.radius) {
+        return;
     }
-    let end = *steps.last().expect("a stretch has steps");
-    if worth(scratch, end, heading, node.t + ticks) && ob.clear(node.pos, end, ask.radius) {
-        let turned = facing_gap(node.facing, angle) > 0;
-        add_stretch(
-            bodies, ask, scratch, index, angle, heading, stall, &steps, turned,
-        );
-    }
+    let mut steps = std::mem::take(&mut scratch.steps);
+    steps.clear();
+    steps.extend((1..=PRIM).map(step_at));
+    let turned = facing_gap(node.facing, angle) > 0;
+    add_stretch(
+        bodies, ask, scratch, index, angle, heading, stall, &steps, turned,
+    );
     scratch.steps = steps;
 }
 
@@ -528,8 +530,8 @@ fn key_of(node: &Node) -> u64 {
     key_parts(node.pos, node.heading, node.t)
 }
 
-/// The key of a state at a spot, heading and tick: neighbouring headings
-/// share a key, so a wall of bodies is not felt along at every angle.
+/// The key of a state at a spot, heading and tick: each pair of
+/// neighbouring headings shares a key.
 fn key_parts(pos: Vec2, heading: u32, t: u32) -> u64 {
     let cell = |v: Fixed| (v.to_int().max(0) / rules::LOCAL_KEY_CELL) as u64;
     (cell(pos.x) << 40) | (cell(pos.y) << 20) | (u64::from(heading / 2) << 8) | u64::from(t / PRIM)

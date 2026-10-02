@@ -38,7 +38,7 @@ pub struct Carried {
     pub hp_regen: Fixed,
     /// Mana per tick added.
     pub mana_regen: Fixed,
-    /// Attack damage added against anything that is not a hero.
+    /// Attack damage added against lane and neutral creeps.
     pub damage_to_creeps: i32,
     /// Percent added to the base attack speed and to what agility adds.
     /// Attack speed from items and from what is on the carrier is left
@@ -491,10 +491,10 @@ pub const MANGO_STACK_MAX: u8 = 3;
 pub const MANGO_MANA: i32 = 100;
 /// Ticks a Healing Salve mends over.
 pub const SALVE_TICKS: u32 = 300;
-/// How far a Blink Dagger carries, in units.
+/// How far a Blink Dagger carries, in world units.
 pub const BLINK_RANGE: i32 = 1200;
-/// Health per tick per charge: `2 / (5 * TICKS_PER_SECOND)`, truncated to Q16.16.
-/// At 30 ticks/s this is 873 raw/tick, exactly 0.399627685546875 HP/s.
+/// Health per tick per Mango charge carried: 0.4 a second, truncated to 873
+/// raw a tick.
 pub const MANGO_HP_REGEN: Fixed = Fixed::from_ratio(2, 5 * rules::TICKS_PER_SECOND as i32);
 
 const _: () = {
@@ -1043,15 +1043,6 @@ pub fn item_def(id: ItemId) -> Option<&'static ItemDef> {
     ITEMS.get(usize::from(id.0))
 }
 
-/// Every item built from a given one, in catalog order.
-pub fn built_from(part: ItemId) -> impl Iterator<Item = ItemId> {
-    ITEMS
-        .iter()
-        .enumerate()
-        .filter(move |(_, def)| def.components.contains(&part))
-        .map(|(index, _)| ItemId(index as u16))
-}
-
 /// The whole shop as the wire states it, in item id order.
 pub fn shop_entries() -> Vec<bota_proto::ShopEntry> {
     ITEMS
@@ -1069,8 +1060,6 @@ pub fn shop_entries() -> Vec<bota_proto::ShopEntry> {
 ///
 /// Mana costs carry the holder's mana cost rate; `mana_rate_bp` is
 /// [`rules::NOMINAL_BP`] for a bag with no body behind it.
-///
-/// [`rules::NOMINAL_BP`]: crate::game::rules::NOMINAL_BP
 pub fn item_views(bag: &Inventory, mana_rate_bp: i32) -> Vec<Option<ItemView>> {
     bag.slots
         .iter()
@@ -1091,6 +1080,7 @@ pub fn item_views(bag: &Inventory, mana_rate_bp: i32) -> Vec<Option<ItemView>> {
                     range: def.map_or(0, |def| def.range),
                     aim: def.and_then(|def| def.aim),
                     for_sale: stack.for_sale,
+                    owner: stack.owner,
                 }
             })
         })

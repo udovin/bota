@@ -1,19 +1,12 @@
 //! What the client knows about abilities, items, effects and heroes.
 //!
-//! Names, blurbs and art only: every number an entry is worth rides the wire,
-//! in the views for what a unit holds and in the shop table for what a thing
-//! costs before anybody holds it.
-//!
-//! One entry to a thing, found by the id the wire carries. Anything the view
-//! already brings -- level, mana cost, cooldown left, charges left -- is read
-//! from the view; what stands here is what the wire does not send.
+//! Names, blurbs and art only, one entry to a thing, found by the id the wire
+//! carries. The numbers ride the wire: in the views for what a unit holds and
+//! in the shop table for what a thing costs.
 
 use bota_proto::{ItemId, ShopEntry};
 
-/// How what an ability shows on the ground is drawn, in world units.
-///
-/// The wire brings where it stands, as one of the view's projectiles; this
-/// is only the shape.
+/// The shape a projectile of an ability is drawn as. Radii are in world units.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Art {
     /// A missile: a dot.
@@ -96,7 +89,7 @@ pub const ABILITIES: [AbilityFace; 19] = [
     AbilityFace {
         id: 1,
         name: "Frenzy",
-        blurb: "No target. +20/28/36/44% attack speed for 6 s. 30/40/50/60 mana.",
+        blurb: "No target. +25/39/56/79% attack speed for 6 s. 30/40/50/60 mana.",
         icon: None,
         art: Art::Missile,
     },
@@ -110,7 +103,7 @@ pub const ABILITIES: [AbilityFace; 19] = [
     AbilityFace {
         id: 3,
         name: "Volley",
-        blurb: "Ultimate, no target. An attack at 80/100/120% damage flies at every enemy within 700.",
+        blurb: "Ultimate, no target. Strikes every enemy within 700 at once for 80/100/120% of attack damage, as physical damage.",
         icon: None,
         art: Art::Missile,
     },
@@ -124,7 +117,7 @@ pub const ABILITIES: [AbilityFace; 19] = [
     AbilityFace {
         id: 5,
         name: "Rot",
-        blurb: "Toggle. Burns everything within 250 for 30/60/90/120 a second and slows it, its owner included, but never kills its owner.",
+        blurb: "Toggle. Burns every enemy within 250 for 30/60/90/120 a second and slows it 10/15/20/25%. It burns its owner for the same, but never kills its owner.",
         icon: None,
         art: Art::Cloud { radius: 250 },
     },
@@ -180,28 +173,28 @@ pub const ABILITIES: [AbilityFace; 19] = [
     AbilityFace {
         id: 13,
         name: "Raze 1",
-        blurb: "No target. Burns everything within 250 of a spot 200 ahead of where you face for 90/160/230/300 magic damage, plus 50/60/70/80 per prior same-caster stack. Each damaging hit refreshes all stacks for 8 s. One point levels all three razes. 10 s wait.",
+        blurb: "No target. Burns every enemy but a building within 250 of a spot 200 ahead of where you face for 90/160/230/300 magic damage, plus 50/60/70/80 per prior same-caster stack. Each damaging hit refreshes all stacks for 8 s. One point levels all three razes. 10 s wait.",
         icon: None,
         art: Art::Burst { radius: 250 },
     },
     AbilityFace {
         id: 14,
         name: "Raze 2",
-        blurb: "No target. Burns everything within 250 of a spot 450 ahead of where you face for 90/160/230/300 magic damage, plus 50/60/70/80 per prior same-caster stack. Each damaging hit refreshes all stacks for 8 s. One point levels all three razes. 10 s wait.",
+        blurb: "No target. Burns every enemy but a building within 250 of a spot 450 ahead of where you face for 90/160/230/300 magic damage, plus 50/60/70/80 per prior same-caster stack. Each damaging hit refreshes all stacks for 8 s. One point levels all three razes. 10 s wait.",
         icon: None,
         art: Art::Burst { radius: 250 },
     },
     AbilityFace {
         id: 15,
         name: "Raze 3",
-        blurb: "No target. Burns everything within 250 of a spot 700 ahead of where you face for 90/160/230/300 magic damage, plus 50/60/70/80 per prior same-caster stack. Each damaging hit refreshes all stacks for 8 s. One point levels all three razes. 10 s wait.",
+        blurb: "No target. Burns every enemy but a building within 250 of a spot 700 ahead of where you face for 90/160/230/300 magic damage, plus 50/60/70/80 per prior same-caster stack. Each damaging hit refreshes all stacks for 8 s. One point levels all three razes. 10 s wait.",
         icon: None,
         art: Art::Burst { radius: 250 },
     },
     AbilityFace {
         id: 16,
         name: "Requiem",
-        blurb: "Ultimate, no target. Lets a line fly out for every soul held, up to 20, out to 1000. Each line burns what it crosses for 80/120/160 magic damage, and every hit adds 0.6 s of fear and a 20/25/30% slow, up to 2.15 s. What stands close is crossed by many lines. The souls are kept.",
+        blurb: "Ultimate, no target. Lets a line fly out for every soul held, up to 20, out to 1000. Each line burns every enemy but a building it crosses for 80/120/160 magic damage, and every hit adds 0.6 s of fear and a 20/25/30% slow, up to 2.1 s. What stands close is crossed by many lines. The souls are kept.",
         icon: None,
         art: Art::Soul,
     },
@@ -234,14 +227,14 @@ pub const ITEMS: [ItemFace; 52] = [
         id: 1,
         name: "Clarity",
         stats: "150MP/25s",
-        blurb: "Consumable. Restores 150 mana over 25 s. Any hero's hit breaks it.",
+        blurb: "Consumable. Restores 150 mana over 25 s. A blow from a hero or a tower breaks it.",
         icon: Some(include_bytes!("../assets/items/clarity.svg")),
     },
     ItemFace {
         id: 2,
         name: "Salve",
         stats: "400HP/10s",
-        blurb: "Consumable. Restores 400 health over 10 s. Any hero's hit breaks it.",
+        blurb: "Consumable. Restores 400 health over 10 s. A blow from a hero or a tower breaks it.",
         icon: Some(include_bytes!("../assets/items/healing_salve.svg")),
     },
     ItemFace {
@@ -437,14 +430,14 @@ pub const ITEMS: [ItemFace; 52] = [
         id: 30,
         name: "Phase",
         stats: "+45MS+18DMG",
-        blurb: "+45 movement speed, +18 attack damage. Walks 20% faster and through bodies for 3 s. 8 s wait.",
+        blurb: "+45 movement speed, +18 attack damage. Walks 20% faster and through bodies for 3.1 s. 8 s wait.",
         icon: Some(include_bytes!("../assets/items/phase_boots.svg")),
     },
     ItemFace {
         id: 31,
         name: "Blink",
         stats: "1200 jump",
-        blurb: "Carries you to a point up to 1200 away. 15 s wait, and any hero's blow sets it back 3 s.",
+        blurb: "Carries you to a point up to 1200 away. 15 s wait, and a blow from a hero or a tower leaves it at least 3 s from ready.",
         icon: Some(include_bytes!("../assets/items/blink_dagger.svg")),
     },
     ItemFace {
@@ -654,7 +647,7 @@ pub const EFFECTS: [EffectFace; 18] = [
     EffectFace {
         id: 10,
         name: "Heap",
-        blurb: "Health kept from every death nearby.",
+        blurb: "Strength kept from every enemy hero that died nearby.",
         icon: None,
     },
     EffectFace {
@@ -690,7 +683,7 @@ pub const EFFECTS: [EffectFace; 18] = [
     EffectFace {
         id: 16,
         name: "Rot",
-        blurb: "The rot is on: everything within 250 burns and slows, its owner included.",
+        blurb: "The rot is on. It is never listed on a unit: the toggle shows on the ability.",
         icon: None,
     },
     EffectFace {
@@ -734,10 +727,9 @@ pub fn whole_price(shop: &[ShopEntry], item: ItemId) -> i32 {
         .map_or(0, |entry| entry.cost)
 }
 
-/// What the shop asks a seat holding `held` for one item.
-///
-/// The rule the server charges by: what was asked for is bought however many
-/// of it are already held, and only its parts are looked for in hand.
+/// What the shop asks a seat holding `held` for one item: an item without
+/// parts costs its whole price however many are held; a built one costs the
+/// parts not found in `held`, each spent once.
 pub fn price_for(shop: &[ShopEntry], item: ItemId, held: &[ItemId]) -> i32 {
     let mut spare = held.to_vec();
     let mut wanted = Vec::new();

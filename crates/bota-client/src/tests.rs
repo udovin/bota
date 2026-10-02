@@ -427,8 +427,7 @@ fn a_part_in_hand_comes_off_what_the_shop_asks() {
     );
 }
 
-/// A hero body with every field named, so a new one in `UnitView` has to be
-/// thought about here before these tests compile again.
+/// A hero body with every field named.
 pub fn a_unit() -> UnitView {
     UnitView {
         id: EntityId {
@@ -639,6 +638,7 @@ fn an_item(charges: Option<u8>, cooldown: u32, mana_cost: i32, aim: Option<Aim>)
         range: 0,
         aim,
         for_sale: false,
+        owner: SlotId(0),
     }
 }
 
@@ -704,8 +704,7 @@ fn no_two_boxes_of_the_panel_sit_on_one_another() {
             );
         }
     }
-    // The panel's own boxes stay inside it. The stash strip is drawn above
-    // the panel on purpose and is left out of this.
+    // The panel's own boxes stay inside it; the stash strip sits above it.
     for (which, r) in boxes.iter().filter(|(name, _)| !name.starts_with("stash")) {
         assert!(
             r.x >= panel.x
@@ -792,8 +791,7 @@ fn the_cursor_pushes_the_camera_only_at_the_very_edge() {
     );
 }
 
-/// A seat with every field named, so a new one in `PlayerView` has to be
-/// thought about here before these tests compile again.
+/// A seat with every field named.
 pub fn a_player() -> PlayerView {
     PlayerView {
         slot: SlotId(0),
@@ -986,5 +984,77 @@ fn a_hero_that_comes_back_leaves_only_one_body_behind() {
         body_in(&seen, &view, SlotId(0)),
         Some(fresh),
         "and the seat answers with the one it stood in last"
+    );
+}
+
+/// An app that has heard nothing, over an empty recording.
+fn a_silent_app() -> crate::state::App {
+    let player = crate::replay_play::ReplayPlayer::from_reader(std::io::Cursor::new(Vec::new()));
+    crate::state::App::new(crate::state::Source::Replay(Box::new(player)))
+}
+
+#[test]
+fn the_home_shop_is_where_the_match_put_the_fountain() {
+    let mut app = a_silent_app();
+    app.my_slot = Some(SlotId(0));
+    app.fountains = [Vec2::from_ints(3000, 3000), Vec2::from_ints(9000, 9000)];
+    app.shop_range = 1000;
+    let mut body = a_unit();
+    body.id = EntityId {
+        idx: 1,
+        generation: 1,
+    };
+    body.pos = Vec2::from_ints(3500, 3000);
+    let mut seat = a_player();
+    seat.unit = Some(body.id);
+    app.view = Some(a_tick(1, vec![body.clone()], vec![seat]));
+    assert!(
+        app.at_home_shop(),
+        "inside the range of this map's fountain"
+    );
+
+    body.pos = Vec2::from_ints(1760, 2278);
+    let mut seat = a_player();
+    seat.unit = Some(body.id);
+    app.view = Some(a_tick(2, vec![body], vec![seat]));
+    assert!(
+        !app.at_home_shop(),
+        "the main map's fountain means nothing here"
+    );
+}
+
+#[test]
+fn only_what_the_seat_bought_and_keeps_counts_toward_the_price() {
+    let mut body = a_unit();
+    body.id = EntityId {
+        idx: 1,
+        generation: 1,
+    };
+    let kept = ItemView {
+        id: ItemId(0),
+        ..an_item(None, 0, 0, None)
+    };
+    let sold = ItemView {
+        id: ItemId(19),
+        for_sale: true,
+        ..kept
+    };
+    let found = ItemView {
+        id: ItemId(13),
+        owner: SlotId(1),
+        ..kept
+    };
+    body.items = vec![Some(kept), Some(sold), Some(found)];
+    let mut seat = a_player();
+    seat.unit = Some(body.id);
+    seat.stash = Some(vec![Some(ItemView {
+        id: ItemId(20),
+        ..kept
+    })]);
+    let view = a_tick(1, vec![body], vec![seat.clone()]);
+    assert_eq!(
+        crate::render::held_items(&view, &seat),
+        vec![ItemId(0), ItemId(20)],
+        "a part marked for sale or bought by another seat is not spent on a build"
     );
 }

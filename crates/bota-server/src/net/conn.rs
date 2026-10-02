@@ -59,16 +59,7 @@ impl Connection {
         self.outbox.push_snapshot(frame);
     }
 
-    /// Whether the peer is still worth sending to.
-    pub fn is_open(&self) -> bool {
-        !self.outbox.is_closed()
-    }
-
     /// Stops sending and waits for what is queued to reach the socket.
-    ///
-    /// Waited for rather than left to finish on its own: the match's last
-    /// message is queued at the moment the server has nothing else to do, and
-    /// a process that exits from under the writer takes that message with it.
     pub fn close_and_wait(&mut self) {
         self.close();
         if let Some(writer) = self.writer.take() {

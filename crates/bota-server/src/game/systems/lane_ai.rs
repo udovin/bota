@@ -1,23 +1,18 @@
-//! Choosing what to attack, and holding to it.
-//!
-//! One rule serves everything that fights of its own accord. A candidate is
-//! ranked by what it is, then by what it is doing, then by how far off it
-//! stands, and the first of that order wins. What is held is given up only
-//! when it stops being worth holding: gone from sight, no longer something to
-//! strike, or beaten by something better once the holder can reach it.
+//! Choosing what to attack, and holding to it: one rule for everything that
+//! fights of its own accord.
 
 use bota_proto::{Fixed, UnitKind};
 
-use crate::game::{Entity, PriorityOrder, UnitOrder, World, class_rank_of};
+use crate::game::{Candidates, Entity, PriorityOrder, UnitOrder, World, class_rank_of};
 use crate::game::{isqrt64, rules};
+use crate::profile::Phase;
 
 impl World {
     /// Where a candidate sits by what it is doing. Lower is taken first.
     ///
-    /// A hero laying into this side counts for no more than a plain unit;
-    /// what pulls a creep onto a hero is the order that roused it, not the
-    /// ranking. A hero doing nothing to this side comes after both, and one
-    /// putting out its own comes last.
+    /// A hero laying into this side counts for no more than a plain unit. A
+    /// hero doing nothing to this side comes after both, and one putting out
+    /// its own comes last.
     pub fn threat_priority(&self, seeker: Entity, candidate: Entity) -> u8 {
         let Some(side) = self.team.get(seeker).copied() else {
             return 1;
@@ -60,19 +55,16 @@ impl World {
     /// Ranked by what it is, then by what it is doing, then by how far off it
     /// stands. The entity itself breaks a dead tie, so the answer is the same
     /// on every run.
-    pub fn best_valid_in_range(&self, seeker: Entity, reach: Fixed) -> Option<Entity> {
+    pub fn best_valid_in_range(
+        &self,
+        seeker: Entity,
+        reach: Fixed,
+        candidates: &Candidates,
+    ) -> Option<Entity> {
         let order = self.priority_of(seeker);
         let at = self.transform.get(seeker)?.pos;
-        #[cfg(feature = "phase-profile")]
-        let _profile = crate::profile::ScopeGuard::new(
-            crate::profile::Phase::TargetQuery,
-            self.tick,
-            self.entities.len(),
-        );
-        // Reaching a candidate is being hostile to it within the reach, so
-        // the range is weighed first and hostility once.
-        self.entities
-            .iter()
+        let _profile = self.scope(Phase::TargetQuery);
+        self.near(seeker, at, reach, candidates)
             .filter(|candidate| *candidate != seeker && self.reachable(seeker, reach, *candidate))
             .min_by_key(|candidate| {
                 let far = self
@@ -90,11 +82,14 @@ impl World {
 
     /// What this entity should be set on this tick.
     ///
-    /// Nothing held means taking the best in reach of acquisition. Something
-    /// held is kept while its hold lasts; past that only a better class in
-    /// reach is worth turning to, and a chase that has run its course is given
-    /// up for whatever else there is.
-    pub fn select_target(&self, seeker: Entity) -> Option<Entity> {
+    /// Nothing held, or something held that may no longer be taken on, means
+    /// taking the best within acquisition; one that may not is kept only
+    /// while its hold lasts and there is nothing else. Something held is kept
+    /// while its hold lasts. Past that, one within attack range is kept
+    /// unless something of a better class is within attack range too; one
+    /// out of it gives way to the best within acquisition, and is kept only
+    /// when there is none and its chase has not run out.
+    pub fn select_target(&self, seeker: Entity, candidates: &Candidates) -> Option<Entity> {
         let acquisition = self
             .stats
             .get(seeker)
@@ -106,41 +101,43 @@ impl World {
         let ai = self.lane_ai.get(seeker).copied();
         let keeping = ai.is_some_and(|ai| self.tick < ai.keep_until);
         let Some(held) = self.target_of(seeker) else {
-            return self.best_valid_in_range(seeker, acquisition);
+            return self.best_valid_in_range(seeker, acquisition, candidates);
         };
         if !self.valid_target(seeker, held) {
             return self
-                .best_valid_in_range(seeker, acquisition)
+                .best_valid_in_range(seeker, acquisition, candidates)
                 .or_else(|| keeping.then_some(held));
         }
         if keeping {
             return Some(held);
         }
         if self.reachable(seeker, reach, held) {
-            // Close enough to strike: only a better class is worth turning to,
-            // and only one already in reach.
             let order = self.priority_of(seeker);
             if self.class_priority(held, order) == 0 {
                 return Some(held);
             }
-            let best = self.best_valid_in_range(seeker, reach);
+            let best = self.best_valid_in_range(seeker, reach, candidates);
             let better = best.is_some_and(|best| {
                 self.class_priority(best, order) < self.class_priority(held, order)
             });
             return if better { best } else { Some(held) };
         }
         if ai.is_some_and(|ai| self.tick >= ai.chase_until) {
-            return self.best_valid_in_range(seeker, acquisition);
+            return self.best_valid_in_range(seeker, acquisition, candidates);
         }
-        self.best_valid_in_range(seeker, acquisition).or(Some(held))
+        self.best_valid_in_range(seeker, acquisition, candidates)
+            .or(Some(held))
     }
 
     /// Runs one tick of choosing for everything that fights of its own accord.
     ///
     /// What is taken on depends on the order in hand: one told to walk
-    /// somewhere or to stand takes on nothing, one told to attack takes on that
-    /// and nothing else, and one left to itself chooses.
+    /// somewhere, to follow or to stand takes on nothing, one told to attack
+    /// takes on that and nothing else, and one left to itself chooses. Every
+    /// order cooldown runs one tick down here.
     pub fn tick_targeting(&mut self) {
+        let mut candidates = std::mem::take(&mut self.candidates);
+        self.lay_candidates(&mut candidates);
         let entities = self.take_entity_snapshot();
         for entity in entities.iter().copied() {
             if let Some(orders) = self.orders.get_mut(entity) {
@@ -171,7 +168,7 @@ impl World {
                 }
                 _ => {}
             }
-            match self.chosen_target(entity) {
+            match self.chosen_target(entity, &candidates) {
                 Some(found) => self.set_target(entity, found),
                 None => {
                     self.target.remove(entity);
@@ -180,15 +177,15 @@ impl World {
             self.mark_chase(entity);
         }
         self.recycle_entity_snapshot(entities);
+        self.candidates = candidates;
     }
 
     /// Keeps every order aimed at a unit honest about what its side sees.
     ///
     /// For a target still seen, the last seen spot moves with it. For one
-    /// its side has lost, the order degrades toward that spot — an attack
-    /// into an attack-move, a follow into a walk — so the hidden body is
-    /// not tracked. Runs on sight freshly laid out, which is what catches
-    /// a body the tick it slips away.
+    /// its side has lost, the order degrades toward that spot (an attack
+    /// into an attack-move, a follow into a walk) and the target is dropped.
+    /// Runs on the sight laid out earlier in the same tick.
     pub fn tend_attack_orders(&mut self) {
         let entities = self.take_entity_snapshot();
         for entity in entities.iter().copied() {
@@ -232,16 +229,14 @@ impl World {
     /// What this entity should be set on, everything else it carries taken
     /// into account.
     ///
-    /// A neutral walking home takes nothing on, and one whose camp was struck
-    /// takes whoever struck it. A creep just roused by an
-    /// attack order takes whoever it was roused at, unless the order was aimed
-    /// at one of the orderer's own, in which case the orderer goes last.
-    fn chosen_target(&mut self, entity: Entity) -> Option<Entity> {
+    /// A neutral walking home or asleep takes nothing on, and one whose camp
+    /// was struck takes whoever struck it. A creep just roused by an attack
+    /// order takes whoever it was roused at, unless the order was aimed at one
+    /// of the orderer's own, in which case the orderer goes last.
+    fn chosen_target(&mut self, entity: Entity, candidates: &Candidates) -> Option<Entity> {
         if self.neutral_ai.get(entity).is_some_and(|ai| ai.going_home) {
             return None;
         }
-        // A camp struck answers as one, whoever of it was struck, and answers
-        // to a blow it never saw thrown.
         if let Some(mut ai) = self.neutral_ai.get(entity).copied()
             && let Some(by) = ai.roused_by.take()
         {
@@ -263,7 +258,7 @@ impl World {
                 .map_or(Fixed::ZERO, |stats| stats.acquisition);
             let order = self.priority_of(entity);
             let taken = if ai.roused_at_own {
-                self.acquire_demoting(entity, reach, order, Some(orderer))
+                self.acquire_demoting(entity, reach, order, Some(orderer), candidates)
             } else {
                 Some(orderer)
             };
@@ -274,7 +269,7 @@ impl World {
             self.lane_ai.insert(entity, ai);
             return taken;
         }
-        self.select_target(entity)
+        self.select_target(entity, candidates)
     }
 
     /// Keeps a creep's marks up to date: how long the chase has left and
@@ -321,13 +316,9 @@ impl World {
         let Some(mut ai) = self.lane_ai.get(creep).copied() else {
             return;
         };
-        // A hold is not broken by an order of any kind: what pulled the creep
-        // keeps it for its whole span.
         if self.tick < ai.keep_until {
             return;
         }
-        // Pointing at one of your own lets go rather than pulls, so it waits
-        // on nothing and spends nothing.
         if !at_own {
             if self
                 .orders

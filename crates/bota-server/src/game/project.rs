@@ -6,8 +6,10 @@ use bota_proto::{
 };
 
 use crate::game::{Entity, ModifierKind, StackKind, World, ability_mana_cost, item_views};
+use crate::profile::Phase;
 
-/// Shadowraze amplification; each anonymous source row carries both ticks and stacks.
+/// The wire's effect id of Shadowraze: one row per source, carrying its ticks
+/// and stacks.
 pub const EFFECT_SHADOWRAZE: u16 = 15;
 
 /// The handle as it travels on the wire.
@@ -31,87 +33,26 @@ impl World {
 
     /// Everything a viewer is allowed to be told. `None` holds nothing back.
     fn project(&self, viewer: Option<Team>) -> WorldView {
-        #[cfg(feature = "phase-profile")]
-        let _profile = crate::profile::ScopeGuard::new(
-            crate::profile::Phase::Projection,
-            self.tick,
-            self.entities.len(),
-        );
-        // The entity table bounds every filtered collection below, so the
-        // one allocation each needs is taken up front instead of grown.
+        let _profile = self.scope(Phase::Projection);
         let mut units = Vec::with_capacity(self.entities.len());
-        units.extend(
-            self.entities
-                .iter()
-                .filter(|entity| match viewer {
-                    None => true,
-                    Some(team) => {
-                        self.team.get(*entity) == Some(&team)
-                            || self.visibility.get(*entity).is_some_and(|s| s.by(team))
-                    }
-                })
-                .filter_map(|entity| self.project_unit(entity)),
-        );
-        let mut projectiles = Vec::with_capacity(self.entities.len());
-        projectiles.extend(
-            self.entities
-                .iter()
-                .filter(|entity| {
-                    self.projectile.get(*entity).is_some()
-                        || self.hook.get(*entity).is_some()
-                        || self.mark.get(*entity).is_some()
-                        || self.requiem_line.get(*entity).is_some()
-                })
-                .filter(|entity| match viewer {
-                    None => true,
-                    Some(team) => {
-                        self.team.get(*entity) == Some(&team)
-                            || self.visibility.get(*entity).is_some_and(|s| s.by(team))
-                    }
-                })
-                .filter_map(|entity| {
-                    let at = self.transform.get(entity)?;
-                    let ability = if let Some(shot) = self.projectile.get(entity) {
-                        shot.ability
-                    } else if let Some(mark) = self.mark.get(entity) {
-                        Some(mark.ability)
-                    } else if self.requiem_line.get(entity).is_some() {
-                        Some(crate::game::ability::REQUIEM)
-                    } else {
-                        Some(crate::game::ability::MEAT_HOOK)
-                    };
-                    Some(ProjectileView {
-                        id: wire_id(entity),
-                        pos: at.pos,
-                        facing: at.facing,
-                        team: self.team.get(entity).copied().unwrap_or(Team::Neutral),
-                        ability,
-                    })
-                }),
-        );
-        let mut loot = Vec::with_capacity(self.entities.len());
-        loot.extend(
-            self.entities
-                .iter()
-                .filter(|entity| self.loot.get(*entity).is_some())
-                .filter(|entity| match viewer {
-                    None => true,
-                    Some(team) => self.visibility.get(*entity).is_some_and(|s| s.by(team)),
-                })
-                .filter_map(|entity| {
-                    let crate::game::Loot(stack) = self.loot.get(entity)?;
-                    let at = self.transform.get(entity)?;
-                    let def = crate::game::item_def(stack.id);
-                    Some(bota_proto::LootView {
-                        id: wire_id(entity),
-                        pos: at.pos,
-                        item: stack.id,
-                        charges: def
-                            .filter(|def| def.charges > 0 || def.cast_charges > 0)
-                            .map(|_| stack.charges),
-                    })
-                }),
-        );
+        let mut projectiles = Vec::new();
+        let mut loot = Vec::new();
+        for entity in self.entities.iter() {
+            let seen = viewer.is_none_or(|team| {
+                self.visibility
+                    .get(entity)
+                    .is_some_and(|seen| seen.by(team))
+            });
+            let told = seen || viewer.is_some_and(|team| self.team.get(entity) == Some(&team));
+            if !told {
+                continue;
+            }
+            units.extend(self.project_unit(entity));
+            projectiles.extend(self.project_projectile(entity));
+            if seen {
+                loot.extend(self.project_loot(entity));
+            }
+        }
         WorldView {
             tick: self.tick,
             viewer,
@@ -139,8 +80,6 @@ impl World {
                         _ => Some(item_views(&seat.stash, self.mana_cost_rate_of(seat.unit))),
                     },
                     // What a fallen body left is told to its own side alone.
-                    // The other side is left with whatever it saw last, which
-                    // is its own business to remember.
                     kit: match viewer {
                         Some(team) if team != seat.team => None,
                         _ => seat.kept.as_ref().map(|kept| bota_proto::Kit {
@@ -160,6 +99,45 @@ impl World {
             planted_trees: self.trees.planted().iter().map(|tree| tree.at).collect(),
             loot,
         }
+    }
+
+    /// One missile, hook, mark or line of a requiem, or nothing when the
+    /// entity is none of them.
+    fn project_projectile(&self, entity: Entity) -> Option<ProjectileView> {
+        let ability = if let Some(shot) = self.projectile.get(entity) {
+            shot.ability
+        } else if let Some(mark) = self.mark.get(entity) {
+            Some(mark.ability)
+        } else if self.requiem_line.get(entity).is_some() {
+            Some(crate::game::ability::REQUIEM)
+        } else if self.hook.get(entity).is_some() {
+            Some(crate::game::ability::MEAT_HOOK)
+        } else {
+            return None;
+        };
+        let at = self.transform.get(entity)?;
+        Some(ProjectileView {
+            id: wire_id(entity),
+            pos: at.pos,
+            facing: at.facing,
+            team: self.team.get(entity).copied().unwrap_or(Team::Neutral),
+            ability,
+        })
+    }
+
+    /// One item on the ground, or nothing when the entity is not one.
+    fn project_loot(&self, entity: Entity) -> Option<bota_proto::LootView> {
+        let crate::game::Loot(stack) = self.loot.get(entity)?;
+        let at = self.transform.get(entity)?;
+        let def = crate::game::item_def(stack.id);
+        Some(bota_proto::LootView {
+            id: wire_id(entity),
+            pos: at.pos,
+            item: stack.id,
+            charges: def
+                .filter(|def| def.charges > 0 || def.cast_charges > 0)
+                .map(|_| stack.charges),
+        })
     }
 
     /// One unit, or nothing when the entity is not one.
@@ -245,10 +223,8 @@ fn after_speed(ms: u32, attack_speed: i32) -> u32 {
     ms * crate::game::rules::BASE_ATTACK_SPEED as u32 / speed as u32
 }
 
-/// A pool as a number to show.
-///
-/// Anything left of a pool counts as one point, so a unit still standing never
-/// reads as empty.
+/// A pool as a number to show: anything above zero shows as at least one
+/// point.
 fn shown(held: Fixed) -> i32 {
     if held > Fixed::ZERO {
         held.to_int().max(1)
@@ -257,11 +233,8 @@ fn shown(held: Fixed) -> i32 {
     }
 }
 
-/// One ability slot on the wire.
-///
-/// What is worked out from the body it sits on — whether a toggle is running
-/// and whether a point could go into it — is asked of the caller, since a
-/// book that outlived its body has neither.
+/// One ability slot on the wire. Whether a toggle is running and whether a
+/// point could go into it come from the caller.
 fn ability_view(
     held: &crate::game::AbilityState,
     on: bool,
@@ -283,10 +256,8 @@ fn ability_view(
     }
 }
 
-/// A whole book on the wire, as it stands with no body under it.
-///
-/// Nothing is toggled on and no point may be spent: both want a body, and a
-/// kept book has none.
+/// A whole book on the wire, as it stands with no body under it: nothing
+/// toggled on and no point to spend.
 fn ability_views(book: &crate::game::AbilityBook, mana_rate_bp: i32) -> Vec<AbilityView> {
     book.slots
         .iter()
@@ -325,8 +296,8 @@ fn effect_id(kind: ModifierKind) -> u16 {
 }
 
 impl World {
-    /// Everything showing on one entity: what runs out, then what is
-    /// gathered.
+    /// Everything showing on one entity: its active modifiers but the rot,
+    /// then what it has gathered.
     fn effects_on(&self, entity: Entity) -> Vec<EffectView> {
         let mut on_it: Vec<EffectView> =
             self.modifiers

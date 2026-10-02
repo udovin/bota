@@ -58,8 +58,7 @@ struct EntityMeta {
 /// Hands out [`Entity`] handles and knows which of them are still live.
 ///
 /// A freed slot goes back to be handed out again ahead of any slot never yet
-/// used, carrying a raised generation. Iteration runs in slot order and never
-/// depends on a hash, which is what makes a tick reproducible.
+/// used, carrying a raised generation. Iteration runs in slot order.
 pub struct EntityAllocator {
     /// One entry per slot ever handed out, indexed by [`Index`].
     entities: Vec<EntityMeta>,
@@ -138,6 +137,13 @@ impl EntityAllocator {
             None => return false,
         };
         !meta.free && meta.generation == entity.generation
+    }
+
+    /// The live entity holding a slot as a given tenant, if there is one.
+    pub fn resolve(&self, index: Index, generation: u32) -> Option<Entity> {
+        let generation = Generation(NonZeroU32::new(generation)?);
+        let meta = self.entities.get(index.0 as usize)?;
+        (!meta.free && meta.generation == generation).then_some(Entity { index, generation })
     }
 
     /// Every live entity, in slot order.

@@ -1,4 +1,5 @@
-//! Picking a target, and clearing away what has fallen.
+//! Who stands and who is in reach, telling of blows, and clearing away what
+//! has fallen.
 
 use bota_proto::{EventKind, Fixed, Team, UnitKind};
 
@@ -6,9 +7,6 @@ use crate::game::{Entity, MAP2_ID, MAP2_TICK_CAP, UnitOrder, World, is_structure
 use crate::game::{Event, EventVisibility};
 
 impl World {
-    /// Each entity that can attack takes the best hostile in reach of its
-    /// acquisition, and keeps it while it lives and stays in range.
-    ///
     /// Whether an entity is still standing.
     pub fn alive(&self, entity: Entity) -> bool {
         self.entities.contains(entity)
@@ -60,9 +58,8 @@ impl World {
 
     /// Hands on the fights and follows aimed at a fallen entity.
     ///
-    /// An attack order degrades to attack-moving at the spot the target was
-    /// last seen, so the fight carries on with whatever acquisition finds
-    /// there. A follow ends where the one followed fell.
+    /// An attack order at it becomes an attack-move to the spot it was last
+    /// seen; a follow becomes a walk to that spot.
     fn carry_fights_on(&mut self, fallen: Entity) {
         for follower in self.entities.iter().collect::<Vec<_>>() {
             match self.orders.get(follower).map(|o| o.current) {

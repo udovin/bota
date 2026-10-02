@@ -1,3 +1,5 @@
+//! Keeping a target in reach against a closer one of the same class.
+
 use bota_proto::{Fixed, Team, Vec2};
 
 use crate::game::{Entity, LaneAi, MELEE_CREEP, SIEGE_CREEP, Visibility, World, tower_def};
@@ -7,10 +9,13 @@ fn reachable_class_zero_target_is_kept_over_a_closer_equal_class() {
     for siege in [false, true] {
         let (world, seeker, held, closer) = retention_world(siege, true);
         let reach = world.stats.get(seeker).expect("settled").attack_range;
-        assert_eq!(world.best_valid_in_range(seeker, reach), Some(closer));
+        assert_eq!(
+            world.best_valid_in_range(seeker, reach, &world.candidates()),
+            Some(closer)
+        );
         let before = world.hash();
 
-        assert_eq!(world.select_target(seeker), Some(held));
+        assert_eq!(world.select_target(seeker, &world.candidates()), Some(held));
 
         assert_eq!(world.hash(), before);
     }
@@ -22,7 +27,10 @@ fn reachable_nonzero_class_target_is_replaced_by_a_better_class() {
         let (world, seeker, _, better) = retention_world(siege, false);
         let before = world.hash();
 
-        assert_eq!(world.select_target(seeker), Some(better));
+        assert_eq!(
+            world.select_target(seeker, &world.candidates()),
+            Some(better)
+        );
 
         assert_eq!(world.hash(), before);
     }
@@ -49,7 +57,10 @@ fn unavailable_class_zero_target_does_not_bypass_reacquisition() {
         }
         let before = world.hash();
 
-        assert_eq!(world.select_target(seeker), Some(closer));
+        assert_eq!(
+            world.select_target(seeker, &world.candidates()),
+            Some(closer)
+        );
 
         assert_eq!(world.hash(), before);
     }
@@ -70,7 +81,7 @@ fn active_retention_lock_precedes_better_class_replacement() {
     );
     let before = world.hash();
 
-    assert_eq!(world.select_target(seeker), Some(held));
+    assert_eq!(world.select_target(seeker, &world.candidates()), Some(held));
 
     assert_eq!(world.hash(), before);
 }

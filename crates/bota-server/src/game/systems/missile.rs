@@ -12,7 +12,7 @@ use crate::game::{facing_towards, move_towards, per_tick};
 
 /// What flight reads and writes.
 pub struct MissileCx<'a> {
-    /// Which entities exist, where a missile is given up and a blow is made.
+    /// Which entities exist; a missile given up is freed here.
     pub entities: &'a mut EntityAllocator,
     /// The missiles themselves.
     pub projectile: &'a mut Table<Projectile>,
@@ -20,13 +20,13 @@ pub struct MissileCx<'a> {
     pub transform: &'a mut Table<Transform>,
     /// Which side each entity is on.
     pub team: &'a mut Table<Team>,
-    /// Who sees what, so a new blow carries nothing to see.
+    /// Who sees what; a missile given up loses its row here.
     pub visibility: &'a mut Table<Visibility>,
     /// Health, for telling whether a missile still has anybody to reach.
     pub health: &'a Table<Health>,
-    /// What each target is, so buildings never evade uphill attacks.
+    /// What each target is: a structure never evades an uphill attack.
     pub kind: &'a Table<UnitKind>,
-    /// Elevation under a missile's target when it arrives.
+    /// Elevation under a missile's source and target when it arrives.
     pub ground: &'a Ground,
     /// Hidden streams used when an attacker first needs an uphill sequence.
     pub rng: &'a MatchRng,
@@ -42,9 +42,9 @@ pub struct MissileCx<'a> {
 
 /// Moves every missile along and turns the ones that arrive into blows.
 ///
-/// A missile whose target has fallen is given up in the air: nothing it was
-/// aimed at is left to reach. One that lands with a bounce still in it is
-/// left on the bounce queue rather than given up.
+/// A missile whose target has fallen is given up in the air. One that misses
+/// uphill is given up and left on `missed`. One that lands with a bounce
+/// still in it is left on the bounce queue rather than given up.
 pub fn missile_system(cx: MissileCx<'_>) {
     let MissileCx {
         entities,
@@ -92,37 +92,41 @@ pub fn missile_system(cx: MissileCx<'_>) {
             give_up(missile, entities, projectile, transform, team, visibility);
             continue;
         }
-        hits.push_back(Hit {
-            source: shot.source,
-            target: shot.target,
-            amount: shot.damage,
-            kind: shot.kind,
-            damage_amp_bp: shot.damage_amp_bp,
-            crit: shot.crit,
-            attack: shot.ability.is_none(),
-            pierces: shot.pierces,
-            effect: crate::game::HitEffect::None,
-        });
-        if shot.pierce_damage > 0 {
-            hits.push_back(Hit {
-                source: shot.source,
-                target: shot.target,
-                amount: shot.pierce_damage,
-                kind: DamageKind::Magical,
-                damage_amp_bp: shot.pierce_amp_bp,
-                crit: false,
-                attack: false,
-                pierces: false,
-                effect: crate::game::HitEffect::None,
-            });
-        }
-        // One with bounces left is kept where it landed: where it goes next
-        // is settled once it is known what stands there.
+        land(&shot, hits);
         if shot.bounces_left > 0 {
             bounced.push_back((missile, shot.target));
             continue;
         }
         give_up(missile, entities, projectile, transform, team, visibility);
+    }
+}
+
+/// Lays the blows a missile that arrived deals: its own, and the magical
+/// pierce riding with it.
+fn land(shot: &Projectile, hits: &mut VecDeque<Hit>) {
+    hits.push_back(Hit {
+        source: shot.source,
+        target: shot.target,
+        amount: shot.damage,
+        kind: shot.kind,
+        damage_amp_bp: shot.damage_amp_bp,
+        crit: shot.crit,
+        attack: shot.ability.is_none(),
+        pierces: shot.pierces,
+        effect: crate::game::HitEffect::None,
+    });
+    if shot.pierce_damage > 0 {
+        hits.push_back(Hit {
+            source: shot.source,
+            target: shot.target,
+            amount: shot.pierce_damage,
+            kind: DamageKind::Magical,
+            damage_amp_bp: shot.pierce_amp_bp,
+            crit: false,
+            attack: false,
+            pierces: false,
+            effect: crate::game::HitEffect::None,
+        });
     }
 }
 
@@ -185,10 +189,11 @@ impl World {
         }
     }
 
-    /// Sends a missile on to the next enemy near where it landed.
+    /// Sends a missile on to the enemy of its source nearest to where it
+    /// landed, within its bounce range.
     ///
     /// It never strikes the same one twice, and stops once its bounces are
-    /// spent or there is nobody left to go to.
+    /// spent, its source is unknown or there is nobody left to go to.
     pub fn bounce_on(&mut self, missile: Entity, from: Entity) -> bool {
         let Some(mut shot) = self.projectile.get(missile).cloned() else {
             return false;

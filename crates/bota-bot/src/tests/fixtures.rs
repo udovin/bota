@@ -1,7 +1,6 @@
 //! Views built by hand, for tests that need a tick to read.
 //!
-//! Every field is listed. A field added to a view breaks these, which is the
-//! point: what the bot should make of it is a decision, not a default.
+//! Every field is listed, so a field added to a view breaks these.
 
 use bota_proto::{
     AbilityId, AbilityView, Aim, Angle, Attribute, Attributes, EffectId, EffectView, EntityId,
@@ -150,6 +149,7 @@ pub fn item(id: ItemId) -> ItemView {
         range: 0,
         aim: Some(Aim::Unit),
         for_sale: false,
+        owner: SlotId(0),
     }
 }
 
@@ -215,6 +215,8 @@ pub fn started(shop: Vec<ShopEntry>, trees: Vec<Vec2>) -> MatchInfo {
             hero: HeroId(2),
         }],
         shop,
+        fountains: [Vec2::from_ints(1760, 2278), Vec2::from_ints(16624, 16064)],
+        shop_range: 1000,
     }
 }
 

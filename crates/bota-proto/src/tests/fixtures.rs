@@ -1,8 +1,7 @@
 //! Sample values for the tests.
 //!
-//! Every struct here is built by listing all of its fields. Adding a field to a
-//! wire type breaks compilation right here, which is the point: it forces a
-//! decision about what the new field carries before it can ship.
+//! Every struct here is built by listing all of its fields, so a new field on
+//! a wire type breaks compilation here.
 
 use crate::*;
 
@@ -40,6 +39,7 @@ pub fn item_view(slot: u16) -> ItemView {
         range: 400,
         aim: Some(Aim::Point),
         for_sale: false,
+        owner: SlotId(0),
     }
 }
 
@@ -222,6 +222,8 @@ pub fn match_info() -> MatchInfo {
         terrain_rle: vec![(12, 0x81), (4, 0xc0)],
         opaque_cells: vec![(1, 1), (2, 1)],
         mode: TickMode::Lockstep,
+        fountains: [Vec2::from_ints(1760, 2278), Vec2::from_ints(16624, 16064)],
+        shop_range: 1000,
         shop: vec![
             ShopEntry {
                 id: ItemId(0),

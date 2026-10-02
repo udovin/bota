@@ -6,10 +6,7 @@ use bota_proto::ItemId;
 
 use crate::game::{AbilityBook, Entity, Inventory, Stacks};
 
-/// What a body leaves behind while it is gone.
-///
-/// A hero that falls takes nothing with it: what it learned and what it
-/// carried waits here until it stands up again.
+/// What a fallen hero leaves behind until it stands up again.
 #[derive(Clone, Debug)]
 pub struct Kept {
     /// What it had learned.
@@ -20,10 +17,7 @@ pub struct Kept {
     pub stacks: Stacks,
 }
 
-/// One player's place at the match.
-///
-/// Everything here outlives the body: a hero that dies keeps its gold and its
-/// score, and its stash waits at the fountain.
+/// One player's place at the match. Everything here outlives the body.
 #[derive(Clone, Debug)]
 pub struct Seat {
     /// Which place this is.
@@ -36,7 +30,7 @@ pub struct Seat {
     pub unit: Option<Entity>,
     /// Gold in hand.
     pub gold: i32,
-    /// Gold earned over the match, spent or not.
+    /// Gold earned over the match, spent or not, less what deaths cost.
     pub net_worth: i32,
     /// Experience gathered.
     pub xp: i32,
@@ -54,13 +48,12 @@ pub struct Seat {
     pub courier_left: u32,
     /// What the courier carried when it fell, until the next one stands.
     pub courier_kept: Option<Inventory>,
-    /// Waits owed on kinds of item rather than on one stack of one: a scroll
-    /// read is a scroll read, whichever one is held next.
+    /// Ticks owed on a kind of item, whichever stack of it is held next.
     pub item_clocks: Vec<(ItemId, u32)>,
     /// Enemy heroes brought down.
     pub kills: u16,
     /// Enemy heroes brought down since its own body last fell. Prices its
-    /// head: the streak bonus goes to whoever ends it.
+    /// head.
     pub streak: u16,
     /// Times its own body was brought down.
     pub deaths: u16,
@@ -70,6 +63,11 @@ pub struct Seat {
     pub last_hits: u16,
     /// Its own units it brought down.
     pub denies: u16,
+    /// Damage its hero has dealt to enemy heroes, after armor and resistance.
+    pub hero_damage: i32,
+    /// Damage its hero has dealt to enemy structures, after armor and
+    /// resistance.
+    pub structure_damage: i32,
 }
 
 impl Seat {
@@ -97,6 +95,8 @@ impl Seat {
             assists: 0,
             last_hits: 0,
             denies: 0,
+            hero_damage: 0,
+            structure_damage: 0,
         }
     }
 }

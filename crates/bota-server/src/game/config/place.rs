@@ -7,8 +7,7 @@ use bota_proto::{Team, Vec2};
 
 use crate::game::{Clearance, Obstacles, Planner, rules};
 
-/// The fountain position of a team. The jungle's is the map center: it has
-/// no fountain, and nothing ever stands there.
+/// The fountain position of a team. The jungle's is the map center.
 pub fn fountain_pos(map: &crate::game::MapDef, team: Team) -> Vec2 {
     match team {
         Team::Radiant => map.fountains[0],
@@ -27,11 +26,6 @@ pub fn hero_spawn_pos(map: &crate::game::MapDef, team: Team) -> Vec2 {
     fountain_pos(map, team) + offset
 }
 
-/// The mirror of a position through the map center.
-pub fn mirror(pos: Vec2) -> Vec2 {
-    Vec2::from_ints(rules::MAP_SIZE, rules::MAP_SIZE) - pos
-}
-
 /// Every tree on the map: its own forest, with the lane corridors the map
 /// asks for and both spawn pads kept clear.
 pub fn tree_positions(map: &crate::game::MapDef) -> Vec<Vec2> {
@@ -40,8 +34,6 @@ pub fn tree_positions(map: &crate::game::MapDef) -> Vec<Vec2> {
         r * r
     };
     let base_clear = rules::units(rules::TREE_BASE_CLEAR);
-    // The lane polylines are the map's, not each tree's: laying them once
-    // keeps a map's worth of trees from laying them again for every tree.
     let lanes: Vec<(u8, Vec<Vec2>)> = if lane_clear > 0 {
         map.lanes()
             .map(|lane| (lane, lane_polyline(map, lane)))
@@ -68,14 +60,11 @@ pub fn tree_positions(map: &crate::game::MapDef) -> Vec<Vec2> {
         .collect()
 }
 
-/// The physical centerline of a lane, Radiant base first.
+/// The physical centerline of a lane, Radiant base first: from the Radiant
+/// Ancient through the lane's corners to the Dire Ancient, and through the
+/// lane's towers too on a map whose lanes run through them.
 ///
-/// On a map that says so, the line runs through every tower of the lane, so
-/// a wave walks from tower to tower and cannot wander past one out of its
-/// own acquisition range; on one whose corners trace the real road, the
-/// towers stand beside the line rather than on it. A side with no Ancient
-/// anchors its end at its own wave spawner instead, so a winning wave still
-/// marches into the enemy base.
+/// A side with no Ancient anchors its end at its own wave spawner instead.
 pub fn lane_polyline(map: &crate::game::MapDef, lane: u8) -> Vec<Vec2> {
     let tower_of = |table: &[(u8, u8, Vec2)], tier: u8| {
         table
@@ -109,10 +98,8 @@ pub fn lane_polyline(map: &crate::game::MapDef, lane: u8) -> Vec<Vec2> {
 
 /// The waypoints a team's creeps push through on a lane, enemy base last.
 ///
-/// The wave begins at its spawner, which stands somewhere along the lane —
-/// on three lanes ahead of its own rearmost tower — so the route takes only
-/// what lies past the spawner's own place on the line, and a fresh wave
-/// never walks back towards its base first.
+/// Only what lies past the segment of the line nearest the wave's spawner
+/// is kept, so a fresh wave never walks back towards its base first.
 pub fn lane_route(map: &crate::game::MapDef, team: Team, lane: u8) -> Vec<Vec2> {
     let mut line = lane_polyline(map, lane);
     if team == Team::Dire {
@@ -165,12 +152,10 @@ pub fn lane_routes_on(
 }
 
 /// One lane's walked route: a stop beside each landmark, with a found path
-/// laid between each pair so the march goes around what stands in the way.
+/// laid between each pair.
 ///
-/// Landmarks are tower positions, and a tower closes the ground it stands
-/// on: the stop is beside it on its lane side, away from the base it
-/// guards. The march walks past its own towers on the way out of its base
-/// and comes up to the enemy's from the lane.
+/// A stop is the open spot beside its landmark towards the next landmark
+/// for the team's own tower or Ancient, towards the previous one otherwise.
 fn walk_lane(
     map: &crate::game::MapDef,
     ob: &Obstacles,
@@ -216,15 +201,6 @@ fn guarded_by(map: &crate::game::MapDef, at: Vec2) -> Option<Team> {
     } else {
         None
     }
-}
-
-/// Squared distance from a lane's centerline.
-pub fn lane_offset_squared(map: &crate::game::MapDef, lane: u8, pos: Vec2) -> i64 {
-    let line = lane_polyline(map, lane);
-    line.windows(2)
-        .map(|s| crate::game::segment_distance_squared(pos, s[0], s[1]))
-        .min()
-        .expect("a lane has at least one segment")
 }
 
 /// The creep spawn position of a team on a lane. The jungle runs no lanes.

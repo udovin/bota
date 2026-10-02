@@ -26,12 +26,9 @@ bota/
 ├── Cargo.toml               # workspace, resolver = "3"
 ├── crates/
 │   ├── bota-proto/          # shared vocabulary + codec. deps: serde, postcard
-│   ├── bota-server/         # simulation + networking + lobby. deps: proto
-│   ├── bota-client/         # macroquad: rendering, input, spectating. deps: proto
-│   └── bota-bot/            # bot SDK + example. deps: proto
-├── assets/
-├── replays/
-└── tests/
+│   ├── bota-server/         # simulation + networking + lobby. deps: proto, rand_chacha, rustc-hash, clap
+│   ├── bota-client/         # macroquad: rendering, input, spectating. deps: proto, macroquad, resvg, clap
+│   └── bota-bot/            # the rule bot and the seam a bot plays through. deps: proto, clap
 ```
 
 ```
@@ -69,57 +66,72 @@ simulating, `World` lives in a crate it does not depend on.
 proto/src/
 ├── math.rs       Fixed (Q16.16 in i32), Angle (brads), Vec2
 ├── ids.rs        EntityId, SlotId, PlayerId, Team, HeroId, AbilityId, ItemId,
-│                 AbilitySlot, ItemSlot, MapId, UnitKind
-├── order.rs      Order, OrderTarget
+│                 Aim, EffectId, AbilitySlot, ItemSlot, MapId, UnitKind
+├── attrs.rs      Attribute, Attributes
+├── order.rs      Order, Target, Cheat, ModifierSpec, MAX_MODIFIER_TICKS
 ├── event.rs      EventKind, DamageKind
 ├── view.rs       WorldView, UnitView, PlayerView, ProjectileView, AbilityView,
-│                 ItemView, StatusFlags
-├── msg.rs        ClientMsg, ServerMsg, MatchInfo, lobby, RejectReason, MatchStats,
+│                 ItemView, EffectView, LootView, Kit, StatusFlags
+├── msg.rs        ClientMsg, ServerMsg, MatchInfo, ShopEntry, Role, TickMode, Pick,
+│                 LobbySlot, RejectReason, MatchStats, SlotStats, SlotOrder,
 │                 ReplayRecord
 └── codec.rs      encode_frame, decode_payload, FrameReader, CodecError
 ```
 
 ```
 server/src/
-├── sim/          KNOWS NOTHING ABOUT SOCKETS
-│   ├── arena.rs      Arena<T>: generational slot store behind EntityId
-│   ├── rng.rs        MatchRng over ChaCha8Rng: streams by purpose, Ratio/Chance
-│   ├── config.rs     MatchConfig
-│   ├── world.rs      World: entity arenas, tick, spawn, FNV-1a hash
-│   ├── units.rs      Unit, UnitOrder, SeatState; hero/creep/building constructors
-│   ├── heroes/       hero stats and ability implementations (stage 9)
-│   ├── abilities.rs  ability engine: cast point / channel / cooldown / mana (stage 9)
-│   ├── combat.rs     windups, projectiles, the damage queue, armor and resist
-│   ├── movement.rs   isqrt, stepping, turning, segment and box distances
-│   ├── cells.rs      one bit per terrain cell, for sight
-│   ├── clearance.rs  the ground as a body meets it: room per node, exact capsule test
-│   ├── path.rs       A* over the walking lattice, corners drawn tight
-│   ├── bodies.rs     where every body stands, by bucket
-│   ├── local.rs      the next stretch of a walk: A* over spot, facing and tick
-│   ├── vision.rs     fog of war: pure radius queries, nothing cached
-│   ├── econ.rs       gold, experience, levels, deaths, respawns
-│   ├── rules.rs      balance constants
-│   ├── project.rs    World → WorldView
-│   └── step.rs       Command, Event, validate, step: the tick order
-├── net/          accept loop, per-connection reader/writer threads, Outbox
+├── engine/       how state is kept and walked; knows nothing of Dota
+│   ├── entity.rs     Entity, Index, Generation, EntityAllocator
+│   ├── table.rs      Table<T>: one component per entity slot, generation-checked
+│   └── fnv.rs        Fnv: FNV-1a for the fingerprint
+├── game/         the game; KNOWS NOTHING ABOUT SOCKETS
+│   ├── world.rs          World: the component tables and the tick order
+│   ├── match_world.rs    for_match, advance, validate_order, victor, match_stats
+│   ├── project.rs        World → WorldView, with fog and without
+│   ├── hash.rs           world.hash() over the whole state
+│   ├── rng.rs            MatchRng over ChaCha8Rng: streams by purpose, Ratio/Chance
+│   ├── seat.rs           Seat, Kept: what belongs to a player rather than a body
+│   ├── progress.rs       progress inside an action, in beats
+│   ├── movement.rs       isqrt, stepping, turning, facing, distances
+│   ├── cells.rs          one bit per terrain cell, for sight
+│   ├── clearance.rs      the ground as a body meets it: room per node, exact capsule test
+│   ├── path.rs           A* over the walking lattice, corners drawn tight
+│   ├── bodies.rs         where every body stands, by bucket
+│   ├── spots.rs          Spots<T>: points sorted by x, asked by square
+│   ├── local.rs          the next stretch of a walk: A* over spot, facing and tick
+│   ├── vision.rs         fog of war: sight blocks and sight lines
+│   ├── forest.rs         what of the forest is down and what was put up
+│   ├── ground.rs         elevation tiers, water, walkability
+│   ├── components/       one file per component
+│   ├── systems/          one file per system: combat, walking, casting, gear, econ …
+│   └── config/           what the game is made of: ability, blockers, camp, hero,
+│                         item, map, match_config, place, protect, roster, rules,
+│                         spawn_modifier, terrain, trees, unit, unit_neutral, wave
+├── net/          conn.rs: accept loop, reader/writer threads; outbox.rs: Outbox
 ├── lobby.rs      Roster (PlayerId ↔ SlotId), seats, picks, readiness
 ├── game_loop.rs  lobby phase, then the tick loop in both modes
 ├── replay.rs     writes the replay: fogless frames plus per-tick orders
+├── profile       phase timings of a tick, sampled with the `phase-profile` feature
 └── main.rs       clap arguments
+benches/dummy/    criterion: the dummy tick loop, the trainer skirmish, micro cases
 ```
 
-No ECS: `World` is a set of `Arena<T>` stores — generational slot arenas iterated in
-slot order. Removing an entity bumps the slot's generation, so a stale `EntityId` never
-resolves to whoever took the slot over.
+No ECS library and no arenas of whole units: an entity is a generational handle from
+`EntityAllocator`, and each component is its own `Table<T>` indexed by the handle's
+slot. Walking every entity is `EntityAllocator::iter`, in slot order, plus a lookup per
+table. A freed slot is handed out again under a new generation, and a table slot
+remembers the generation it was written for, so a stale handle never reads whoever took
+the slot over.
 
 ## Contracts
 
-### Simulation (server/src/sim)
+### Simulation (server/src/game)
 
 ```rust
 pub struct MatchConfig {
     pub match_id: u64, pub master_key: [u8; 32], pub picks: Vec<Pick>,
     pub map: MapId, pub tick_rate: u16, pub mode: TickMode, pub ack_timeout_ticks: u32,
+    pub cheats: bool, pub spawn_modifiers: Vec<SpawnModifier>,
 }
 
 impl MatchConfig {
@@ -131,7 +143,7 @@ impl MatchConfig {
 The match seed is derived with `rand_chacha` itself, no separate hash function needed:
 `master_key` is a 32-byte seed, `match_id` is a stream number. A match is reproducible
 from the pair `(master_key, match_id)`, which is convenient for debugging. Implemented
-in `sim/rng.rs`:
+in `game/rng.rs`:
 
 ```rust
 // MatchRng::new(master_key, match_id)
@@ -140,29 +152,34 @@ root.set_stream(match_id);
 let mut seed = [0u8; 32];
 root.fill_bytes(&mut seed);
 
-// one stream per purpose — crits, runes, spawn scatter
+// one stream per purpose — crits, evasion, camp rosters
 rng.global(Purpose::Rune)
 rng.for_unit(Purpose::Crit, unit, source)
 ```
 
 Streams are separated by purpose (`Purpose`: `Crit`, `Block`, `Evasion`, `Rune`,
-`NeutralSpawn`) so that a new draw in one place does not shift generation anywhere
+`NeutralSpawn`, `Wave`, `Pierce`) so that a new draw in one place does not shift generation anywhere
 else. A per-unit stream is keyed by `(purpose, slot index, source)` packed into the
 64-bit ChaCha8 stream id — purpose in the top bits, slot index in the middle, a source
-byte to separate several sources of chance on the same unit (a crit passive and a
-bash). The key uses the slot index rather than the full `EntityId`: the stream id
-space stays bounded, and a unit reusing a freed slot continues that slot's hidden
-sequence, which no observer can distinguish from a fresh one.
+byte to separate several sources of chance of one purpose on the same unit (the
+evasion a unit rolls as a target and the uphill miss it rolls as an attacker). The key
+uses the slot index rather than the full `EntityId`, so the stream id space stays
+bounded. The world keeps each slot's opened crit, evasion and pierce `Chance` for as
+long as the match runs, so a unit reusing a freed slot continues that slot's hidden
+sequence, which no observer can distinguish from a fresh one. `Block` and `Rune` are
+reserved and drawn from nowhere yet.
 
 ```rust
 impl World {
-    pub fn new(cfg: &MatchConfig, rng: MatchRng) -> World;  // rng is initial state, not config
-    pub fn step(&mut self, cmds: &[Command]) -> Vec<Event>;
+    pub fn for_match(cfg: &MatchConfig, rng: MatchRng) -> World;  // rng is initial state, not config
+    pub fn advance(&mut self, cmds: &[Command]) -> Vec<Event>;
     pub fn view(&self, team: Team) -> WorldView;        // with fog
     pub fn view_full(&self) -> WorldView;               // spectator
-    pub fn can_see(&self, team: Team, target: EntityId) -> bool;   // order validation
-    pub fn winner(&self) -> Option<Team>;
-    pub fn stats(&self) -> MatchStats;
+    pub fn validate_order(&self, slot: SlotId, unit: Option<EntityId>, order: &Order)
+        -> Result<(), RejectReason>;
+    pub fn can_see(&self, team: Team, entity: Entity) -> bool;
+    pub fn victor(&self) -> Option<Team>;               // Team::Neutral: a Map2 draw
+    pub fn match_stats(&self) -> MatchStats;
     pub fn hash(&self) -> u64;                          // determinism check
 }
 ```
@@ -195,30 +212,41 @@ determinism demands exactly one implementation.
 
 ## Determinism rules
 
-1. No `f32/f64` in `bota-proto` and `bota-server`: `#![deny(clippy::float_arithmetic)]`.
+1. No `f32/f64` in `bota-proto` and `bota-server`: `clippy::float_arithmetic` is denied
+   in the workspace lints.
    Float operations themselves are deterministic per IEEE-754, but `sin/cos/sqrt` from
    libm are not — they differ across glibc / musl / macOS / wasm. The client renders in
    float freely. The bot is also free to think in float: what gets recorded are its
    orders, not its reasoning.
 2. Scalars are `Fixed` = Q16.16 in `i32`, multiplication through an intermediate `i64`.
-   Range ±32768 units, precision 1/65536. The 16384-unit map keeps squared distances
+   Range ±32768 units, precision 1/65536. The 18432-unit map keeps squared distances
    inside an `i64`; segment projections that would square a dot product go through
-   `i128`.
+   `i128`. The operators debug-assert on overflow and saturate in release: a
+   saturated value stops at the end of the range, a wrapped one would land on the
+   far side of the map.
 3. Angles are "brads": `u16`, 65536 = a full turn. sin/cos from a hardcoded table of
    1024 entries.
 4. Distances are compared as squares, no sqrt.
-5. Entity iteration is always by ascending `EntityId.idx`. `HashMap` is forbidden in
-   the simulation.
-6. Commands are sorted by `(tick, slot, seq)` before applying.
-7. Time exists only as ticks (`u32`), 30 ticks/sec. No `std::time` in `sim`.
+5. Entity iteration is always in ascending slot order (`EntityAllocator::iter`).
+   Nothing in the simulation iterates a hash map; `rustc_hash::FxHashMap` is allowed
+   for lookup only, keyed by integers.
+6. The game loop keeps at most one pending order per seat: an order validated on
+   arrival replaces whatever that seat had pending, and the tick's commands go to
+   `advance` in slot order.
+7. Time exists only as ticks (`u32`), 30 ticks/sec. No `std::time` in `game/`.
 8. Damage, gold, experience are integers.
 9. External primitives are taken only if value-stable. `rand::StdRng` and
    `std::collections::hash_map::DefaultHasher` explicitly give no such guarantee
    between releases: the former is replaced by `rand_chacha::ChaCha8Rng`, and for
    `world.hash()` we write FNV-1a (ten lines, xor and multiply in a loop).
-10. `world.hash()` covers the whole state, hidden included: entity arenas, stream
+10. `world.hash()` covers the whole state, hidden included: component tables, stream
     positions, every `Chance` mask. A divergence in randomness consumption must move
     the hash on the tick it happens, not when its first visible outcome differs.
+
+`game/tests/determinism.rs` pins whole-match fingerprints on every map: seeded order
+streams drive a match, and the world hash and the encoded view and event streams of
+both sides every 1500 ticks, plus the final stats, must match the recorded values. A
+deliberate rule change re-records them with the ignored `print_pins` test.
 
 ### Chances (crits, block, evasion)
 
@@ -269,7 +297,8 @@ requirement.
 When the chance changes (a crit buff), the current block finishes under the old
 fraction; the new one takes effect from the next block.
 
-The PRNG is also used where an exact rate is meaningless (rune drop, spawn scatter).
+The PRNG is also used where an exact rate is meaningless (which roster a camp fills
+with).
 Streams are separated by purpose via `ChaCha8Rng::set_stream`, so that a new call in
 one place does not shift the rest of the generation.
 
@@ -291,10 +320,8 @@ Server-only, never reaches `WorldView`:
 
 - `MatchRng` and the positions of all streams;
 - each unit's `Chance { mask, idx }`;
-- outcomes of scheduled events that have not happened yet (which rune will spawn).
-
-Checked by a test: `view_full()` is run through serialization and compared against a
-whitelist of fields, so a new field in `Unit` cannot leak silently.
+- outcomes of scheduled events that have not happened yet (which roster a camp fills
+  with next).
 
 It also follows that client-side prediction covers only movement and animation. Damage
 numbers and the fact of a crit arrive as events from the server.
@@ -304,7 +331,8 @@ exploit any leak a human reviewer shrugs off:
 
 - A reject reason does not depend on hidden state. A dead target and a fogged one get
   the same `UnknownTarget`, so probing the fog with stale handles reveals nothing.
-- A unit never acts on what its team cannot see. A standing `AttackUnit` order whose
+- A unit never acts on what its team cannot see. A standing
+  `Order::Attack { target: Target::Unit(..) }` whose
   target left the team's vision degrades to attack-moving toward the last seen
   position; the unit does not track the hidden target, so its own path reveals
   nothing either.
@@ -312,9 +340,8 @@ exploit any leak a human reviewer shrugs off:
 ## Game model v0.1
 
 - Map 18432×18432 — Dota's scale, so speeds, ranges and vision keep their Dota
-  absolute values. Symmetric along the diagonal. Three lanes: mid along the diagonal,
-  top up the west edge and along the north edge, bottom its mirror; the diagonal
-  mirror that swaps the sides also swaps top and bottom. Terrain is a 288×288 bit
+  absolute values. Three lanes: mid along the diagonal, top up the west edge and
+  along the north edge, bottom along the south and east edges. Terrain is a 288×288 bit
   grid of 64-unit cells; walking is planned on a 576×576 lattice of 32-unit nodes
   laid over it.
 - A second map, `MapId(1)`, is the game's own hero demo map (`hero_demo_main`),
@@ -337,19 +364,14 @@ exploit any leak a human reviewer shrugs off:
   lanes are defined by their towers, while the demo map's corners trace the
   real road and its towers stand beside it — drawn through them, every wave
   hooked around its own tower on the way out.
-- A third, `MapId(2)`, is the Dota map to a short finish: the first side to lose
-  a tower or to lose `SKIRMISH_DEATH_LIMIT` heroes loses; opposing losses in one
-  tick draw. It spawns only mid waves and draws after fifteen gameplay minutes.
-  The same ground, buildings and routes come from `SKIRMISH` using `..DOTA`,
-  overriding only its id, wave selection and completion fields. What ends a
-  match is map data now (`death_limit` and `tower_ends_it`) rather than a
-  `map.id == MapId(1)` written into `fight.rs` twice: a rule keyed on which map
-  it is cannot be given to a second map without being written a third time. The
-  demo map used to carry both endings and now carries neither, which leaves it
-  what its name says — a lane to try things in, ending the way the big map does.
-- The per-map route cache is indexed by `MapId`, not by the position in `MAPS`,
-  so the two have to agree; a test says so, since nothing else would notice a map
-  added out of order.
+- A third, `MapId(2)`, is the Dota map to a short finish; see Map2 below. What ends
+  a match is map data (`death_limit` and `tower_ends_it`) rather than a check on the
+  map id in `fight.rs`: a rule keyed on which map it is cannot be given to a second map
+  without being written again. The demo map carries neither ending and ends the way
+  the big map does.
+- The per-map field cache (`BASES` in `clearance.rs`) is indexed by `MapId`, not by
+  the position in `MAPS`, so the two have to agree; a test says so, since nothing
+  else would notice a map added out of order.
 - Teams Radiant / Dire, 1v1 (the architecture is sized for 5v5).
 - Buildings: three towers per lane per side — tier one by the river, tier three by
   the base — plus a pair of tier fours by each Ancient, two barracks per lane
@@ -374,8 +396,8 @@ exploit any leak a human reviewer shrugs off:
   all 22 towers, all 6 lane spawners and all 28 neutral camps at their real
   positions. The two sides are not mirrors; each carries its own table, and
   `mirror()` survives only as a utility.
-- The terrain is the same map's own ground, baked in `sim/terrain.rs`: the
-  gridnav's static walkability (cliffs, pits, the map edge close their cells
+- The terrain is the same map's own ground, baked in `game/config/terrain.rs` and
+  read through `game/ground.rs`: the gridnav's static walkability (cliffs, pits, the map edge close their cells
   before trees and buildings do) and, from the physics mesh, an elevation tier
   per cell in 128-unit steps — river bed 0, lane ground 1, highground 2, bases
   3 — plus the water mask of the river and pools. A ranged attack landing on
@@ -398,24 +420,28 @@ exploit any leak a human reviewer shrugs off:
   the same sight lines from its own units to shade unseen ground in the world
   view and on the minimap; spectators see everything. The map's
   `ent_fow_revealer` points wait for outposts.
-- Trees are static blockers imported one for one from the same map: all 2475
+- Trees are imported one for one from the same map: all 2475
   positions — the main entity lump plus the base layers of both sides — live as
-  a table in `sim/trees.rs`. Two carves adapt them to this map: trees within
+  a table in `game/config/trees.rs`. Two carves adapt them to this map: trees within
   the lane-clear band of a straightened lane centerline are dropped — the real
   forest follows the real curved roads, and these lanes walk tower-to-tower
   chords — and a small pad around each fountain stays clear. The
   full tree list rides in `MatchStart`, so the client draws without knowing the
-  layout rules. Trees are closed into the passability grid at world build; they
-  do not block vision yet and are indestructible until an axe exists.
+  layout rules. A standing tree blocks walking and sight. Eating one with a tango
+  or cutting one with an item takes it down for `TREE_REGROW_TICKS`, and a tree
+  an item plants stands for `PLANTED_TREE_TICKS`; `game/forest.rs` keeps what is
+  down and what was put up, and every view carries both (`felled_trees`,
+  `planted_trees`).
 - The jungle belongs to `Team::Neutral`, hostile to both sides; seats never sit
   there. The twenty-eight camps stand where Dota's own neutral spawners stand. They
   fill with neutral creeps one minute past the horn and every minute after, but only while the camp box is empty — any body inside
   blocks the spawn, which is camp blocking. A neutral answers whoever comes into
-  its aggro range or hits it, and dragged beyond its leash it goes home deaf and
-  arrives at full health. Its bounty goes to the killer, its experience to the
+  its aggro range or hits it; led past its guard distance for longer than its
+  window it goes home deaf, and arriving home restores nothing. Its bounty goes to the killer, its experience to the
   killer's team nearby.
-- Creeps: 3 melee + 1 ranged every 900 ticks (30 s) on every lane, a siege creep
-  every 5th wave. A wave marches its own lane's waypoints and is leashed to its own
+- Creeps: 3 melee + 1 ranged every 900 ticks (30 s) on every lane; a siege creep
+  joins wave 11 and every tenth wave after, a flagbearer wave 5 and every second
+  wave after, and the counts grow later in the match (`rules.rs`). A wave marches its own lane's waypoints and never joins another
   lane. A lane whose enemy melee or ranged barracks has fallen spawns that kind
   super, its siege once both are down, and every enemy barracks fallen makes the
   whole side's waves mega, at the game's own numbers; the flagbearer stays plain.
@@ -444,10 +470,8 @@ exploit any leak a human reviewer shrugs off:
   of what the fallen had earned and the game's own bonus for the streak it
   ends, and a death that costs the fallen a fortieth of its net worth, capped
   by the purse. The `Died` event carries the gold the killing side was
-  paid, so a seat reads off the wire what a fight moved. The kill constants
-  sat in `rules.rs` unwired for a while — heroes spawned with no bounty
-  component, so bringing one down paid nothing and dying cost nothing but the
-  respawn wait, which a breeding search reads as a licence to feed. The dying
+  paid, so a seat reads off the wire what a fight moved. A death that costs
+  nothing but the respawn wait is one a bot learns to feed. The dying
   hero's gold is not handed to the killer but vanishes, as in Dota: the
   penalty prices the death, the bounty prices the kill, and a broke victim
   still pays its killer in full.
@@ -500,7 +524,7 @@ exploit any leak a human reviewer shrugs off:
   inventory only inside the home shop area (the fountain circle) — bought
   remotely it waits in the stash, and the stash itself opens only at that shop.
   Selling also happens at the shop: half price back, the full price for an
-  untouched item within ten seconds of purchase. `MoveItem` swaps any two slots.
+  untouched item within ten seconds of purchase. `Order::Swap` swaps any two slots.
   Carried bonuses are flat and apply only from unmuted inventory slots; a pool
   keeps its filled fraction whichever way its maximum moves. The earlier rule —
   grow by the whole delta, shrink by clamping alone — was a mint: a Power
@@ -509,13 +533,13 @@ exploit any leak a human reviewer shrugs off:
   refilled both pools from next to nothing. The scaling floors, so a full
   wheel can only lose a sliver, never gain one; and a pool that held anything
   is kept off zero, so the wheel cannot kill its owner either. Consumables
-  (Healing Salve, Clarity) drip over
-  thirty seconds and spill on any hit from a hero. Items survive the hero's
+  drip over their duration (Healing Salve ten seconds, Clarity twenty-five) and
+  spill on any hit from a hero or a tower. Items survive the hero's
   death on the seat.
 - An item set to an attribute — Power Treads — keeps which one on the stack
   rather than in the catalog, and the wire carries it in `ItemView`, since two
   players holding the same item may have it on different attributes and the
-  client has to draw which. Switching is an ordinary `UseItem` with no target:
+  client has to draw which. Switching is an ordinary `Use` with no target:
   a second order kind for one item would be a wire change bought for nothing.
 - Blink is a point-targeted use like any other. Aimed further off than it
   carries it carries as far as it does along the same line rather than
@@ -540,12 +564,12 @@ exploit any leak a human reviewer shrugs off:
   until somebody takes it. Anybody with a bag may — enemies included, which is
   the whole drama of a courier shot down over the river or a Gem dropped in
   Dota. What keeps theft from being a bank raid is ownership, below.
-- Two orders cover the ground: `PutItem` lays what sits in a bag slot out —
+- Two orders cover the ground: `Put` lays what sits in a bag slot out —
   at a point, underfoot when aimed at nothing, or into the first free slot of
-  an allied bag when aimed at a unit — and `TakeItem` picks a ground item up.
+  an allied bag when aimed at a unit — and `Take` picks a ground item up.
   Dropping and handing over are one order, not two, because they are one
   motion — out of the bag, differing only in where it lands — and
-  `OrderTarget` already spells the difference. Both orders walk their unit
+  `Target` already spells the difference. Both orders walk their unit
   into reach first, the way Dota reads a drop aimed across the map; an aimed
   unit may be moving, so following is needed anyway, and one walk serves both.
   The walking lives in one `Handling` component and one tick pass shaped like
@@ -553,7 +577,7 @@ exploit any leak a human reviewer shrugs off:
   it off. Item actives refuse beyond their reach instead of walking, and stay
   that way: a use is aimed where the fight is, a put is aimed where the feet
   will be.
-- The stash does not `PutItem`: it is a shelf at the shop, not a pair of
+- The stash does not `Put`: it is a shelf at the shop, not a pair of
   hands. Move the item into the bag first.
 - Selling away from the shop marks the stack for sale instead of refusing; a
   second sell order on the slot unmarks it, so no new order kind is spent on
@@ -659,7 +683,13 @@ emergent, because creeps arrive first. On top of that sit the aggro calls:
   The route is A* over the lattice, eight-connected, never cutting a blocked
   corner, a node open when its room covers the body's collision size and an
   8-unit margin, in scratch kept between searches under an epoch stamp, with a
-  budget of expansions past which the walk goes to the nearest node reached. The
+  budget of expansions past which the walk goes to the nearest node reached. A
+  walker the margin shuts in, no node with room for it at either end or every
+  node the search got to expanded without meeting the goal, has the route laid
+  again at its bare collision size: a hero walks at its own size into gaps
+  between trees narrower than its size and the margin, and a route laid only at
+  the margin found no way out of them, so the hero stood there deaf to every
+  walk, the way home included. The
   corners found are pulled straight against the exact test, then each drawn in
   along the bisector of its legs by binary search as far as both legs stay clear,
   then pulled again, so they land on the tangents of what they round to within a
@@ -682,7 +712,7 @@ emergent, because creeps arrive first. On top of that sit the aggro calls:
   plans where a body planned earlier in the tick, else by their last step carried
   forward twelve ticks and held; a stretch that would bring the body within the
   two collision sizes of a foreseen body at any tick is not taken. The search
-  expands at most 80 states and settles for the state nearest the aim, and
+  expands at most 120 states and settles for the state nearest the aim, and
   answers nothing when that is under two steps nearer. The aim is a spot up to
   440 units along the route, as far as a straight line from the walker stays
   clear; on the last stretch the route's end, with the order's own arrival: an
@@ -739,9 +769,9 @@ emergent, because creeps arrive first. On top of that sit the aggro calls:
   beside or beyond it along the leg to the next with the leg clear, and it
   rejoins the rail there after a chase or a push, never at where it left. The
   anchor it used to walk back to walked waves backwards after every chase.
-- A calm creep dragged off the lane beyond its leash gives up, goes deaf to targets
-  and walks straight back to the nearest point of the lane; an open aggro window
-  overrides the leash.
+- A lane creep has no leash of its own: a chase ends `CREEP_CHASE_TICKS` after its
+  target was last in attack range, a target lost from sight is walked after to where
+  it was last seen, and then the creep takes up the rail again.
 - Units turn at a finite rate and only walk or swing once they face their current
   path leg, so corners cost time. Buildings do not turn.
 
@@ -749,7 +779,8 @@ Every swing ends in a backswing the unit stands through, which is the
 pause a creep makes over its kill before marching on. A hero's order cancels its
 backswing.
 
-Abilities run on a shared engine in `sim/abilities.rs`: a row of slots per hero —
+Abilities run on a shared engine — the table in `game/config/ability.rs`, casting in
+`game/systems/cast.rs`, the body's action in `game/systems/actions.rs`: a row of slots per hero —
 four for most, six for Shadow Fiend, the row is per-hero data — each slot with a
 level and a cooldown, held on the seat like items, so both survive the
 hero's death — and cooldowns keep running while it is dead. A skill point arrives
@@ -757,12 +788,15 @@ with every hero level; basic ability level k needs hero level 2k-1, ultimate
 levels open at 6, 12 and 18, as in the game. Slots may share a level: `learn_group` folds a family
 of ids into one, a point into any of them levels the whole family, and the point
 accounting counts the family once. The razes are the one family so far. A cast
-order is validated (learned, off cooldown, mana, target kind, cast range) and
-executes in the ability phase of the same tick, instantly — cast points and
-channeling come later. Casts of the same tick run after cooldown ticking, so a
-fresh cooldown surfaces at its full value. Sylla's kit: slot 0 a critical strike
+order is validated (learned, off cooldown, not disabled, mana, target kind) and
+waits as a `PendingCast`, walking the caster into reach when it has to. It then
+runs as the body's action: the cast point (`ActionPhase::Before`), the ability's
+own `duration` (`During`, which is how Dismember channels) and the backswing
+(`After`), all from `AbilityDef`; a cast point of zero goes off in the tick it
+starts. Cooldowns tick in the upkeep before actions run, so a fresh cooldown
+surfaces at its full value. Sylla's kit: slot 0 a critical strike
 passive fed by the hidden per-unit `Chance` stream (the stream is keyed by the
-arena slot, so respawning continues the sequence); slot 1 an attack speed
+entity slot, so respawning continues the sequence); slot 1 an attack speed
 self-buff for its duration; slot 2 a magical
 projectile that bounces to the closest unhit enemy in range, never a structure;
 slot 3 an ultimate volley launching an attack projectile at every enemy unit in
@@ -778,8 +812,8 @@ nothing. The three razes share one level, which is Dota's rule and what keeps th
 from costing twelve points: a point into any of them levels all three, and the spent-point
 sum counts the trio once. Necromastery is an ordinary leveled passive again — the soul
 cap reads its level, and nothing is gathered while it is unlearned. Presence is a leveled
-aura on the enemy: each tick it lays an armor-break status with a short linger on
-everything hostile in reach, and the stats pass reads that status like any other. It does
+aura on the enemy: each tick it lays an armor-break modifier with a short linger on
+everything hostile in reach, and the stats pass reads that modifier like any other. It does
 not go through the `Auras` component, which is static body data handed out to its own
 side; a presence is as strong as its learned level, which a `&'static [Aura]` cannot say.
 
@@ -792,7 +826,7 @@ numbers a first reading of them gives. It reaches **allied heroes only**; Dota a
 creep-heroes and illusions, of which this game has neither. A **flagbearer**'s
 inspiration reaches 700, mends 3 a second, and reaches **everyone of its own side**,
 heroes counted in. Both linger half a second, which is what the `ticks` on an `Aura`
-buys, and neither stacks, because `Statuses::put` keeps one status of a kind.
+buys, and neither stacks, because `Modifiers::put` keeps one modifier of a kind.
 
 `Aura` grew a `Reach` for the tower: it used to hand out to the whole of its own side,
 which the fountain and the flagbearer do and the tower does not. `Guarded` and `Inspired`
@@ -800,15 +834,14 @@ are separate kinds even though a body could carry both, because naming them apar
 lets a client tell a tower's doing from a flagbearer's, and what keeps the bot from
 reading either as the mending a salve puts on.
 
-What a flagbearer's death pays the enemy heroes around it is **not** here. The wire's
-`UnitKind::CreepFlagbearer` says it is, and nothing implements it: in Dota the bounty
-reaches 1200 and pays every enemy hero in it once, on top of whatever the killer earns.
-The doc is ahead of the code, which is the wrong way round.
+What a flagbearer's death pays the enemy heroes around it is **not** implemented: in
+Dota the bounty reaches 1200 and pays every enemy hero in it once, on top of whatever the
+killer earns.
 
 Two more places fall short of the wiki, and neither is reachable on the maps as they
 stand. Several auras are not meant to stack, and they do not — but which one holds is
-whichever was handed out last rather than the strongest, since `Statuses::put` keeps one
-status of a kind and the last writer wins. Two towers would have to stand within 1800 of
+whichever was handed out last rather than the strongest, since `Modifiers::put` keeps one
+modifier of a kind and the last writer wins. Two towers would have to stand within 1800 of
 each other for it to show, and the nearest pair on the Dota map is 2239 apart. And a
 tower's protection is meant to pass an invulnerable hero by only when it is *hidden*;
 nothing here checks that, and no hero in the game can hide.
@@ -823,19 +856,19 @@ put them.
 
 A soul is taken only from what he brings down himself, which is the killer `bury`
 already carries, and a hero is worth three where anything else is worth one. Souls
-outlive his own death — they wait on the seat in `Kept` with the abilities and the
-items — which Dota does not do. Dota's version spends the accumulation twice, once on
-death and once on the requiem, and a hero whose only scaling is a resource that two
-different events take away is a hero the bots learn to stop gathering with. The requiem
-therefore reads the souls and keeps them; its cooldown is what limits it.
+wait on the seat in `Kept` with the abilities and the items, less the
+`SOULS_LOST_ON_DEATH_PCT` (30%, rounded down) that his own death lets go. The requiem
+reads the souls and keeps them; its cooldown is what limits it: a hero whose only
+scaling is a resource that two different events take away is a hero the bots learn to
+stop gathering with.
 
 Souls are not a component of their own. Necromastery and Flesh Heap are the same shape -
 a count that grows on a death, never runs out, and survives the body - so both are one
 `Stacks` component keyed by `StackKind`, and a third of them costs a variant rather than
 a table, a field in `StatsCx`, a line in the hash and a line in the projection. The wire
-follows: an effect carries an `EffectAmount`, either `Ticks` for one that runs out or
-`Stacks` for one that is counted, and a gathered count travels as an ordinary effect with
-its own `EffectId`. A `souls: u32` on `UnitView` was written first and thrown away: it
+follows: an `EffectView` carries `ticks_left` for one that runs out and `stacks` for one
+that is counted, and a gathered count travels as an ordinary effect with its own
+`EffectId`. A `souls: u32` on `UnitView` was written first and thrown away: it
 puts one hero's vocabulary into the shared one, it says nothing about the flesh heap,
 which has the same shape and was not on the wire at all, and every counter after it would
 have to buy its own field. The two counts are separate optional fields rather than one
@@ -855,6 +888,12 @@ never walks the caster in, an order is not interrupted by it — he razes mid-wa
 mid-attack — and pointing it is done with the body, by turning. Facing was cosmetic
 once; it has been load-bearing since attacks began waiting on it, and the razes now
 lean on it too.
+
+A raze and a requiem line pass buildings by, as in Dota: they burn, stack, frighten and
+slow every hostile unit in their reach but a structure, and the presence and the souls
+already skipped them. Until this was fixed a raze landing on a tower took 90 to 300 off
+it through its zero magic resistance, which taught a learning bot to siege with razes
+from 950 away — a way to push that the game it imitates does not have.
 
 Hero roadmap (added as data + ability implementations; the engine does not change):
 
@@ -894,16 +933,20 @@ enum ClientMsg {
     Hello { role: Role, name: String },    // Role: Player|Bot|Spectator
     PickHero { hero: HeroId },
     SetReady(bool),
-    Order { seq: u32, order: Order },
+    Order { seq: u32, unit: Option<EntityId>, order: Order },  // unit: None is the hero
     Ack { tick: u32 },                     // lockstep: "I am ready for the tick"
+    ViewAs { seat: Option<SlotId> },       // spectator: watch through one seat's eyes
 }
 
 enum Order {
     Move { target: Target }, Attack { target: Target },
     Cast { slot: AbilitySlot, target: Target },
     Use { slot: ItemSlot, target: Target },
-    Learn { slot: AbilitySlot },
+    Put { slot: ItemSlot, target: Target }, Take { target: Target },
     Buy { item: ItemId }, Sell { slot: ItemSlot },
+    Swap { from: ItemSlot, to: ItemSlot },
+    Learn { slot: AbilitySlot },
+    Cheat { cheat: Cheat },                // refused unless the match allows cheats
 }
 
 enum Target { None, Pos(Vec2), Unit(EntityId) }
@@ -926,6 +969,7 @@ enum ServerMsg {
     Snapshot { view: WorldView },          // whole; the tick is inside the view itself
     Events { tick: u32, events: Vec<EventKind> },
     OrderRejected { seq: u32, reason: RejectReason },
+    Orders { tick: u32, orders: Vec<SlotOrder> },  // to a spectator viewing as a seat
     MatchOver { winner: Team, stats: MatchStats },
     ParticipantLeft { player_id: PlayerId, slot: Option<SlotId> },
 }
@@ -946,31 +990,24 @@ socket. Snapshots are coalescible by construction — each one is whole, so a
 connection that fell behind is sent only the latest. Events cannot be skipped, so a
 connection whose event queue overflows is closed instead of buffered without bound.
 
-The vision mask does **not** go over the wire. It is derived from the positions and
-`vision_radius` of the units already present in the view: your own units are always
-visible, so the computation needs nothing beyond what the client already received.
-Saves two kilobytes per snapshot.
+The vision mask does **not** go over the wire. The server decides which entities a side
+is told of — sight lines in `game/vision.rs`, who sees what each tick in
+`game/systems/visibility.rs` — and the client draws its own fog from what it already
+holds: the terrain and `opaque_cells` from `MatchStart`, and the positions and
+`vision_radius` of its own units, walking the same sight lines. Saves two kilobytes per
+snapshot.
 
 There is no shared implementation in `proto`, and that is not an omission. The sides
 need different things: the server — an exact answer to "does this team see this
 point", the client — a soft gradient for rendering with fade-out and a memory of the
-explored, the bot often nothing at all. One shared function would either spoil the
-picture or coarsen the filter.
+explored, the bot often nothing at all. Since terrain occludes, the computation is a
+game rule, and rules do not belong in `proto`: the server's copy is the rule, the
+client's a picture of it. Each side keeps its own mask type and grid constants — they
+do not cross the wire and are not needed to read it.
 
-The server-side representation of vision is intentionally not pinned down in the
-design. A grid is not the only option and probably not the best one: as soon as trees
-and vision cones appear, region geometry becomes both more precise and cheaper. This
-is decided when `sim/vision.rs` is implemented. For the same reason each side keeps
-its own mask type and grid constants — they do not cross the wire and are not needed
-to read it.
-
-This rests on two conditions, and breaking either puts the mask back on the wire:
-
-1. Vision is a pure radius. As soon as terrain starts occluding it, the computation
-   becomes a game rule, and rules do not belong in `proto`.
-2. Every source of vision is represented by an entity in the view. Wards already
-   satisfy this; an ability granting vision without a unit must be modeled as an
-   invisible source entity.
+The client's picture needs every source of vision to be an entity in the view. Wards
+already satisfy this; an ability granting vision without a unit must be modeled as an
+invisible source entity.
 
 Divergence of the computations is safe: the server alone decides which units enter the
 view, so a bug in the client's mask paints the ground a wrong shade and reveals
@@ -983,7 +1020,7 @@ holding a `ReplayRecord`:
 ```rust
 enum ReplayRecord {
     Msg(ServerMsg),                                       // the fogless spectator stream
-    Orders { tick: u32, orders: Vec<(SlotId, Order)> },   // what every seat asked for
+    Orders { tick: u32, orders: Vec<SlotOrder> },         // what every seat asked for
 }
 ```
 
@@ -1000,71 +1037,43 @@ compressor's job, not the protocol's.
 
 ### Bounded replay playback in the client
 
-Opening a replay must not depend on its duration. The client previously read the
-whole file, fed it to the socket `FrameReader`, and decoded every record before
-the first render. Removing each decoded prefix from that reader moved the entire
-remaining tail. A roughly 500 MB, 127,000-record replay therefore incurred
-quadratic copying as well as retaining all decoded snapshots. A window already
-created by macroquad stayed black during that work. Small counted-reader and
-clock tests reproduced the failure without running the large files through the
-old loader.
+Opening a replay does not depend on its length. The client once read the whole file
+into the socket `FrameReader` and decoded every record before the first render;
+removing each decoded prefix moved the whole remaining tail, so a 500 MB,
+127,000-record replay cost quadratic copying and held every snapshot while the window
+stayed black.
 
-The replay player now opens the file without reading records. A client-local
-`BufReader<Read>` reads the existing little-endian length prefix and calls the
-existing `decode_payload` on one record at a time. The shared codec, replay
-format, server and live networking are unchanged. A file-sized byte buffer, a
-decoded frame queue, a background producer and a replay index are unnecessary
-for forward playback; omitting them also removes producer backpressure and
-thread shutdown protocols. One future record is retained as lookahead.
+`replay_play.rs` opens the file without reading records. A client-local buffered reader
+reads the little-endian length prefix and calls `decode_payload` one record at a time,
+with one record of lookahead; the codec, the replay format and the server are
+untouched. There is no file-sized buffer, decoded-frame queue, background producer or
+replay index, and so no backpressure or thread shutdown to get right.
 
-Each GUI-frame poll has three independent limits: 64 records inspected or
-released, 256 KiB of framing/payload bytes consumed, and 128 reader calls,
-including interruptions. Read-ahead is another 8 KiB at most. The existing
-4 MiB payload limit is checked before allocation. A payload can span polls;
-prefix and payload progress survive the yield, and the reusable byte buffer
-never exceeds that payload limit. An already partly read or waiting record can
-complete in a later batch, so a batch's decoded contents are bounded by one
-maximum payload plus that poll's byte budget, not just by the byte budget.
-Decoded Rust values can occupy more than their encoded bytes. Neither their
-retention nor the parser's storage grows with replay length. These are work and
-storage bounds, not a wall-clock timeout on a synchronous filesystem call or
-a new validator of game data inside decodable records.
+Each GUI-frame poll is bounded three ways: `MAX_RECORDS_PER_POLL` (64) records,
+`MAX_BYTES_PER_POLL` (256 KiB) of prefix and payload bytes and `MAX_READS_PER_POLL`
+(128) reader calls, interruptions included; read-ahead is at most
+`REPLAY_BUFFER_CAPACITY` (8 KiB). `MAX_PAYLOAD_LEN` (4 MiB) is checked before
+allocating. A payload may span polls, and a poll's decoded content is bounded by one
+maximum payload plus its byte budget. These bound work and storage, not wall-clock time
+of a synchronous read.
 
-The first snapshot is a render boundary: startup stops there without decoding
-the rest of the replay, and the clock anchors to that snapshot's tick. Loading
-polls and the interval spent drawing the first snapshot do not advance playback.
-Otherwise macroquad's previous frame time could count loading or first-use
-rendering as game time and silently skip the start. Later elapsed time uses the
-recorded tick rate and selected speed. Budget exhaustion leaves the target clock
-fixed while subsequent frames finish the queued work, rather than accumulating
-an ever-growing catch-up debt. Pause stops elapsed-time advancement; previously
-queued work still completes. A step or forward jump only moves the target clock,
-clamped to the largest wire tick, and performs no I/O; the next ordinary poll
-does the work. There is no second decoding pass from input handling and no
-backward seek or replay-sized index.
+The first snapshot is a render boundary: startup stops there, and the playback clock
+anchors to its tick, so neither loading nor drawing the first frame counts as game
+time. Later time runs at the recorded tick rate and the chosen speed. When a poll's
+budget runs out the target clock stays put while later frames finish the work, so no
+catch-up debt builds. Pause stops the clock; a step or a forward jump only moves the
+target clock, clamped to the last tick on the wire, and the next poll does the reading.
+There is no backward seek.
 
-Records keep file order across all yields. `ReplayRecord::Orders` is converted
-in place to the already supported `ServerMsg::Orders`, instead of waiting in an
-independent order queue. This both bounds retention without a separate consumer
-and makes step-delivered orders reach the overlay with their snapshots/events,
-not on a later GUI frame. Snapshots and order records gate on their ticks;
-intervening messages retain the recorded sequence, including the final events
-and `MatchOver` before EOF.
+Records keep file order. `ReplayRecord::Orders` becomes `ServerMsg::Orders` in place,
+so orders reach the overlay with their snapshot and events. Clean EOF is told apart from
+an empty recording, a torn prefix or payload, an invalid length, a decode failure and a
+read failure; a failure keeps the record number and byte offset, stops reading, and
+leaves what was decoded on screen under the error. EOF alone invents no match result.
 
-Clean EOF is distinct from an empty recording, a partial prefix, a partial
-payload, an invalid length, a decoding failure and a reader failure. A failure
-keeps the record number and byte offset, stops further reads, and leaves already
-decoded messages available for that frame. The client shows a loading screen
-before opening and before the first snapshot, and a persistent error over the
-last view on failure. EOF alone does not invent a match result.
-
-Headless release tests use counted, fragmented and virtual gigabyte readers to
-verify the limits without timing assertions or sleeps. The explicitly ignored
-`both_real_replays_stream_correctly_with_bounded_prefix` test takes
-`BOTA_REPLAY_NEURAL` and `BOTA_REPLAY_TEACHER` paths. It compares every streamed
-message against an independent sequential record reader, checks complete EOF and
-match results for both artifacts, and reports first-snapshot read counts and
-full-scan measurements. GUI validation remains separate from that parser probe.
+The ignored `both_real_replays_stream_correctly_with_bounded_prefix` test streams the
+files named by `BOTA_REPLAY_NEURAL` and `BOTA_REPLAY_TEACHER` and checks every message
+against a sequential reader.
 
 ### What a slot is worth, and who works it out
 
@@ -1080,12 +1089,14 @@ followed it.
 The one thing that belongs to no unit is what the shop asks for a thing nobody
 holds yet, so `MatchInfo` carries the price and the parts of every item once
 per match, and the client prices a purchase against what the seat holds by the
-same rule the server charges by. The client's own catalog is what is left over
+same rule the server charges by: only what the seat bought itself and has not
+marked for sale counts, which is why `ItemView` names its owner. `MatchInfo` also
+carries both fountains and the shop range, so the client knows where the home shop
+is on any map. The client's own catalog is what is left over
 after that: names, blurbs and art, and not one number.
 
 `can_level` is a bit rather than a rule. The client used to hold its own copy
-of "a basic ability's level k waits for hero level 2k-1, an ultimate for 6, 8
-and 10" and its own subtraction of points spent from the hero level; the
+of the level floors and its own subtraction of points spent from the hero level; the
 server already answers all of that in `level_floor`, and answering it once is
 cheaper than keeping two copies honest.
 
@@ -1191,63 +1202,85 @@ describing a different item from the one drawn in it.
 
 - `Realtime` — 30 Hz on the wall clock, a late command applies on the next tick.
 - `Lockstep` — the server waits for `Ack(tick)` from every agent. A bot thinks as long
-  as it needs, the match reproduces bit-for-bit. `--ack-timeout` guards against a hung
-  bot (empty order).
+  as it needs, the match reproduces bit-for-bit. `--ack-timeout-ticks` guards against a
+  hung bot (empty order).
 
 ## Server algorithm
 
 ```
 main:
-  parse args (--mode realtime|lockstep, --tick-rate, --players, --replay out.brp)
+  parse args (--port, --mode realtime|lockstep, --tick-rate, --players,
+              --replay out.brp, --map, --seed, --ack-timeout-ticks, --cheats)
   listen TCP; the accept thread queues connections
   state = Lobby
 
 Lobby:
   Hello → Welcome + LobbyState
   PickHero / SetReady; when every slot is ready:
-    world = World::new(&cfg, cfg.rng());
+    world = World::for_match(&cfg, cfg.rng());
     broadcast MatchStart { info: cfg.info() }; state = Playing
 
 Playing (simulation thread):
   loop {
     // 1. gather input
-    realtime: drain incoming until deadline = tick_start + 1/rate
-    lockstep: wait for Ack(t) from every agent (or ack-timeout)
-
-    // 2. validation and PlayerId → SlotId translation through Roster
-    cmds = incoming
-        .filter(the slot belongs to this player_id)
-        .filter(world.can_see(team, target))     // anti-cheat: no clicking into fog
-        .sort_by(slot, seq)
-        .dedup_by(slot)                          // 1 order per slot per tick, the last one wins
-    // 3. append the accepted orders to the replay
-    // 4. events = world.step(&cmds)
-    // 5. broadcast: teams get their view; spectators get the fogless view;
-    //    events go out by Event.visible_to. The fogless frames also go into the replay
-    // 6. if world.winner().is_some() { broadcast MatchOver; flush; break }
-    realtime: sleep until the next tick with drift compensation
+    realtime: until tick_start + 1/rate
+    lockstep: until every seat has acked the tick (or the ack timeout)
+    each Order, on arrival: PlayerId → SlotId through Roster, then
+      world.validate_order(slot, unit, &order)
+        Ok  → replaces the seat's pending order
+        Err → OrderRejected { seq, reason }
+    // 2. the pending orders, in slot order, become Commands and go into the replay
+    // 3. events = world.advance(&cmds)
+    // 4. broadcast: a seat gets its team's view; a spectator the fogless view, or a
+    //    seat's view and that seat's Orders after ViewAs; events go out by
+    //    Event.visible_to. The fogless frames and all events go into the replay
+    // 5. if let Some(winner) = world.victor() { broadcast MatchOver; break }
   }
+  close every connection and wait for its writer
 ```
 
-### Order inside `world.step()`
+### Order inside a tick
 
-Fixed. Changing it invalidates every recorded replay and every hash baseline.
+`advance` takes the tick's commands first; `step` in `game/world.rs` then runs the
+systems in the order written there. Changing it moves the pinned fingerprints; replays
+are frames and do not notice.
 
 ```
-1.  tick += 1
-2.  apply orders → unit.order
-3.  scheduled events: creep wave, neutral and hero respawns, runes
-4.  status tick: buff durations, DoT, cooldowns, hp/mana regen
-5.  aggro: towers and creeps pick targets by deterministic priorities
-6.  order execution: movement, collision separation
-7.  attacks: attack point → projectile launch / instant hit; projectile movement
-8.  abilities: cast point → effect, channeling
-9.  damage queue resolution: armor, magic resist, crit, block → apply
-10. deaths: gold/xp by radius, respawn timers, denies
-11. vision recompute, per-team fog masks
-12. victory condition check
-13. return the accumulated Events
+tick += 1
+upkeep:      waves, camps, gear, assemble bags, passive gold, respawns, couriers,
+             item handling, sales, expiries
+effects:     modifiers, hooks, requiem lines, trees, presence, auras
+stats:       derive stats, guard structures
+targeting
+movement:    jungle, march lanes, walk, push apart
+visibility
+actions:     attack orders, regen, actions, missiles, bounces
+damage:      hits, break on blows, rouse camps, credit damage, events and misses,
+             bury (deaths and the victor)
+then:        applied modifiers count down
 ```
+
+## The tick's hot path
+
+The tick is what a trainer pays for, so it is kept free of passes that walk everything
+for every asker. Each shortcut below gives exactly the answer the full scan gave.
+
+- Targeting (`Candidates` in `systems/target.rs`), the sight pass
+  (`systems/visibility.rs`) and auras (`systems/aura.rs`) sort what stands by x once
+  per pass into a `Spots<T>` (`game/spots.rs`), and each query walks only the square
+  its reach spans, then runs the unchanged exact checks. This is exact because the
+  target answer is the unique minimum of a key that ends in the entity, who sees a row
+  does not depend on the order viewers reach it, and each aura gives each entity its
+  effect once, in source order. Nothing moves between laying the spots and asking
+  them inside one pass.
+- `World::of_wire` resolves a wire handle through `EntityAllocator::resolve` in
+  constant time instead of scanning the live entities.
+- The forest keeps its felled trees in a sorted list of their own, so views and ticks
+  do not walk every tree of the map to find the few that are down.
+- A view is projected in one pass over the entities, deciding once per entity whether
+  the side is told of it.
+- `trainer/map2_skirmish` in `benches/dummy` measures what a trainer pays per tick:
+  `advance` and both sides' views.
 
 ## bota-bot
 
@@ -1261,9 +1294,12 @@ and `clap`. Float is allowed here, as it is in the client: what is recorded of a
 the orders it gave, not the arithmetic behind them.
 
 **The order of the list is the whole of the judgement.** There is one order a tick, so
-which want is asked first is the only priority there is: a skill point, a courier errand,
-the shop, a drink, leaving while hurt, the scroll back, a spell, turning to aim one, a
-last hit or a deny, striking their hero, pressing with the wave, and holding the lane.
+which want is asked first is the only priority there is: standing still while stunned,
+feared or channelling, a skill point, a courier errand, the shop, tidying the bag, a
+drink or a wand, the scroll, leaving while hurt, a spell, turning to aim one, a last hit
+or a deny, waiting out a swing already under way, shaking the creeps off, pulling the
+wave back, striking their hero or pushing a building behind the wave, and holding the
+lane.
 Nothing is drawn at random and what is remembered between ticks is only what the wire
 will not say twice — the attack cycle, how long the stash has been waiting, the scroll's
 own clock — so the same match played twice goes the same way.
@@ -1284,9 +1320,10 @@ there. `fiend_aim` is the other half: a mark inside the union of the three burns
 the line gets a walk towards it, which is how a hero turns. The bands overlap, so
 anything within nine hundred and fifty units can be razed by facing it.
 
-**Buying is sequential, and the list is parts.** An order to buy a built item is refused
-unless the whole of its price is in hand, while the server assembles a build the moment
-its parts are in the bag — so the lists name parts, and gold is spent as it arrives.
+**Buying is sequential, and the list is parts.** The server charges a built item the
+price of the parts the seat does not already hold, and assembles a build the moment its
+parts are in the bag — so the lists name parts, and gold is spent as it arrives rather
+than saved up for the whole.
 `next_buy` stops at the first thing not owned rather than skipping to whatever is
 affordable: skipping spends on the tail of a list the gold its head was saving for, which
 is how a Shadow Fiend ends a match with three salves and no dagger. What is already
@@ -1302,7 +1339,7 @@ moves anything stranded in the backpack forward, since a build lands in the lowe
 any of its parts came out of and a part bought with the bag full comes out of the
 backpack.
 
-Thirteen things were found by playing rather than by reading, and each is now a test, a
+What follows was found by playing rather than by reading, and each is now a test, a
 named constant, or a measurement worth not repeating.
 
 **An order is an animation cancel.** The holding spot drifts a little every tick, and a
@@ -1451,30 +1488,28 @@ lane, so whichever gets a little ahead denies the other and the lead compounds. 
 two seats added together, over several seeds; a swing in one of them alone is the lane
 tipping, not the change working.
 
-## bota-bot, as it was: a bot that weighed candidates
-
-The three sections below describe the two bots that were moved out of this repository.
-They are kept for the reasoning in them — the self-play harness, the lessons, the
-breeding search — and none of it describes code that is here now.
+### The seam
 
 ```rust
 pub trait Bot {
     fn seated(&mut self, slot: Option<SlotId>);
     fn match_started(&mut self, info: &MatchInfo);
-    fn on_tick(&mut self, view: &WorldView) -> Option<Order>;
+    fn on_tick(&mut self, view: &WorldView) -> Option<Ask>;
     fn on_events(&mut self, _tick: u32, _events: &[EventKind]) {}
     fn on_reject(&mut self, _seq: u32, _reason: RejectReason) {}
     fn finished(&mut self, _winner: Team, _stats: &MatchStats) {}
 }
 
-pub fn play<B: Bot>(bot: &mut B, seat: &Seat) -> io::Result<Outcome>;
+pub fn play(bot: &mut dyn Bot, chair: &Chair) -> io::Result<Outcome>;
+pub fn play_on(bot: &mut dyn Bot, link: Link, seated: Seated, chair: &Chair)
+    -> io::Result<Outcome>;
 ```
 
-The hero is picked when the connection is made rather than returned from a callback:
-picking happens in the lobby, before there is a `MatchInfo` to decide from.
+The hero is picked when the connection is made (`Link::join`) rather than returned from
+a callback: picking happens in the lobby, before there is a `MatchInfo` to decide from.
 
 `on_events` earns its place. The attack cycle is not on the wire — a `UnitView` carries
-`attack_interval` but not where in the interval a unit stands — so a bot cannot tell
+`attack_time` but not where in the interval a unit stands — so a bot cannot tell
 whether it may swing now or in forty ticks. What is on the wire is every blow that
 lands: one of the bot's own says the cycle began a wind-up ago and comes round again an
 interval after that. Without this the bot orders last hits it cannot take for another
@@ -1483,10 +1518,10 @@ second and loses them all.
 ### One order a tick, and saying nothing
 
 The server keeps one order per seat per tick and the last one wins, so a want is a
-single `Order` and the policy ranks its wants rather than queueing them. Re-sending the
+single `Ask` and the policy ranks its wants rather than queueing them. Re-sending the
 want already standing is not free: an order cancels the recovery after a swing and calls
-the creeps onto whoever gave it. So a want equal to the one in hand is not sent again
-for `resend_ticks`, and two walks to spots less than `resend_drift` apart count as one
+the creeps onto whoever gave it. So `Steady` holds a want equal to the one in hand back
+for `RESEND_TICKS`, and two walks to spots less than `RESEND_DRIFT` apart count as one
 want — otherwise following a moving wave throws away the route the server laid every
 tick.
 
@@ -1501,20 +1536,20 @@ hand is worth more than an item in a stash nothing is coming for.
 The errands are abilities the courier carries, so an order for one names the courier in
 `ClientMsg::Order`'s `unit` and casts the slot the errand sits in. Which slot that is, is
 read off the courier rather than assumed: the order the server fills its book in is the
-server's business. A `Want` therefore carries whom it is for, and what the bot answers
-with each tick is an `Ask` — an order and a unit — rather than an order alone.
+server's business. That is why the bot answers each tick with an `Ask` — an order and a
+unit — rather than an order alone.
 
 An errand outlives the tick it was given in. Saying it again changes nothing about what
 the courier does and costs the one order the seat has that tick, which is an order the
 hero did not get to give: the first cut of this sent five hundred and thirty-six errands
 in one match, and the hero took a quarter more damage for want of the ticks. So an errand
-already under way is not repeated until `courier_repeat` ticks have passed, which is a
-safety net for an order that never arrived rather than a schedule.
+already under way is not repeated for `ERRAND_TICKS`, which is a safety net for an order
+that never arrived rather than a schedule. A trip is not made for one item: it waits
+until `COURIER_BATCH` of them have piled up or the first has waited `COURIER_PATIENCE`
+ticks. And it is held back entirely while an enemy hero is near — a courier walks to
+where its owner stands, and where its owner stands is what is shooting.
 
-A trip is not made for one item: it waits until `courier_batch` of them have piled up or
-the first has waited `courier_patience` ticks. And it is held back entirely while the bot
-is being shot at — a courier walks to where its owner stands, and where its owner stands
-is what is shooting.
+### Server-side walking and courier behaviour
 
 An errand answers to what the courier is carrying, not only to what waits in the
 stash. Sent for a stash that is empty while already holding something, it takes what it
@@ -1524,18 +1559,11 @@ meant to bring them, and the goods would ride back and forth for ever. And what 
 owner has no room for is carried back to the stash rather than kept aboard, so a full
 bag leaves the goods somewhere its owner can reach them rather than orbiting the lane.
 
-Delivery also collects: having handed its load over, the courier takes every stack the
-owner has marked for sale, and the put-back leg it already flies carries them to the
-stash, where the sale pass cashes them. A courier with nothing to deliver still answers
-the call while something is marked — the call is the ask, and refusing it would leave
-marked goods stranded on a hero who cannot reach the shop.
-
 A courier brought down keeps its load. The stacks wait on the seat while the courier is
 gone and come back aboard the next one, the same way a fallen hero's bag waits on the
 seat. Spilling the load on the ground was considered and turned down: the wait already
-prices the death, the goods staying out of reach until the courier stands again is
-punishment enough, and a bot that loses items outright learns to fear the courier
-rather than to use it.
+prices the death, and a bot that loses items outright learns to fear the courier rather
+than to use it.
 
 A way found round something is walked to the spot it was found for, and the spot it
 was found for is what is kept beside it. Keeping the last spot asked for instead is what
@@ -1550,749 +1578,16 @@ at one is how creeps are shaken off — closes until the bodies touch and stops 
 following it for as long as the order stands. Aiming at the middle of a body instead is
 aiming at a spot inside it, which cannot be reached: the walk presses in, the pass that
 eases overlapping bodies apart pushes back out, and the two together read on the screen
-as circling. Stopping a hair outside the hulls keeps that pass out of it entirely.
-
-### The numbers held apart from the decisions
-
-Every threshold the policy weighs — how low is low, how far is far, how many ticks a
-swing takes to land — is a field of `Params` with a range, not a constant at the place
-that reads it. Three things follow: a run can be handed a set from a file, a search can
-walk over the set, and the numbers standing for what the wire does not carry (the wind-up,
-the arrow's speed, what an ability reaches) are tuned the same way as the numbers standing
-for taste. `Params` is `f32` throughout: the bot is allowed float, and uniform fields are
-what let a search treat the set as a vector without a case per field.
-
-A trained set lives in `params.txt` **beside the repository, not inside it**, and is not
-committed. Weights are the same, in `weights.safetensors`. Both are read when the bot runs
-rather than carried inside the binary, so a training run takes effect without a rebuild
-and a machine without one plays by the numbers the code was written with.
-
-They are not committed because of what they are. A set of numbers is what one machine's
-training run happened to arrive at over a few hours against one opponent — it is an
-artefact of a run, not a statement about the game, and the run that produced it is
-reproducible from its seed. Committing it would put a binary blob in review that nobody
-can read and everybody would have to merge.
-
-Two sets, and the difference matters:
-
-| | What it is | Who plays by it |
-|---|---|---|
-| `Params::default()` | the numbers the code was written with | the tests, `--plain`, and any machine with no kept file |
-| `Params::learned()` | `params.txt` as it is on disk now | `Brain::new()`, `play`, and `train` as its starting point |
-
-The tests pin the policy against `default()`, never against a trained set: what a test
-measures is the decision, and a trained set is data that moves under it. What a test does
-hold is the round trip — a knob renamed leaves an old file naming something nothing is
-called, and a bot that quietly fell back to the plain numbers would play worse for no
-visible reason.
-
-### Self-play
-
-Training is `bota-bot train`, and it needs nothing the server does not already do. A
-server plays one match and exits, so a bout starts one on a port the system picks, joins
-both seats, and kills it with the bout. Joining waits for the seat: seats go out in the
-order the server sees connections arrive, two connections made back to back arrive in
-whichever order the threads behind them run, and a set that played the same side twice is
-measured against a side rather than against an opponent. That was a real bug and it made
-every measurement bimodal. Lockstep is what makes it
-worth doing: the server advances as soon as every seat has acknowledged the tick, so a
-match runs as fast as the two brains think — twelve thousand ticks, a little under seven
-minutes of game, in about three seconds. A bot that does **not** acknowledge holds the
-match at the straggler timeout, one tick at a time.
-
-The search is a (1+λ). A round breeds several challengers out of the set in hand, each
-differing in a few numbers, and measures every one of them the same way: two matches
-against a champion, one from each side. Whichever came out furthest ahead of the champion
-takes the set in hand, if it came out further ahead than that set did. Both sides are
-played because the map is not symmetric to a search: left to one side it would learn the
-side rather than the game. The matches of a round are independent, so they run at once — a
-round costs two matches of wall clock, not fourteen.
-
-Measuring against a champion rather than head to head against the set in hand is what
-makes a round mean something. Head to head, the thing being climbed moves under the search
-every time it takes a step: a challenger that beat the set in hand says nothing about the
-round before it, the number in the journal drifts, and a run of them walks rather than
-climbs. That was tried first and it is what it did — twenty rounds of taking challengers
-left the set no better against a fixed opponent than it started. Against something frozen,
-better is one number that means the same in the first round and the hundredth.
-
-The champion is frozen, not fixed: it starts as the numbers the code was written with and
-the best set replaces it every `champion_every` rounds, so the bar rises. A search
-measured against one weak opponent forever learns to beat that opponent.
-
-How far a nudge reaches is not fixed either. It widens while more than a fifth of the
-challengers beat the set in hand and narrows while fewer do: a search that keeps failing
-is reaching too far, and one that nearly always succeeds is not reaching far enough. A
-fifth is the old rule of thumb. What matters about it is that both halves happen —
-widening on any success at all only ever widens, which is the same as not adapting.
-
-What is scored is mostly what the seat did — creeps taken, creeps denied, levels, gold,
-damage put on the other hero and damage taken — because two even bots farm for twenty
-minutes and neither Ancient falls; the win itself outweighs any of it when it does come.
-The damage is counted from `EventKind::Damaged` rather than read from `MatchStats`: the
-final numbers arrive only when a match runs to its end, a match played for a fixed span
-never does, and the server reports `hero_damage` as zero besides. Without those two columns
-the whole fighting half of the policy is unconstrained — every match ends nought kills to
-nought, so nothing else in the score can tell a bot that harasses from a bot that does not.
-
-Nothing about this reaches into `bota-server`: the trainer is a process that starts other
-processes, and the bot still sees only what its own side may see. A search that could see
-through the fog would learn to.
-
-`Watched` writes a line a tick — where it stood, what it had, what was near, and the order
-it gave. It is what a match is read back from without watching it, and it is the shape a
-policy learned from recorded play would be trained on.
-
-### The second bot: a network that chooses
-
-There are two bots in the crate and they share everything but the choosing. The
-rule-driven one weighs its wants in a fixed order and takes the first that answers. The
-other draws up the same wants, scores each with a network, and takes the highest.
-
-Scoring candidates rather than emitting an action is what makes a network fit this game
-at all. An order is parameterised — walk *there*, hit *that one* — so a fixed row of N
-action classes cannot name the action space, and a head that regresses a position has to
-learn from scratch that positions off the lane are worthless. Scoring sidesteps both:
-which orders exist stays with the code that knows the rules, the number of them is free
-to change from tick to tick, and the same weights judge a swing at one creep and a swing
-at another.
-
-A row shown to the network is the tick and one candidate laid end to end — twenty-four
-numbers about the world, thirty-two about the candidate, every one of them brought to
-about the same size. Two hidden layers of a hundred and twenty-eight, one number out:
-some twenty-four thousand weights. The library is behind one file, `net/model.rs`, so
-what the bot decides does not depend on which tensor crate is underneath.
-
-### Teaching it, in two halves
-
-**Copying first.** A network started from nothing spends a very long time discovering
-that walking into a tower is bad, and every match costs seconds. It does not have to:
-there is already a bot that plays a respectable lane, and every order it gives is an
-answer to a question the network will be asked. So the first half is not a search at all.
-Play matches, write down the candidates and which was taken, and move the weights until
-the network takes the same one. Thirty-one thousand decisions and four passes — about a
-minute — gets it agreeing with the rules **87%** of the time, and playing level with them.
-Chance is one in twenty-four.
-
-How faithful the copy is turns out to decide everything. Thirty-one thousand decisions
-and four passes gets 87% agreement, and a network that agrees seven times in eight plays
-*worse* than what it copied — errors compound, and a lane is unforgiving. Sixty-two
-thousand and ten passes gets **92.6%**, and that one plays better than what it copied. The
-gap between those two runs is the difference between a second bot that is a curiosity and
-one that is worth keeping.
-
-That the candidate list holds what the rule bot chose is checked and reported rather than
-assumed: **98.7%** of its orders are candidates the network could have picked. Whatever is
-short of that is behaviour the network cannot be taught, and a number that drops after a
-change to either bot says so.
-
-**Practising second.** Copying cannot beat what it copied. The second half plays the
-network against **a frozen greedy copy of itself** on the same seed — one side wandering,
-one side taking what it already believes — and moves the weights towards the wandering
-choices of matches where wandering paid.
-
-The frozen side is the whole trick, and it was learned the hard way. The first cut scored
-each seat against the average of the generation, which sounds reasonable and is nearly
-noise: both seats play the same weights, so half of them come out above average whatever
-they did. Sharpening towards those halves sharpens randomness, and it showed — over five
-rounds the loss fell from 0.121 to 0.057 while the matches got *worse*, 44 down to 33. A
-policy agreeing with itself ever harder looks exactly like a policy learning. Against a
-side that made no unusual choices on the same seed, the difference is what the unusual
-choices were worth, which is the thing being asked.
-
-**Measure against something that does not move.** The second thing learned the hard way,
-and the same lesson the search over the numbers taught: a round's own matches are worth
-whatever their seeds were worth, so reading that number as progress is reading the luck of
-the draw. Every fifth round the network plays the rule-driven bot greedily, on the same
-handful of seeds every time, from both sides. That margin is the only number in a run that
-means the same thing in the first round and the last — and it is what showed that the 87%
-copy was twenty-odd points *behind* while its own matches looked fine. From the better
-copy, which starts level and a little ahead, the margin climbs: +17 at five rounds, +26 at
-ten. The share of wandering that pays falls as it goes, from three quarters towards a
-third, which is what a policy absorbing its own good accidents looks like.
-
-Two smaller things keep it honest. Each seed is played twice with the sides swapped, so
-nothing learned is a fact about which end of the map a seat began at. And a slice of what
-was copied is gone over again every round: a policy taught only from its own recent
-matches forgets the parts of the game those matches did not visit, and there is nothing
-in a lane to remind it.
-
-The weights are kept in `weights.safetensors` beside the repository, on the same rule as
-the numbers: read when the bot runs, not committed, not carried inside the binary. Asked to
-play by weights that are not there, the bot says so rather than playing something else.
-
-Credit inside a match is handed out per decision: what followed it over the next while,
-discounted so the near future counts for most of it, judged against what other decisions
-taken at about the same point in a match were worth. Early ticks pay little and late ticks
-pay much whatever is chosen, so comparing against the run of all decisions would only be
-measuring the clock.
-
-Whether that is better than giving every decision the match's score is **not settled**. Run
-against run from the same weights and seed, the blunt scheme reached +23.4 against the rule
-bot and the per-decision scheme +23.6 — a tie. What the per-decision scheme did need before
-it could even tie was a fix to something else: the network used to write down a decision on
-every tick, including the thousands where it was standing by what it had already said.
-Those frames are near-duplicates of their neighbours, their returns differ by noise, and
-learning the difference is learning nothing. Recording only the ticks that actually issue an
-order — which is what watching the rule bot always did — cut the frames fivefold and brought
-the scheme from +17.6 back to parity.
-
-### Two bots can each be better than the other
-
-The net that came out of that run is +35.8 against the rule bot, the best measured, and
-−4.6 against the clone it was itself trained from, losing every match. Both verdicts are
-twenty matches with the doubt on them under five.
-
-This is not a contradiction to be explained away. Practising against a frozen copy of
-oneself is training to beat *that opponent*, and a policy can get better at one style while
-getting worse against another. It means a single number cannot say which of two bots is
-stronger — only which is stronger against what it was measured on. The honest fix is a pool
-of opponents rather than one, which the arena is already shaped for; until then, a verdict
-here should always be read with its opponent named.
-
-A forward model (rolling out hypothetical futures for planning) is not supported and
-not needed now: the bot has no hidden state, so it could not roll forward with the
-real engine anyway. If it becomes needed, the simulation moves out of `bota-server`
-into its own crate, which is cheap since `sim/` is already a separate subtree with no
-dependencies on the network layer.
-
-### Playing without a socket
-
-Most of a match is not the match. Measured on one match of twenty thousand ticks: the world
-itself steps in 231 ms, projecting it through the fog for both sides costs 46 ms, the model
-decides in 3363 ms — and the remaining 5812 ms is postcard, TCP, two processes and the
-lockstep acks between them. Three per cent of the wall clock is the game.
-
-So `bota-bot-v2` can play its matches in its own process. All of that lives in one module,
-`bench.rs`, which is the only place in the bot that names `bota-server` at all; the server
-is not changed for it and does not know it exists. A bench hands over the view of that
-seat's own side, fog and all, which is byte for byte what the socket would have carried.
-Reading the world directly would be faster still and would train a bot that cannot play,
-having learned on what a seat is never shown.
-
-The dependency is behind the `builtin` feature, so a bot built without it carries no
-simulation. That the bot could reach further into `bota-server` than `bench.rs` does is a
-matter of one module's discipline rather than of the compiler's — the cost of not bending
-the server around the bot.
-
-There is one seat loop, not two. `play_on` takes anything that answers three questions —
-hear, order, done thinking — and a socket and a chair both do. Two loops would part company
-by the second change to either, and then the model would be trained on one game and played
-on another.
-
-The gain is real and smaller than it looks from the breakdown: **about a quarter**, not the
-two and a half times the numbers above suggest. The server's share of that 5812 ms runs on
-another core, in parallel with the bot's thinking, so removing it does not remove wall clock
-one for one. What it does remove is a process and a socket per match, which is what matters
-once there are more lanes than cores.
-
-Two things had to be got exactly right, and both were found by comparing the two paths on
-the same seeds rather than by reading the code.
-
-**A tick waits for every seat that is still there.** The seats' acks started life meaning
-"has thought about everything", so a seat that had not spoken yet did not hold the tick and
-the world walked on without it. The match still ran, and still repeated itself when run
-twice in a row, which is what made it look right.
-
-**There is no snapshot of the tick a match begins on.** The server gathers orders, advances,
-and only then sends, so the first snapshot a seat ever sees is of tick one. An arena that
-handed out tick zero put every seat a tick ahead of itself for the whole match. The first
-three lessons agreed to the mark either way — they are short — and everything from three
-thousand ticks on drifted apart.
-
-With both fixed, one model scored identically on all seven lessons down to the last tenth,
-by both paths. That equality is the whole warrant for training on the fast one.
+as circling.
 
 ### Hanging up
 
 A connection is closed one half at a time: the writer shuts down the sending side and
 leaves the receiving side open. Closing both while the peer still has bytes of ours in
 flight resets the connection, and a reset discards what was already sent — so the peer
-loses the message saying who won and sees an aborted socket instead of a result. It cost
-an afternoon to find, because the seat reported it as a connection error at a tick number
-that looked like a length limit.
-
-Two things around it are part of the same lesson. The server waits for its writer threads
-rather than exiting from under them, since the last message of a match is queued at the
-moment the server has nothing left to do. And a harness that starts a server reads its
-error output rather than discarding it: thrown away, a server that panics reaches the
-caller as a socket that closed, naming neither the server nor the panic.
-
-## bota-bot-v2
-
-A second bot, built the other way round. The first one weighs candidates the rules drew
-up; this one is handed a fixed vector and a fixed numbered list of deeds, and names one.
-Nothing of the first is reused: a bot that depended on another would mean every future bot
-carrying every past one about with it.
-
-The whole contract is four pieces.
-
-| | |
-|---|---|
-| `field.rs` | one tick read into a settled shape: who is who, in what order, seen from where |
-| `sight.rs` | **188 numbers** built from that |
-| `deed.rs` | **126 deeds**, flat and numbered |
-| `doing.rs` | which of them may be done now, and what a chosen number turns into |
-| `marks.rs` | what a tick is worth, lesson by lesson |
-
-Between the numbers and the choice sits a `Mind`: handed numbers and flags, answers with
-one number. That is the whole seam. A mind that knows what a creep is has reached across
-it, and a game that knows what a weight is has reached back.
-
-### Why the reading of a tick is its own piece
-
-Because the vector and the decoder have to agree about which creep is the third one. Read
-the tick twice and they drift, and every hour of training above them is learning noise.
-For the same reason the order has a tie-break on the handle: two creeps the same distance
-off would otherwise swap places from tick to tick, and the number that named one would
-name the other.
-
-### Turned about
-
-Forward is always towards the other side's fountain and left is always left of that. In
-world coordinates a bot would learn the game twice, once from each corner of a map that is
-a mirror of itself.
-
-### Legality is ours, not the model's
-
-Every tick carries a flag per deed. The model never picks one that is false — the numbers
-of the impossible are sent to nothing before anything is compared, so they can never come
-out on top and never carry a gradient. Letting it pick freely and taking the points off
-afterwards was considered and dropped: there is one order a tick, so a wasted pick is a
-lost creep, and what is legal is known to us for nothing.
-
-The counting goes both ways, and it earned its keep immediately. The first match run this
-way had the model choose nothing illegal — and the **server refuse eleven hundred of its
-orders out of eight thousand**. What the bot believed about legality and what the server
-enforced were not the same thing: a snapshot carries an ability's level and its wait but
-not whether it can be cast at all or what it must be aimed at, and the bot was offering
-casts of passives and bolts aimed at the ground. With that written down in `spells.rs` the
-refusals went to nought. A bot that had only counted its own mask would have called itself
-correct and quietly thrown away one tick in eight.
-
-### What of the ground made it into the list
-
-Of the item orders the wire grew later, the list took only selling: one deed per
-inventory slot, marking far out and cashing at the shop, so the whole trip is the sell
-deed plus the deliver errand it already had. Laying an item down and taking one up are
-not deeds. In selfplay nothing ever lies on the ground — a courier keeps its load
-through death and no deed drops anything — so a take-deed would be a logit that is
-masked on every tick of every match, and a put-deed a way to burn a tick and half an
-item's price. The list is append-only exactly so that either can be added the day
-something puts loot on the ground in front of a bot.
-
-**Selling is legal only at the shop.** The wire sells from anywhere: away from the
-shop the order lays a mark, and the shop settles the mark whenever the stack reaches
-it — walked home, or collected by the courier's next delivery leg. For a model that is
-nine deeds, always legal, free to toggle, and paid for hundreds of ticks after the
-choice at half price by a route it never asked for; the bred crowds duly chose them as
-noise and bled by them. Masked to the shop's reach, a sale moves gold and goods on the
-tick it is chosen, which is a price a selection can see. The mask is the bot's own:
-the wire and the mark are unchanged, and a human still sells from anywhere.
-
-**A swap is the model's own choice.** The list long held no way to move an item: `Use`
-and `Sell` reach the working slots alone, so a stack the courier set down in the
-backpack, or one waiting in the stash while its owner stood at the shop, was out of
-the game for good — whole matches were played with a wraith band asleep in the stash
-and a magic stick working in its place. One deed per pair now: every spare slot — the
-backpack, then the stash — against every worn one, fifty-four in all, legal while
-either side holds something, the stash taking part only at the shop, which is the
-server's own rule. Whichever side is full moves onto the other; both full is the swap
-it says. A single "wear the best" deed with the valuation ours, the way `Buy`'s is,
-was considered and passed over: which item earns a working slot turns on charges,
-waits and the fight at hand, which is exactly the judgement being bred. What was added
-to the choice had to be added to the eye: the worn slots now show what each item cost,
-and the backpack and the stash show themselves at all — a spare slot is a presence and
-a price, where before the model saw only how many things were waiting. Sight grows 164
-numbers to 188 and the list 72 deeds to 126; weights trained before either do not
-load, which is the standing rule for both.
-
-### The model
-
-One head over one trunk of two layers: a number per deed. Some **435 thousand weights**
-against the first bot's twenty-four.
-
-A value head — one number for what the position is worth, whatever is chosen — sat
-beside the policy while lessons were taught by gradient. Judging a single decision needs
-something to judge it against, and the first bot's home-made baselines — the match's own
-score, then the average of decisions at the same point on the clock — were measured
-against each other and came out a tie; a learned value was the answer the tie was
-pointing at. Breeding judges whole matches and expects nothing of a position, so the
-head went with the trainer that needed it. Old weight files still load: weights are
-looked up by name, and a value head in the file is simply never asked for.
-
-It is shown seven ticks laid end to end rather than only the newest, because a swing that
-has begun, a creep about to die and a creep just dead look alike in one frame. Frames
-rather than a memory of its own: a memory carried through twelve thousand ticks and reset
-on every death costs more to train than that is worth. If a measured gap ever asks for
-recurrence, the seam is the place to put it and nothing above or below would notice.
-
-**The frames are spaced by doubling ages, not taken consecutively.** Half a second back,
-then one, two, four, eight and sixteen seconds, and the tick being decided on. Four
-consecutive ticks reached an eighth of a second, which is enough to see a swing land and
-nothing else: whether a wave is being pushed, whether the other hero has been closing for
-the last ten seconds, whether the bot has been standing in the same place since it walked
-there — all of it happens on a scale the old window could not reach. Doubling buys a
-quarter of a minute for three more frames, at the price of resolution the far end does not
-need.
-
-**Ages are the match's own ticks, not how many times the model was asked.** The seat
-chooses nothing while there is nothing to choose, which is mostly being dead, so counting
-calls would let a death quietly stretch a sixteen-second window into a minute. Each frame
-is the newest tick seen at or before its age, so a gap reads as the last thing the seat
-actually saw rather than sliding the other frames along. One frame from beyond the window
-is kept for exactly that reason — after a long gap the oldest age asks for a tick older
-than the window itself.
-
-The price is three more frames on the first layer: `INPUT` goes from `NUMBERS x 4` to
-`NUMBERS x 7`, 624 numbers to 1092, and the model from 240441 weights to 360249. It bought
-them for nothing. A forward pass measured 23.5 us before and 22.5 us after — half again as
-many weights and no more time, because at a batch of one the pass is bound by the ten
-candle operations it is made of and not by the arithmetic inside them. The same reason a
-GPU would lose here is the reason this was free.
-
-Weights trained against the old input cannot be loaded against the new one, and are not
-silently reshaped: `shape mismatch in set, lhs: [1092, 256], rhs: [624, 256]`, and the
-load fails.
-
-### Lessons
-
-A match pays almost nothing almost all of the time, so the bot is not asked to learn the
-game at once. Seven lessons, each a longer match than the last, each paid for something
-narrower than winning.
-
-| | ticks | scored in |
-|---|---|---|
-| stock up | 300 | `marks/stock_up.rs` |
-| find the lane | 900 | `marks/find_the_lane.rs` |
-| hold the lane | 1200 | `marks/hold_the_lane.rs` |
-| meet the wave | 3000 | `marks/meet_the_wave.rs` |
-| work the lane | 12600 | `marks/work_the_lane.rs` |
-| take the towers | 36000 | `marks/take_the_towers.rs` |
-| grow rich | 54000 | `marks/grow_rich.rs` |
-
-**A lesson is one file and one function.** How long it runs is its row of `LADDER`; what it
-pays for is the file that row names, weights and all. `score` is the only place in the
-crate that branches on which lesson is being taught, and it does nothing but hand the tick
-to that lesson's own function. There used to be seven such branches, spread over standing,
-walking, blows, buying and fighting, and reading what one lesson was worth meant reading
-all of them.
-
-**A lesson is scored once a tick.** The seat holds a tick's events until the next snapshot
-says what the tick came to, then scores it whole. Two entry points — one for the snapshot,
-one for the events — would force every lesson to be cut in half along a seam that is the
-wire's, not the lesson's.
-
-**A lesson's marks are its own.** Nothing a lesson pays for depends on what an earlier one
-taught. Lessons used to keep a quarter of the habit before them, and it was measured not to
-work: at the last rung a quarter of the shopping habit is one mark against three hundred,
-which no selection can see, and every bred model had forgotten how to shop by the end of
-the ladder. Rescaling the quarter would have been a knob to guess; dropping it is one less
-thing that can be wrong.
-
-Isolated marks are also readable all at once, which is how they are now read. One match,
-run to the longest lesson's clock, is scored by every lesson: each counts the ticks inside
-its own window and stops. The whole ladder for the price of its longest rung, and a card
-that describes one game rather than seven different ones.
-
-The last rung is net worth itself — unspent gold plus what everything owned cost — paid a
-tick at a time as the difference since the tick before, which adds up to what the seat
-ended up worth less what it started with. Downwards as well, so gold lost on dying is net
-worth lost. One mark a gold, which puts the number an order of magnitude above every other
-lesson's; that is harmless because a lesson's marks are never added to another's, and it
-means the number reported is net worth and not a scaled shadow of it.
-
-Four decisions inside the marks were settled by measuring, each after a run that learned
-nothing or learned the wrong thing.
-
-**No flat floor.** Nearness was a straight slope from full marks at six hundred units to
-nothing at three thousand. Past three thousand every position scored the same nothing, so a
-bot that had wandered off had nothing in the numbers pointing home. It is now a falloff
-that halves at six hundred and never reaches zero.
-
-**Not the line — the spot.** The first lane lesson paid for standing near the line its lane
-runs along. A fountain is on that line. Doing nothing whatsoever scored 8.9 out of a ceiling
-of 9.0; the lesson now pays for the spot halfway along, where the waves meet.
-
-**Ground closed, not ground left.** Paid for nearness alone, the same lesson stuck at 0.5
-out of 9.0 for thirty rounds: a random walk cannot cross most of a lane in thirty seconds,
-and until it does, nothing it does changes what it is paid. Marks go to the distance
-*closed* since the last tick, which pays from the first step in the right direction. With
-that the lesson went 3.6 to 10.0 in ten rounds.
-
-**Blows count only against the other side.** Paid for the swing alone, the gradient trainer
-found what the wording allowed and went all the way into it: nought enemy creeps killed a
-match and twenty-four of its own, because its own wave is always beside it and never fights
-back. Closing the wording moved the same trainer from nought last hits to fifty-three and
-from twenty-four denies to none.
-
-The last rung pays for four things at once: damage to their towers, a tower falling,
-killing them, and staying whole, with dying counted against it. A tower is worth more the
-earlier it falls, by a falloff that halves at five minutes, and worth more for every one
-already taken, so the second is twice the first. Two departures from the plain reading of
-"damage over time, times towers taken": multiplying the whole score by the towers taken
-makes every point of damage before the first tower worth exactly nothing, which is the flat
-plateau again, so damage pays on its own and the multiplier applies to the towers alone;
-and dividing by the clock makes a tower taken in the first seconds worth unboundedly more
-than one taken a minute in, so a falloff is used instead. Health and mana are paid for only
-outside its own base — paid wherever it stood, the surest route to full health, full mana
-and no deaths at all is never to leave the fountain.
-
-Spending is read off what the seat owns — the bag, the stash and the courier's load, each
-item at its price — rather than off the gold falling, which also falls on death and rises
-on its own. Only increases count; selling gold back is not spending it.
-
-### Grow strong
-
-The eighth rung is worth on a sliding count: gold at its face value, goods at half as
-much again while they ride in the backpack, the stash or the courier's load, and at
-twice their cost once they sit in the working slots. Every step a gold takes towards
-being worn pays: one for earning it, half an item's price over the gold for buying it,
-and the other half when it is worn rather than carried.
-
-It exists because **`grow rich` cannot tell hoarding from wearing.** Net worth counts the
-purse at face value, so buying a five-hundred item moves five hundred from one side of the
-sum to the other and the number does not move. Two hands that end a match on the same net
-worth score identically, whether one of them is wearing it and the other sitting on it —
-and one of those two is a hero and the other is a wallet. A test asserts exactly that gap:
-the same five hundred, `grow rich` paying both hands alike and `grow strong` paying the one
-that wears it twice as much.
-
-That `grow rich` will *eventually* reward spending is true and useless. Items win fights,
-fights win farm, farm is net worth — but that is four causal steps, and a breeding search
-that gets one number per match will not find it. The half is a direct signal for what the
-long chain only implies.
-
-**Carried is not worn.** The first cut counted the purse at half and every item at its
-face wherever it sat, which told buying from hoarding and nothing else: boots asleep in
-the stash scored the same as boots working on the hero, and the whole trip that turns
-gold into stats — buy, send, fetch, wear — was paid in full at its first step and never
-again. The count now steps one, one and a half, two, so buying and wearing each pay
-half the price, and the delivery in between is what the wearing half is paid for.
-
-**Gold at its face, not at a half.** The half-purse made a last hit worth half of what
-`grow rich` says it is and a death cost half of what it costs, and earning is not the
-habit being taught out — hoarding is, and hoarding is already what the multipliers
-above the purse pay against. At face value the two lessons agree about income and
-death, and differ exactly where this one exists to differ: what became of the gold.
-
-**A consumable is worth what it does.** Counted like a durable it is a dead loss to
-use: a salve in the working slots counts two hundred and twenty, and drinking it wipes
-that out. The crowds bred on that counting did the arithmetic — they bought salves,
-marked them for sale and never drank one. So health mended on the seat's own hero pays
-a mark a point and mana half a mark, read off the `Healed` events the server now emits
-when something is drunk: what was missing when the drink began, no more than the drink
-holds. That turns the sign over — a salve drunk four hundred down pays four hundred
-against what it wipes, and one drunk at full health pays nothing and wipes the same. A
-mend broken by a blow has still been paid in full: the choice was right when it was
-made, and what the opponent broke should not unmake the mark that chose it. Mana at a
-half because it is bought at three a gold, and what the spells it feeds do is paid for
-by the margins already.
-
-**And it is worth that wherever it sits.** The first cut still counted a consumable as
-gear — twice its price worn, half over riding — and the crowds obliged: they wore
-their salves, hoarded them unspent, and filled all nine slots of the bag with prepaid
-drinks until the courier had nowhere to set an upgrade down and carried it back to the
-stash for the rest of the match. A consumable now counts at its face value in any
-slot: buying one moves nothing, wearing one grows nothing, and the only mark it will
-ever pay is the drinking. The working slots stay for gear, the bag drains itself, and
-the deliveries land.
-
-**It is the longest rung, not `grow rich`'s equal.** Two rungs of the same clock break
-three things the ladder promises at once: that each runs longer than the last, that exactly
-one lesson is still counting when a match ends, and that `Lesson::longest()` names one
-lesson rather than whichever of two ties `max_by_key` happens to return. Five minutes more
-is what it costs to avoid weakening all three, and in release that is about six minutes
-across a whole ladder.
-
-**`grow rich` stays.** A card scores every lesson off one match, so keeping both means every
-report says what the same game was worth on each counting, and the gap between the two
-numbers is what the bot has worn plus half of what it bought and left riding.
-
-### Breeding
-
-Lessons are taught by breeding rather than by gradient. A crowd of models plays the
-lesson, the best are kept, and the crowd is refilled by copying them with noise added.
-The crowd carries over from one lesson to the next.
-
-What decided it was not determinism but this: **what is improved and what is reported
-become the same number.** Under gradient they were two things and they came apart twice
-in measurement — a run whose loose play climbed from 49 to 88 while its greedy play fell
-from 63 to 21, and a lesson that sat at its starting mark for sixty rounds. Breeding
-scores the match, and the match is also the report.
-
-It also deletes seven numbers nobody could check: the discount, the window a decision is
-credited over, the value head's share of the loss, the entropy bonus, the heat, the step
-size and the batch. One of them was already known to be wrong — at the wave lesson the
-loss ran to 2.6 because a creep pays ten and the value head's error swamped the policy's.
-What replaces them is four with plain meanings: how many models, how many matches each,
-how many survive, how far a child moves. The gradient trainer stayed under `descend`
-while the two were compared, and went once breeding had held: `school.rs`, `step.rs`,
-`roll.rs`, `adam.rs`, the value head, and the per-tick payment channel from the seat to
-the mind, which only the trainer ever listened to.
-
-Five decisions inside it.
-
-**The trial seeds move with the generation.** A crowd judged on the same matches every
-generation is a crowd selected for those matches, and with two hundred thousand numbers to
-play with it will learn them rather than the game. Seeds are a function of which
-generation it is, so a run still repeats to the byte — two runs of one seed were checked
-to produce identical logs and identical weights — while no model is asked twice to do well
-at the same match. A separate set that never moves is used to report and never to choose,
-and a test asserts the two sets never meet.
-
-**Children are handed round the survivors in turn** rather than heaped on the winner,
-or a crowd becomes one model and its copies before a lesson has finished asking anything
-of it.
-
-**Ties never swap.** Two models worth the same keep the order they had, and a match that
-came to nothing does not shuffle the crowd. Without that a run is not repeatable.
-
-**The spread adapts by the fifth rule.** The (1+λ) search over the first bot's numbers
-already learned this — it widened its nudge while more than a fifth of challengers won
-and narrowed it while fewer did — and the crowd dropped it for a fixed `mutation` per
-stage, which was a knob guessed per rung. It is back: a generation whose children beat
-their parents more than a fifth of the time widens the spread by a fifth of itself, one
-whose children lose narrows it by the same, and what the plan writes is only where it
-starts. Parentage is read straight off the crowd's layout — child `at` was bred off
-survivor `(at − keep) % keep` — so the first generation of a stage, whose crowd arrived
-already reordered, is the one generation the rule sits out.
-
-**And it is kept on a leash, eightfold either way of the plan's number.** Unleashed, a
-five-hundred-generation stage walked the spread from a hundredth to twenty-six
-thousand. The rule the (1+λ) search ran measured success against a frozen champion, so
-success genuinely fell as the nudge grew; the crowd's verdict — children against
-parents on the generation's own matches — is a coin flip whenever the two are worth
-about the same, which is true at a tiny spread and at a huge one alike. A coin-flipped
-multiplicative step is a driftless walk in the logarithm, and over enough generations
-a driftless walk leaves any range: the spread wandered up, the children turned to
-noise, the noise washed the elites out of the top eight two matches at a time, and the
-crowd's middling fell by half while the printed best held — the best of thirty-two
-noisy readings is a statement about tails, not about learning. The band cannot fix the
-coin, but it fixes what the coin can cost.
-
-**A stage draws apart from every other.** The trial seeds and the children's noise are
-functions of the tribe's seed and the generation number alone — and every stage of
-`train.yaml` fell back to the same default seed, so stage after stage retried the very
-same few hundred mutation directions out of a 360-thousand-dimensional space, and was
-judged on the very matches the stage before it had been selected for, which is the
-overfit the moving trials exist to prevent. The stage's place in the sequence is now
-folded into the seed in `plan.rs`, so a plan still repeats to the number while no stage
-repeats another's draws.
-
-The cost is known and was measured before building: breeding gets one number per match
-where gradient gets one per decision, so it needs roughly a hundred times the matches. At
-thirteen matches a second that is fine for the short rungs and marginal for the last,
-where a match is twelve thousand ticks.
-
-### The tournament
-
-`selection: swiss` judges a generation by tournament instead of by mirror play. The
-mirror stays, and stays the default: the early rungs are solo skills where the opponent
-hardly matters, and one mirror match is the cheapest reading there is.
-
-What pushed the tournament into existence is an arithmetic fact about the mirror score.
-`worth_of` averages the two seats of one model, and a fight inside that average is a
-wash: the gold a kill takes is gold the other seat lost, a deny is a last hit the other
-seat never got, so the average moves only by the costs — consumables, time spent dead,
-waves missed. The number being bred for was the pair's joint welfare, whose optimum is
-two seats that stay out of each other's way. A crowd taught by mirror was selected for
-pacifism, and any progress in aggression was invisible by construction.
-
-The tournament scores margins instead: a model's card less its opponent's, summed over
-its matches. A margin pays for farming and for suppression alike. It is also exact —
-the simulation and greedy play are both deterministic, so a pairing's two matches, one
-from either side to cancel the map's asymmetry, are a measurement rather than a sample.
-What stays sampled is everything a single seed cannot show, which is why every round is
-a fresh seed, common to all pairs of the round so that the comparison stays paired.
-
-Three swiss rounds pair neighbours in the standing — first against second and so on —
-which spends the matches where the order is still undecided. The first two run on a
-quarter of the stage's clock: a coarse split is cheap, and the full clock is kept for
-the round that settles the top. Rematches are allowed; a rematch lands on a new round's
-new seed, so it is new evidence rather than a repeat. Then one anchor match, everybody
-against the crowd's incoming best, from the same side on the same seed: it ties the
-standings to something outside the round-robin of siblings, and the shared side and
-seed make whatever bias they carry common to all. Only the challenger's margin moves on
-it — the anchor stood its own rounds, and absorbing the whole crowd's challenges would
-score it twice.
-
-The bill, counted in full matches: two quarter rounds, one full round and the anchor
-come to about two and a half times what the mirror pays for the same crowd. The number
-printed each generation changes meaning too — a margin, not a mark, and margins do not
-climb as the crowd does, because the opposition climbs with it. Progress under swiss is
-read from `judge`, whose mirror card never moves with the crowd.
-
-A full pairwise sort and a quickselect over head-to-head matches were considered and
-dropped. Choosing needs a top-k, not an order; comparisons between two mutants of the
-same elite are noisy and not transitive, and a recursive pivot compounds its early
-mistakes where the swiss keeps adding evidence. A round-robin buys quadratic matches of
-rank information the standings never use.
-
-### The plan
-
-`bota-bot train <FILE>` follows a plan: a YAML file naming a sequence of stages, each a
-lesson and the crowd bred at it. `train.yaml` beside the crates is the ladder as it
-stands, so the built-in run is a file rather than a branch.
-
-It replaces a subcommand that took nine flags and applied all nine to all seven rungs.
-Every real run wanted otherwise — a bigger crowd on the late rungs, more matches where
-the variance is worst, a short clock while a lesson's marks are being read — and getting
-it meant seven invocations chained by a shell loop, which is a ladder nobody else can
-walk and one nothing records. A plan is the run, and it is a file that can be committed
-beside the weights it produced.
-
-**Field names are the ordinary ones**, not the crate's: `population`, `generations`,
-`survivors`, `mutation`, `matches`. Inside, those are `folk`, `lives`, `keep`, `spread`,
-`trials`, and the translation lives in `plan.rs` alone. The crate's vocabulary is worth
-having where the code reasons about a crowd; a file somebody writes by hand at two in the
-morning is not that place.
-
-**A stage may say nothing but `score`.** What it leaves out comes from the plan's
-`defaults`, and what those leave out comes from the lesson's own rung and a plain crowd.
-Seven stages differing in one number each is the common case, and repeating nine fields
-seven times is how a plan comes to disagree with itself.
-
-**A stage's `ticks` moves the scoring window, not only the match limit.** A lesson used to
-stop paying at its rung's tick count wherever the match ended, so a stage asking for a
-longer clock than its rung would have run the extra ticks for nothing and reported the
-same mark — a knob that silently does half of what it says. `Marker` now carries a window
-per lesson instead of reading `LADDER`, and the taught lesson's is the stage's.
-
-**The whole plan is checked before the first match.** Every stage is settled up front and
-anything nonsense — a population of one, no survivors, a lesson nobody has heard of, a
-field spelled wrong — is an error naming the stage. A run of several hours that stops on
-its sixth stage over a typo has thrown away the five before it.
-
-**Unknown fields are refused.** `serde(deny_unknown_fields)` on both, so `populaton: 40`
-is an error rather than a setting silently ignored and a run that reads as though it did
-what was asked.
-
-**Where the weights live is the command's business, not the plan's.** A plan says what to
-teach; `--weights` says which model is being taught, defaulting to the standing file. Kept
-in the file, the same teaching run against a fresh model and against last week's would be
-two plans differing in one line that has nothing to do with teaching.
-
-**A run continues.** When the weights file already exists the crowd starts from it — the
-kept body itself and children moved off it, exactly as a generation refills — rather than
-from noise. Before this `train` always drew a fresh crowd and the file was only ever
-written, so a ladder taught in the morning could not be taught further in the evening; the
-gradient trainer already continued from what was there, and the two now agree.
-
-`serde_yaml` is the eighth dependency. It is deprecated upstream and pinned at 0.9.34
-knowing that: YAML here is a shallow map of scalars read once at startup, the crate is
-frozen rather than abandoned, and nothing in the simulation touches it. Replacing it is
-`plan.rs` and nothing else.
-
-### What is not built yet
-
-The other half of training. The design constraint that decides whether it is worth building at all: **every
-deed the rule-driven bot can take must be one number in this list**, so that the first half
-of training is copying a bot that already plays a respectable lane rather than a search
-from nothing. That was measured on the first bot — a clone at 87% agreement played worse
-than what it copied, at 92.6% it played better, and widening the choice beyond what the
-teacher demonstrates cost twenty points. A second bot that threw the teacher away would be
-starting a search at our budget of one match a second, which is where months go.
+loses the message saying who won and sees an aborted socket instead of a result. The
+server also waits for its writer threads rather than exiting from under them, since the
+last message of a match is queued at the moment the server has nothing left to do.
 
 ## Stages
 
@@ -2303,357 +1598,243 @@ starting a search at our budget of one match a second, which is where months go.
 | 2 | ✅ codec | serde derive, postcard, framing, `FrameReader` |
 | 3 | ✅ `bota-proto` tests | round-trip of every message, torn stream into `FrameReader`, snapshot size budget |
 | 4 | ✅ `Fixed` arithmetic | Q16.16 ops through an intermediate `i64`, `Vec2`, `distance_squared` in raw Q32.32, tests in debug and release |
-| 5 | ✅ `World` ticks | arenas, units, movement, orders, creeps, towers, Ancient; `rng.rs` with streams and Ratio/Chance |
+| 5 | ✅ `World` ticks | entities and component tables, units, movement, orders, creeps, towers, Ancient; `rng.rs` with streams and Ratio/Chance |
 | 6 | ✅ combat | attacks, projectiles, damage, deaths, gold/xp, victory |
 | 7 | ✅ server networking | lobby, both tick modes, snapshot broadcast, replay recording |
-| 8 | 🔄 `bota-bot` and `bota-client` | SDK + bot, bot-vs-bot match. Done: the client — macroquad: map, units, HP bars, orders, lobby, spectating, replay playback; the bot — the `Bot` seam and `play`, a deterministic playbook for Shadow Fiend and Sylla, lockstep acks, two of it playing a match through to an Ancient |
-| 9 | hero Sylla complete and determinism test | abilities, levels, items, shop; 20 000-tick hash baseline, run on musl/wasm32; mirror test: a diagonally mirrored match ends in the mirrored outcome |
+| 8 | ✅ `bota-bot` and `bota-client` | SDK + bot, bot-vs-bot match: the client — macroquad: map, units, HP bars, orders, lobby, spectating, replay playback; the bot — the `Bot` seam and `play`, a deterministic playbook for Shadow Fiend and Sylla, lockstep acks, two of it playing a match through to an Ancient |
+| 9 | 🔄 heroes and determinism test | Done: abilities, levels, items, shop; Sylla, Pudge and Shadow Fiend; whole-match fingerprints pinned on every map. Not yet: runs on musl/wasm32; a mirror test that a diagonally mirrored match ends in the mirrored outcome |
 
 ## Map2: mid-only play on the full Dota map
 
-`MapId(2)` copies the single `DOTA` definition in `game/config/map.rs`, overriding
-the wire id, creep-wave lane selection and upstream completion fields. No landmark, tree,
-camp, terrain, or blocker tables are duplicated. `MapDef.lanes` and `lanes()`
-remain geometric: Map0 and Map2 both have three lane centerlines, and tree
-clearance and route construction still see all three. The separate
-`wave_lanes` slice selects mid alone on Map2. Setting `lanes` to one instead
-would leave extra trees on the side roads and change passability and vision,
-so it would not preserve the full map. Static side-lane structures and the
-jungle remain active. Map0 and the hero demo Map1 keep the upstream data, wave
-order and completion rules: neither loses on a tower or hero death. The prior
-local Map1 short-ending rules are not restored during the upstream merge.
+`MapId(2)` (`SKIRMISH` in `game/config/map.rs`) is `DOTA` with its own id, mid-only
+waves and its own ending; no landmark, tree, camp, terrain or blocker table is
+duplicated. `lanes` stays three: tree clearance and route construction still see every
+lane, and only `wave_lanes` selects mid. Setting `lanes` to one would leave trees on
+the side roads and change passability and vision. Side-lane structures and the jungle
+stay active.
 
-Map2 ends when a side loses its second hero life, counted across that side's
-seats, or its first tower on any lane. All deaths of a tick are processed
-before adjudication; if both sides lose on that tick, the result is a draw.
-This includes a tower lost on one side and a second hero death on the other.
-Choosing a winner inside the burial loop would make that draw depend on hit
-iteration order. Couriers do not consume hero lives. An Ancient is not a
-separate Map2 win condition: its normal protection cannot open before a tower
-has already ended the match.
+A side loses on its `MAP2_DEATH_LIMIT`-th hero death, counted across its seats
+(couriers do not count), or on its first tower lost on any lane. All deaths of a tick
+are buried before the match is judged, and a tick on which both sides lose is a draw,
+a tower on one side and a hero on the other included: picking a winner inside the
+burial loop would make that draw depend on hit order. The Ancient is not a separate
+win condition: its protection cannot open before a tower has ended the match.
 
-The limit is fifteen gameplay minutes at the fixed simulation rate, 27,000 ticks,
-plus the unchanged 900 pregame ticks. Tick 27,900 runs completely, including
-orders, scheduled waves, economy, combat, and death accounting, then draws
-even if one side loses on that tick. A loss at 27,899 still wins immediately.
-Wall-clock `tick_rate` and realtime/lockstep mode do not alter this limit.
-`World::advance` and `World::step` stop mutating a completed Map2, including
-orders with immediate shop side effects. A world already at the cap seals
-the draw without running a late tick. Map0/Map1 do not gain either this cap
-or this post-completion freeze.
+`MAP2_TICK_CAP` is fifteen gameplay minutes (27,000 ticks) past the 900-tick pregame,
+independent of wall-clock `tick_rate` and tick mode. Tick 27,900 runs in full and then
+draws even if a side loses on it; a loss on tick 27,899 still wins. Once a winner is
+set, `advance` and `step` change nothing, orders with immediate shop effects included,
+and a world already at the cap seals the draw without running another tick. Map0 and
+Map1 have neither the cap nor the freeze.
 
-`World::victor()` and the existing native `ServerMsg::MatchOver.winner` use
-`Team::Neutral` to mean a Map2 draw, not a jungle victory. This avoids a new
-wire outcome schema: TCP and in-process runners read the same World result
-and `match_stats().duration` after the final tick. The existing globally
-visible `StructureDestroyed` event identifies the fallen tower and side;
-final seat death counts and duration identify life-limit and cap endings.
-There is no new reason field in MatchOver. Consumers must classify Neutral
-as Draw rather than as a loss for both seats. The existing bota client banner
-for this value reads `NOBODY WINS`; this change does not modify the viewer.
+A draw is `Team::Neutral` in `World::victor()` and `ServerMsg::MatchOver.winner`, so
+the wire needs no outcome field of its own: the `StructureDestroyed` event names the
+fallen tower, and the final death counts and `MatchStats.duration` tell a life-limit
+ending from the cap. A consumer reads `Neutral` as a draw, not as a loss for both
+seats; the client's banner reads `NOBODY WINS`.
 
-## Mango and stacking Shadowraze: the 2026-09-10 balance choice
+## Mango and stacking Shadowraze
 
-These are authorized bota mechanics, not a claim of parity with the latest Dota
-patch. The conventional Mango price and restoration and raze stack bonuses were
-chosen explicitly; the existing bota raze base damage and cast rules are retained.
-No Teacher strategy, neural tensor schema, training data, or saved model is changed
-here. Action candidates and feature migrations remain the consumer's work.
+Both are chosen bota mechanics, not a claim of parity with the latest Dota patch: the
+Mango's price and restoration are Dota's, the raze keeps bota's base damage and cast
+rules and adds Dota's stacking bonus.
 
-### Exact Mango rules
+### Mango
 
-`game::ITEM_MANGO` is appended as `42`; `game::ITEMS` and the client item catalog
-now contain 43 entries. Ids 0 through 41 keep their meanings. The shop still sends
-an ordinary `ShopEntry`, and carried Mangoes use existing `ItemView.charges`.
-Public constants in `game/config/item.rs`, re-exported through `game`, are:
+`ITEM_MANGO` is 42. The shop sends it as an ordinary `ShopEntry`, and a carried one
+counts in `ItemView.charges`. Its numbers, in `game/config/item.rs`:
 
-| Constant | Exact value |
+| Constant | Value |
 |---|---|
 | `MANGO_COST` | 65 gold for one charge |
 | `MANGO_STACK_MAX` | 3 charges per slot |
 | `MANGO_MANA` | 100 mana per use |
 | `MANGO_HP_REGEN` | `Fixed::from_ratio(2, 5 * TICKS_PER_SECOND)` per charge per tick |
 
-At 30 ticks/s the passive is 873 raw Q16.16 HP per tick per charge, or exactly
-0.399627685546875 HP/s. Each charge is quantized before multiplication: stacks
-of one, two and three add 873, 1746 and 2619 raw HP/tick. Splitting or merging
-stacks cannot change their combined regeneration. A float, a coarse hundredth-HP
-timed effect and an extra fractional accumulator were rejected: the existing
-fixed-point regeneration path supplies a deterministic, sufficiently close
-representation of the nominal 0.4 HP/s without more state.
+The passive is 873 raw Q16.16 health per tick per charge, 0.399627685546875 HP/s at 30
+ticks/s. Each charge is quantized before multiplication, so stacks of one, two and
+three add 873, 1746 and 2619 and splitting or merging stacks cannot change their sum.
+The ordinary fixed-point regeneration comes that close to Dota's 0.4 HP/s without a
+float, a timed effect or an extra accumulator.
 
-Mango has zero mana cost, zero cooldown, zero range and `Aim::Own`. Both
-`Target::None` and an explicit self handle are legal. One successful use consumes
-exactly one charge and restores `min(100, max_mana - mana)` immediately. Any
-strictly positive deficit, including one raw Q16.16 unit, qualifies. Full or
-overfull mana, a missing pool or nonpositive capacity cannot consume a charge.
-The order validator reports `NotReady` for an ineffective restoration and
-`WrongTargetKind` for any non-self target. This is a legal-action rule, not a
-strategy requiring a 100-mana deficit. Wasting a charge at full mana and reusing
-Stick/Wand's all-charges restoration were rejected. `ItemUse::ReplenishMana` is a
-server-only appended variant; no order or wire field is added.
+A Mango has no mana cost, cooldown or range and is aimed `Aim::Own`: `Target::None`
+and the user's own handle are both legal, any other target is `WrongTargetKind`. A use
+consumes one charge and restores `min(100, max_mana - mana)` at once. Any positive
+deficit, down to one raw unit, qualifies; full or overfull mana, a missing pool or a
+nonpositive capacity is `NotReady`, so a charge is never spent for nothing, and the
+all-charges restoration of Stick and Wand is not reused. `ItemDef.mana_deficit` marks
+the item; its use calls `World::replenish_mana`, and `World::can_replenish_mana` is
+the check both share. A use emits a mana-only `Healed` event with the whole points
+restored, and none when less than one whole point was restored.
 
-The merged upstream protocol already carries `Healed.mana`. Mango uses that
-contract: one consumption emits a mana-only `Healed` event with the actual
-clamped restoration in whole points and the usual healing visibility. Restoring
-less than one whole point consumes the charge but emits no zero-valued event,
-matching upstream's positive whole-point reporting. Rejected use and subsequent
-passive regeneration emit no consumption event. Mango adds no further wire fields.
+Only unmuted inventory slots 0 to 5 grant the passive or allow a use; the backpack
+(6 to 8) and the stash (9 to 14) are inert, and a stack moved from the backpack into
+the inventory is muted for `BACKPACK_MUTE_TICKS`. A consumed charge leaves the passive
+at the next stats derivation, and the last one empties the slot. Couriers carry
+charges intact and get no item bonuses; a hero's bag and a dead courier's load keep
+their charges on the seat.
 
-Only unmuted inventory slots 0 through 5 grant the per-charge passive or permit
-use. Backpack slots 6 through 8 and stash slots 9 through 14 remain inert. Moving
-out of the backpack into inventory imposes the existing 180-tick mute. Consumption
-reduces the passive at the next normal stats derivation; the last charge removes
-the slot. Couriers transport charges intact and receive no item stat bonuses.
-The hero's bag and a dead courier's load keep their charges through the existing
-seat-owned death/respawn path.
+`ItemDef::stack_limit` opts an item into merging; zero keeps every other item's
+bundled charges as they are. A purchase fills a compatible stack before it takes an
+empty slot: at the home shop (`SHOP_RANGE`) the bag before the stash, elsewhere only
+the stash. `World::purchase_fits` checks gold-independent capacity, stack room
+included, before anything changes. An explicit slot move merges up to three and
+leaves the excess in the source; a full or incompatible destination swaps. Courier and
+ground transfers move whole stacks, with no global merge pass. An invalid courier
+backpack destination is refused before the source is taken, so no charge is lost.
 
-`ItemDef::stack_limit` opts into merging; zero preserves every older item's bundled
-charge behavior. A purchase fills a compatible Mango stack before taking an empty
-slot in its destination. At the home shop (the existing 1000-unit fountain circle)
-the bag is preferred to the stash; elsewhere only the stash receives purchases.
-Affordability and capacity are checked before mutation, including stack space when
-no slot is empty. Explicit slot moves merge up to three, leaving excess charges in
-the source; a full or incompatible destination uses the existing swap behavior.
-Courier and ground-item transfers keep whole stacks rather than adding a global
-automatic merge pass. This preserves their existing slot-capacity behavior and
-avoids another per-tick scan. Invalid courier backpack destinations are checked
-before taking the source, closing the charge-loss case reproduced by the tests.
+Two stacks merge only with the same id, owner, attribute mode and sale mark. The
+result keeps the oldest purchase tick, the OR of the touched flags and the larger
+cooldown and mute, and an explicit move touches both stacks. Per-charge purchase
+history is not kept: the merged metadata can only cost a fresh charge its refund, never
+renew an old charge's refund window, lift its mute or change its owner. Only the buyer
+sells: an untouched stack at most `SELL_REFUND_TICKS` old returns 65 per remaining
+charge, anything else half the remaining value rounded down (32, 65 and 97 gold for
+one, two and three charges). Consumed charges are never refunded.
 
-Merge compatibility requires the same id, owner, attribute mode and sale mark.
-The resulting stack takes the oldest purchase tick, the OR of touched flags and
-the maximum cooldown and mute. An explicit move touches both remaining stacks.
-Per-charge purchase histories were rejected: conservative stack metadata can
-reduce a fresh charge's refund eligibility, but cannot renew an old charge's
-refund window, remove its mute, or launder ownership. Only the purchaser may sell.
-Sale returns 65 times the remaining charges for an untouched stack aged at most
-300 ticks. Otherwise the entire remaining value is halved with integer floor:
-one, two and three charges return 32, 65 and 97 gold. Consumed charges are never
-refunded. Remote sale marks and courier return sales retain the existing paths.
+### Shadowraze
 
-`World::purchase_fits` exposes the capacity check independently of gold;
-`World::can_replenish_mana` exposes the self-target, live-user and positive-deficit
-check. Slot, charge, cooldown, mute and disable validation remain separate.
-
-### Exact Shadowraze rules
-
-| Constant in `game::rules` | Exact value |
+| Constant in `game::rules` | Value |
 |---|---|
-| `RAZE_DAMAGE` | 90, 160, 230, 300 magical damage at levels 1 through 4, unchanged |
-| `RAZE_STACK_DAMAGE` | 50, 60, 70, 80 per prior valid same-caster stack |
-| `RAZE_DEBUFF_TICKS` | 240 ticks, exactly 8 seconds at 30 ticks/s |
-| `RAZE_MAX_STACKS` | 255 per victim and full caster generation |
-| `RAZE_MAX_SOURCES` | 16 independent caster records per victim |
-| `RAZE_DISTANCE` | 200, 450, 700 world units, unchanged |
-| `RAZE_RADIUS` | 250 world units, unchanged |
-| `RAZE_MANA` | 75, 80, 85, 90 mana by level, unchanged |
-| `RAZE_COOLDOWN` | 300 ticks independently for each reach, unchanged |
+| `RAZE_DAMAGE` | 90, 160, 230, 300 magical damage at levels 1 to 4 |
+| `RAZE_STACK_DAMAGE` | 50, 60, 70, 80 per earlier live stack of the same caster |
+| `RAZE_DEBUFF_TICKS` | 240 ticks, 8 seconds |
+| `RAZE_MAX_STACKS` | 255 per victim and caster generation |
+| `RAZE_MAX_SOURCES` | 16 caster records per victim |
+| `RAZE_DISTANCE` | 200, 450, 700 world units |
+| `RAZE_RADIUS` | 250 world units |
+| `RAZE_MANA` | 75, 80, 85, 90 mana by level |
+| `RAZE_COOLDOWN` | 300 ticks, for each reach on its own |
 
-A hit first reads the current valid count for its exact caster and adds that count
-times the bonus at the current cast level to the base damage. The total then passes
-through the existing magical resistance and integer truncation. For example,
-level-one hits at zero resistance deal 90, 140, 190, 240; at 25% resistance they
-deal 67, 105, 142, 180. At level four and the maximum count, raw damage is 20,700,
-inside the fixed-point pool range. The count is a saturating `u8`; a compile-time
-assertion ties its maximum to the declared cap. A hard cap of three was rejected:
-the three reach slots are casts, not the lifetime limit of a debuff.
+A hit reads the live count of its own caster's record on the victim and adds that
+count times the bonus at the current level to the base damage; the total then passes
+magical resistance and integer truncation. Level-one hits at zero resistance deal 90,
+140, 190, 240; at 25% they deal 67, 105, 142, 180. At level four and the full count
+the raw damage is 20,700, inside the fixed-point range. The count is a saturating
+`u8`, tied to the cap by a compile-time assertion; a cap of three would confuse the
+three reach slots with the debuff's own limit.
 
-Every positive-damage hit on a surviving victim adds one stack and refreshes that
-caster's entire count to 240 ticks, including hits at the count cap. No separate
-timer is stored per hit. A hit applied in tick H is valid through H+239; gear
-ticking removes it before casts resolve at H+240. A refreshing hit at H+239 gets
-the bonus and starts a new 240-tick interval. A hit at H+240 gets base damage and
-starts at one. Different casters, including allied casters hitting the same enemy
-or opposing casters hitting a neutral, neither borrow nor refresh each other's
-counts. At the 16-source storage limit, a new source evicts the record with the
-least time left, with current record order breaking ties. Refreshing an existing
-source evicts nothing. Expired records are discarded before capacity selection.
+Every hit that deals positive damage to a victim that survives it adds one stack and
+refreshes that caster's whole record to 240 ticks, at the cap too. A hit in tick H is
+live through H+239; `tick_modifiers` removes it before casts resolve at H+240, so a
+hit at H+239 gets the bonus and a hit at H+240 starts again at one. Different casters,
+allies or not, neither read nor refresh each other's records. With 16 records held, a
+new caster evicts the one with the least time left, the first in record order on a
+tie; refreshing an existing record evicts nothing, and expired records go first.
 
-The source key and count are an appended `StatusKind::Shadowraze` on the victim's
-existing timed `Statuses`, not a permanent `Stacks` entry kept on its seat. Target
-death and respawn therefore cannot carry the debuff into a new body. A source's
-record can finish its timer after that source dies, but its respawned or reused
-arena index has a different generation and cannot use the old bonus. This avoids
-a lifecycle hook in `fight.rs`, another world table, and a cleanup pass scanning
-all victims on every death.
+The record is a `ModifierKind::Shadowraze` in the victim's timed `Modifiers`, not a
+`Stacks` entry on its seat, so death and respawn cannot carry it into a new body, and
+no hook in `fight.rs`, extra table or cleanup pass on death is needed. A record may
+outlive its caster, but a respawned or reused slot has a new generation and cannot
+read it.
 
-An appended server-only `HitEffect::Shadowraze` tags the queued damage with the
-zero-based cast level. Stack lookup and application happen in the existing hit
-resolution phase, in damage queue order. Two queued razes from one caster thus
-observe each other's successful hits. Applying a status when merely queuing a
-cast was rejected: an earlier queued lethal hit or invulnerability at resolution
-could leave a debuff for damage that never happened. Misses, allies, failed casts
-(including casts initiated by an already-dead caster), invulnerability, and damage
-reduced or rounded to zero add no stack
-and do not refresh one. Resolution also reads an active Shielded status directly:
-a shield cast in that phase must protect before the next stats derivation. The
-old stat-only check failed a regression test of this boundary. Fatal hits need
-no new status on the dying body. Ordinary
-magical hits are not razes and cannot receive or build this bonus. Existing
-facing, no-target casting, shared learning, and hostile/visible target selection
-are unchanged; no movement slow or additional disable is introduced.
+`HitEffect::Shadowraze` tags the queued damage with the zero-based cast level. The
+count is read and added to during hit resolution, in queue order, so two queued razes
+of one caster see each other's hits. Adding it when the cast is queued would leave a
+debuff for damage an earlier lethal hit or invulnerability then prevented. Misses,
+allies, failed casts (a dead caster's included), invulnerability and damage reduced or
+rounded to zero add no stack and refresh none. Resolution reads an active `Shielded`
+modifier itself, so a shield cast in that phase protects before the next stats
+derivation. A fatal hit puts nothing on the dying body. Other magical hits neither get
+nor build the bonus, and facing, casting, shared learning and targeting are the
+raze's as before.
 
-A valid cast already queued while its source was alive keeps its damage and
-stacking behavior if an earlier blow in the same resolution batch kills that
-source. Cancelling it or suppressing only its effect would make the accepted
-cast depend on unrelated queue position; it follows the existing queued-damage
-model instead. The resulting record still belongs to the dead generation, never
-to its respawn. A separate regression test pins this posthumous-hit boundary.
+A raze queued while its caster lived keeps its damage and stacking when an earlier
+blow in the same batch kills the caster: cancelling it would make an accepted cast
+depend on queue position. Its record belongs to the dead generation, never to the
+respawn.
 
-### Public effects, hashes and integration
+### On the wire and in the hash
 
-`game::EFFECT_SHADOWRAZE` is `15`. Upstream's Guarded tower aura keeps id 13 and
-Inspired flagbearer aura keeps id 14; the pre-rebase Shadowraze id 13 is retired
-to avoid aliasing unrelated effects. Each active
-source appears on a visible victim as the existing three-field `EffectView`:
-`id = EffectId(15)`, `ticks_left = Some(1..=240)`, `stacks = Some(1..=255)`.
-Multiple sources yield multiple anonymous rows, each preserving its own count
-and timer pair. No source field or new status bit is added to the protocol. The
-caster's internal handle is never projected in these rows, including when the
-caster is fogged. Consumers can use public counts/timers without raw hidden
-caster ids in tensors; identifying an anonymous row's caster is not promised.
-Hidden victims remain absent under ordinary fog rules. The client shows `Razed`
-and Mango text without a new icon dependency.
+`EFFECT_SHADOWRAZE` is `15` (13 and 14 are the tower's and the flagbearer's auras).
+Each live record shows on a visible victim as an `EffectView` with `id =
+EffectId(15)`, `ticks_left = Some(1..=240)` and `stacks = Some(1..=255)`; several
+casters give several anonymous rows. The caster is never projected, fogged or not, and
+which caster a row belongs to is not promised. The client names the effect `Razed`.
 
-The world hash includes raze source index and generation, count and timer, and
-queued hit effect/level before resolution. The item hash now also covers merge
-ownership, mode, sale marks, the dead courier's kept bag and complete ground item
-stacks; carried charges and other stack timers were already hashed. Tests reproduced the missing hash distinctions
-before the additions. No hash baseline or older snapshot artifact is rewritten.
-
-Tests were written against numeric ids and the old behavior first. Original
-pre-rebase release red/green evidence and the integration report live under
-`drysua/artifacts/temp/map2-mid-20260910/mechanics/` in the containing workspace.
-Verification covers exact damage, queue order, all four levels, tick boundaries,
-source separation, source bounds, generations, death/respawn, fog and codec
-projection, plus Mango purchase, legal use, passive, storage, transfer, sale and
-metadata conservation. It does not claim neural learning or latest-patch parity.
-Rebase integration tests additionally pin simultaneous aura/raze projection and
-stat bonuses, the mana-healing wire event, Mango's embedded drawing, and the
-fifteen-minute cap including continuation through the old ten-minute boundary.
+The world hash covers each record's source index and generation, count and timer,
+and a queued hit's effect and level. The item hash covers merge ownership, mode, sale
+marks, the dead courier's kept bag and whole ground stacks.
 
 ## Applied unit modifiers and the general stats behind them
 
-A modifier is a bounded stat change that a cheat or trusted match setup can
-put on; only its countdown or the fall of the body can take it away. Every
-modifier has unit
-scope: it is carried in `World::applied`, a table of `AppliedModifier` values
-apart from `Modifiers`, so no ability, item, dispel or ordinary expiry reaches
-it. It does not show in `MatchInfo` or `UnitView.effects`, and the hash
-includes one only when it is present, so an unmodified world hashes as it
-always did. A unit's copy is removed on `despawn`, so a respawned body starts
-clean and re-application is the cheat caller's business. The countdown runs at
-the end of the tick that applies it, so `ticks` counts the applying tick as
-the first.
+A modifier is a bounded stat change that a cheat or trusted match setup puts on a unit;
+only its countdown or the fall of the body takes it away. It lives in `World::applied`,
+a table of `AppliedModifier` apart from `Modifiers`, so no ability, item, dispel or
+ordinary expiry reaches it. It shows neither in `MatchInfo` nor in `UnitView.effects`.
+`despawn` removes a unit's copy, so a respawned body starts clean. The countdown runs at
+the end of the tick, so `ticks` counts the applying tick as the first. The hash covers
+applied modifiers only while there are any, so an unmodified world hashes as one
+without the feature.
 
 **The payload is a bounded spec, not one cheat per stat.** `Cheat::ApplyModifier`
-carries a `ModifierSpec` of signed basis-point fields (10,000 nominal for
-scales, hundredths of a percentage point for resistances) plus a tick count
-bounded by `MAX_MODIFIER_TICKS`; `Cheat::ClearModifiers` takes the change away.
-The server gate rejects out-of-bounds specs and tick counts with
-`RejectReason::BadCheat` before the world ever sees them, and `World::cheat`
-turns away anything unbounded that arrived another way. The variants are
-appended, so existing cheat tags keep their numbers; the order budget test now
-allows 80 bytes for cheat orders and keeps 32 for everything else, because a
-whole spec no longer fits the old room; the widest possible order (every
-number at its wire maximum) measures 70 bytes and is pinned, and the canonical
-bytes of one spec order are pinned in `bota-proto`.
+carries a `ModifierSpec` of signed basis-point fields (10,000 nominal for scales,
+hundredths of a percentage point for resistances) and a tick count bounded by
+`MAX_MODIFIER_TICKS`; `Cheat::ClearModifiers` takes it away. The server gate refuses an
+out-of-bounds spec or tick count with `RejectReason::BadCheat`, and `World::cheat`
+refuses anything unbounded that arrived another way. The order size budget is 80 bytes
+for a cheat order and 32 for any other; the widest cheat order measures 70 bytes, and
+the canonical bytes of one spec order are pinned in `bota-proto`.
 
-**Modifiers are folded first and additively.** `derive_stats` applies a unit's
-spec immediately after the raised base block and before carried items,
-attributes, auras, slows and every other stage, so the modifier is part of the
-base the rest of the pipeline works on. Every family is summed as a delta:
-resistances add in their own units, scales add as deltas of the nominal 10,000
-so that sources never compound, and the fold happens once. The magnitudes
-(`move_speed`, `max_hp`, `max_mana`) are scaled from the raised base at that
-point; flat item bonuses, strength and intelligence, and the `Slowed` or
-`Hastened` multipliers all land on top and are not scaled again. An applied maximum
-is just another source of the maximum: when it moves for a living body, the
-pool keeps its filled fraction (`hp' = hp * new / old`, clamped to the new
-maximum), so a full pool stays full, a body at three fifths stays at three
-fifths, and a pool that held anything stays non-empty. A respawned body has
-no earlier pool to scale and stands at its full effective maximum, and a unit
-seeded at match start is settled once its rules have landed, so a standing
-tower or hero is full at the scaled maximum immediately. The mechanics are real
-derived stats, neutral by default: `Stats` gains `status_resist_bp`,
-`physical_amp_bp`, `magic_amp_bp`, `pure_amp_bp`, `cooldown_rate_bp` and
-`mana_cost_rate_bp`, while magic resistance was already a stat and the spec
-adds to it. The fold compiles out when the whole table is empty, so the default
-game pays nothing; hitting compiles its share out the same way, because the
-amplification multiply runs only in a world where some applied change exists.
-Future items, auras or abilities can add to the same fields without touching
-any consumer. Every unit kind walks the same derive, so one `max_hp` scale
-covers heroes, lane and neutral creeps, and buildings alike.
+**Modifiers are folded first and additively.** `derive_stats` folds a unit's specs
+right after the raised base block and before items, attributes, auras, slows and every
+other stage, so the modifier is part of the base the rest works on. Every family is
+summed as a delta and written once: resistances in their own units, scales as deltas of
+the nominal 10,000, so sources never compound. `move_speed`, `max_hp` and `max_mana`
+are scaled from the raised base; flat item bonuses, strength, intelligence and the
+`Slowed` and `Hastened` multipliers land on top unscaled. When an applied maximum moves
+for a living body, the pool keeps its filled fraction (`hp' = hp * new / old`, clamped),
+so a full pool stays full and a pool that held anything stays non-empty. A respawned
+body, and a unit seeded at match start once its rules have landed, stands at its full
+effective maximum. `Stats` carries `status_resist_bp`, `physical_amp_bp`,
+`magic_amp_bp`, `pure_amp_bp`, `cooldown_rate_bp` and `mana_cost_rate_bp`, all neutral
+by default; magic resistance was a stat already. Every unit kind walks the same derive.
+The fold compiles out while the table is empty (`derive_stats_impl::<false>`), and so
+does the amplification multiply in hitting (`hitting_system::<false>`) while no blow is
+amplified, so the default game pays nothing.
 
-**The bounds are part of composition.** A match carries at most 64 setup
-rules, one selector walks at most 16 exact kinds/categories, and one unit
-carries at most those 64 setup entries plus one cheat entry. Every sum uses
-saturating arithmetic. Magic resistance finishes in `0..=100` percent and
-status resistance in `0..=9_999` bp. The three magnitude scales (`move_speed`,
-`max_hp`, `max_mana`) saturate after addition at one source's
-`2_500..=40_000` bound, keeping world magnitudes within 0.25x..4x. Damage
-amplification, cooldown/mana rates and bounty gold deliberately retain every
-bounded additive source, up to `MAX_COMBINED_MODIFIER_SCALE = 1_960_000`
-(196x, with lower floors of zero or one). The asymmetry is intentional:
-magnitudes cap world size, while the other families preserve all bounded
-source contributions; every loop and accumulator still has a fixed ceiling.
+**The bounds are part of composition.** A match carries at most `MAX_SPAWN_MODIFIERS`
+(64) setup rules, a selector names at most `MAX_SPAWN_TARGETS` (16) kinds and
+categories, and a unit carries at most those 64 entries plus one cheat entry. Every
+sum saturates. Magic resistance ends in `0..=100` percent and status resistance in
+`0..=9_999` bp. The three magnitude scales saturate after addition at one source's
+`2_500..=40_000`, keeping world magnitudes within 0.25x to 4x: they bound the size of
+the world. Damage amplification, the cooldown and mana cost rates and bounty gold keep
+every bounded source, up to `MAX_COMBINED_MODIFIER_SCALE` = 1,960,000 (196x), with
+floors of zero or one; every loop and accumulator still has a fixed ceiling.
 
-**Each stat has one reading.** Magic resistance is added as a delta and clamped
-to `0..=100` percent before Flesh Heap multiplies it, so mitigation, projection
-and the bots agree. Damage amplification scales a blow before armor and
-resistance, after Shadowraze stack composition, per the dealing unit's kind
-field; a blow with no source is left alone, and pure damage stays unmitigated
-but still scales. The outgoing scale is captured when a blow or in-flight
-carrier is created (attacks, projectiles, hooks and requiem lines), just as
-crit is: source death, modifier expiry, despawn and slot reuse cannot alter a
-hit already in flight, and immediate damage captures and consumes it once.
-Status resistance scales the ticks of `Stunned`, `Feared` and
-`Slowed` wherever they are put on — an ability, an item and an aura all pass
-through the same point — down to one tick, and never touches buffs; the time
-already held is not shortened a second time when a disable is extended. A hold
-that is put on afresh every tick for as long as its channel runs (Dismember,
-the hook's drag) has its recorded ticks shortened like any other, but its
-length is governed by the channel and not by the countdown.
-Cooldown rate scales every cooldown at the moment it is set: a cast, an item
-use, a shared item wait and the break-on-damage mute, with a floor of one tick
-for a cooldown that was set at all. It never scales the decrement, so a cooldown
-keeps its stored value and every view of it stays exact. Mana cost rate scales
-every read of a cost: the order gate, the cast and use that charge it,
-`AbilityView.mana_cost` and `ItemView.mana_cost`, so an action the view calls
-affordable is accepted and charged the same amount. Gold income scales the
-bounty a killing unit is paid: `pay_for` scales the composed bounty once as it
-is credited to the killer, so bringing down a creep, hero or building earns
-more. Passive gold, starting gold, sale refunds and death losses are not
-bounties and are left alone. A stat change applied mid-tick is seen by
-everything derived or read after it; a disable put on before the first derive
-in that tick (a hook stun beside the application) is the one boundary that
-still reads the previous tick's resistance.
+**Each stat has one reading.** Magic resistance is added as a delta and clamped to
+`0..=100` before Flesh Heap multiplies it, so mitigation, projection and the bots
+agree. Damage amplification scales a blow before armor and resistance, after the
+Shadowraze stack bonus, by the dealer's field for the damage kind; a blow with no
+source is left alone, and pure damage stays unmitigated but still scales. The outgoing
+scale is captured when a blow or its carrier is created (attacks, projectiles, hooks,
+requiem lines), as a crit is, so nothing that happens to the source afterwards changes
+a hit in flight. Status resistance scales the ticks of `Stunned`, `Feared` and `Slowed`
+wherever they are put on, down to one tick, and never touches buffs; time already held
+is not shortened again when a disable is extended. A hold renewed every tick of a
+channel (Dismember, the hook's drag) has its ticks shortened too, but its length is the
+channel's. Cooldown rate scales a cooldown when it is set (a cast, an item use, a
+shared item wait, the break-on-damage mute), to at least one tick, and never the
+decrement, so a stored cooldown and every view of it stay exact. Mana cost rate scales
+every read of a cost: the order gate, the charge, `AbilityView.mana_cost` and
+`ItemView.mana_cost`, so what the view calls affordable is accepted and charged the
+same. Gold income scales the bounty once, as `pay_for` credits it to the killer; passive
+gold, starting gold, sale refunds and death losses are not bounties. A change applied
+mid-tick is seen by everything derived or read after it; a disable put on before the
+tick's first derive (a hook stun beside the application) still reads the previous
+tick's resistance.
 
-No item in the current catalog pays mana, so the nonzero
-`ItemView.mana_cost` case cannot be produced without inventing catalog data.
-The projection delegates directly to the pure, nonzero-tested `cost_after`
-helper; the kept-kit branch is tested and is nominal after the body (and its
-unit-scoped modifier) falls. A synthetic production item or test-only catalog
-seam would add more surface than it verifies and is not carried.
-
-**Trusted setup can put modifiers on spawns.** A match description carries a
-bounded list of spawn modifiers (`SpawnModifier`), each a selector (a side, an
-exact kind or category), an existing `ModifierSpec` and a duration:
-`MatchLong` until the body falls, or a tick count. `World::for_match`
-copies the list into the world, puts it on every unit already standing
-(buildings included) and, through `spawn_body`, on every unit stood up later;
-each wave, each camp, each building and each respawned body gets the rules
-afresh, with the tick count of a `Ticks` rule restarting on the new body. The
-cheat order path is untouched and independent: a unit may carry both, and
-clearing a cheat leaves what trusted setup put there alone.
-`MatchConfig::validate` refuses a spec outside the bounds the cheat gate uses,
-a duration outside `1..=MAX_MODIFIER_TICKS`, and a list past
-`MAX_SPAWN_MODIFIERS`, naming the rule that failed; `World::for_match` calls
-it and stops loudly rather than dropping a rule, and a rule that somehow
-reaches a spawn unchecked does the same. The hash covers every spec field and
-the rule list itself while any of it is present, so an unmodified world hashes
-as it always did; a setup that does not carry the list at all behaves exactly
-as before, and the empty-list guards keep the default game paying nothing.
-The server binary does not expose the list: the TCP lobby always starts with
-an empty one, and the entry point is the library value a setup builds in
-process.
+**Trusted setup can put modifiers on spawns.** `MatchConfig` carries a bounded list of
+`SpawnModifier`, each a selector (a side, exact kinds or categories), a `ModifierSpec`
+and a duration: `MatchLong` until the body falls, or a tick count. `World::for_match`
+copies the list into the world and puts it on every unit already standing, buildings
+included, and `spawn_body` on every unit stood up later: each wave, camp, building and
+respawned body gets the rules afresh, a `Ticks` rule restarting on the new body. The
+cheat path is independent: a unit may carry both, and clearing a cheat leaves the
+setup's entries alone. `MatchConfig::validate` refuses a spec outside the cheat gate's
+bounds, a duration outside `1..=MAX_MODIFIER_TICKS` and a list past
+`MAX_SPAWN_MODIFIERS`, naming the rule that failed; `World::for_match` calls it and
+panics rather than dropping a rule, as does a spawn reached by an unchecked rule. The
+hash covers every rule while the list is non-empty. The server binary does not expose
+the list: the TCP lobby always starts with none, and a setup builds it in process.

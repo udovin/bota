@@ -12,12 +12,17 @@ const NODES: usize = rules::WALK_CELLS;
 const STRAIGHT: u32 = 100;
 const DIAGONAL: u32 = 141;
 
-/// How many nodes out a node with room is looked for: across the widest
-/// footprint on any map and the widest body, and one more.
+/// How many nodes out a node with room is looked for: the Dire ancient's
+/// footprint, the steer margin and the widest marcher, in nodes, plus two.
 const OPEN_SEARCH_NODES: i32 =
     (rules::DIRE_ANCIENT_COLLISION + rules::STEER_MARGIN + rules::WIDEST_MARCHER)
         / rules::WALK_CELL_SIZE
         + 2;
+
+/// The index of a node in the planner's arrays.
+fn idx(node: (usize, usize)) -> usize {
+    node.1 * NODES + node.0
+}
 
 /// The room a route keeps for a body: its collision size and the margin.
 pub fn plan_radius(collision: Fixed) -> Fixed {
@@ -63,9 +68,12 @@ impl Planner {
     /// when it can be stood on and reached, else at the open spot nearest
     /// to it that can, on the walker's own side of whatever shuts it.
     ///
-    /// Empty when the walk ends in the node the walker stands in. Diagonal
-    /// steps never cut a blocked corner. Ties break on node index, so the
-    /// route is the same on every platform.
+    /// The walk keeps [`plan_radius`] off everything, or only the body's
+    /// own collision size when the margin shuts the walker in.
+    ///
+    /// Empty when the walk ends in the node the walker stands in or no node
+    /// with room is found at either end. Diagonal steps never cut a blocked
+    /// corner. Ties break on node index.
     pub fn find_path(
         &mut self,
         ob: &Obstacles,
@@ -85,19 +93,68 @@ impl Planner {
         collision: Fixed,
         budget: u32,
     ) -> Vec<Vec2> {
-        let room = plan_radius(collision);
+        match self.walk_keeping(ob, from, to, plan_radius(collision), budget) {
+            (spots, false) => spots,
+            (_, true) => self.walk_keeping(ob, from, to, collision, budget).0,
+        }
+    }
+
+    /// The corners of a walk that keeps a room off everything, as
+    /// [`Planner::find_path`] answers them, and whether the room shuts the
+    /// walker in: no node with room at either end, or every node got to
+    /// expanded within the budget and none of them the goal.
+    fn walk_keeping(
+        &mut self,
+        ob: &Obstacles,
+        from: Vec2,
+        to: Vec2,
+        room: Fixed,
+        budget: u32,
+    ) -> (Vec<Vec2>, bool) {
         let (Some(start), Some(asked)) = (Clearance::node_of(from), Clearance::node_of(to)) else {
-            return Vec::new();
+            return (Vec::new(), false);
         };
         let (Some(start), Some(goal)) = (
             routable_node(ob, start, room),
             node_beside(ob, to, from, room).or_else(|| routable_node(ob, asked, room)),
         ) else {
-            return Vec::new();
+            return (Vec::new(), true);
         };
         if start == goal {
-            return Vec::new();
+            return (Vec::new(), false);
         }
+        let (end, shut) = self.search(ob, start, goal, room, budget);
+        if end == idx(start) {
+            return (Vec::new(), shut);
+        }
+        let goal = (end % NODES, end / NODES);
+        let corners = self.corners(start, end);
+        let mut spots: Vec<Vec2> = corners.iter().map(|&c| Clearance::node_center(c)).collect();
+        // The walk ends on the spot asked for itself when its own node was
+        // got to, or when the spot is in a straight line from the node the
+        // walk got to: a spot may be stood on though its node's centre may
+        // not.
+        if goal == asked || ob.clear(Clearance::node_center(goal), to, room) {
+            *spots.last_mut().expect("the end is kept") = to;
+        }
+        let mut spots = pull_string(ob, from, spots, room);
+        tighten(ob, from, &mut spots, room);
+        (pull_string(ob, from, spots, room), shut)
+    }
+
+    /// Runs A* from a node towards a goal node within a budget of nodes to
+    /// expand, and answers the node the walk ends in: the goal when it was
+    /// got to within the budget, else the node got to that lies nearest it.
+    /// Ties break on node index. Answers too whether every node got to was
+    /// expanded within the budget without getting to the goal.
+    fn search(
+        &mut self,
+        ob: &Obstacles,
+        start: (usize, usize),
+        goal: (usize, usize),
+        room: Fixed,
+        budget: u32,
+    ) -> (usize, bool) {
         self.epoch = self.epoch.wrapping_add(1);
         if self.epoch == 0 {
             self.stamp.fill(0);
@@ -105,16 +162,14 @@ impl Planner {
         }
         let epoch = self.epoch;
         self.heap.clear();
-        let idx = |c: (usize, usize)| c.1 * NODES + c.0;
         self.g[idx(start)] = 0;
         self.parent[idx(start)] = u32::MAX;
         self.stamp[idx(start)] = epoch;
         self.heap
             .push(Reverse((heuristic(start, goal), idx(start) as u32)));
-        // The node got to that lies nearest the goal, for when no way leads
-        // there.
         let mut nearest = (heuristic(start, goal), idx(start));
         let mut expanded = 0;
+        let mut shut = true;
         while let Some(Reverse((f, at))) = self.heap.pop() {
             let at = at as usize;
             let node = (at % NODES, at / NODES);
@@ -122,11 +177,8 @@ impl Planner {
             if f > g + heuristic(node, goal) {
                 continue; // an entry left behind by a better way to the node
             }
-            if node == goal {
-                break;
-            }
-            // Past the budget the walk goes to the nearest node got to.
-            if expanded >= budget {
+            if node == goal || expanded >= budget {
+                shut = false;
                 break;
             }
             expanded += 1;
@@ -134,44 +186,49 @@ impl Planner {
             if left < nearest.0 {
                 nearest = (left, at);
             }
-            for (i, (dx, dy)) in NEIGHBOURS.iter().enumerate() {
-                let nx = node.0 as i32 + dx;
-                let ny = node.1 as i32 + dy;
-                if nx < 0 || ny < 0 || nx as usize >= NODES || ny as usize >= NODES {
-                    continue;
-                }
-                let next = (nx as usize, ny as usize);
-                if !ob.fits(next, room) {
-                    continue;
-                }
-                let diagonal = i >= 4;
-                if diagonal
-                    && (!ob.fits((next.0, node.1), room) || !ob.fits((node.0, next.1), room))
-                {
-                    continue; // no cutting a blocked corner
-                }
-                let cost = g + if diagonal { DIAGONAL } else { STRAIGHT };
-                let ni = idx(next);
-                if self.stamp[ni] != epoch || cost < self.g[ni] {
-                    self.stamp[ni] = epoch;
-                    self.g[ni] = cost;
-                    self.parent[ni] = at as u32;
-                    self.heap
-                        .push(Reverse((cost + heuristic(next, goal), ni as u32)));
-                }
+            self.expand(ob, node, goal, room);
+        }
+        if self.stamp[idx(goal)] == epoch && expanded < budget {
+            (idx(goal), false)
+        } else {
+            (nearest.1, shut)
+        }
+    }
+
+    /// Opens every neighbour of a node a body of a room fits in, never
+    /// cutting a blocked corner, when it is got to cheaper than before.
+    fn expand(&mut self, ob: &Obstacles, node: (usize, usize), goal: (usize, usize), room: Fixed) {
+        let (at, g, epoch) = (idx(node), self.g[idx(node)], self.epoch);
+        for (i, (dx, dy)) in NEIGHBOURS.iter().enumerate() {
+            let nx = node.0 as i32 + dx;
+            let ny = node.1 as i32 + dy;
+            if nx < 0 || ny < 0 || nx as usize >= NODES || ny as usize >= NODES {
+                continue;
+            }
+            let next = (nx as usize, ny as usize);
+            if !ob.fits(next, room) {
+                continue;
+            }
+            let diagonal = i >= 4;
+            if diagonal && (!ob.fits((next.0, node.1), room) || !ob.fits((node.0, next.1), room)) {
+                continue;
+            }
+            let cost = g + if diagonal { DIAGONAL } else { STRAIGHT };
+            let ni = idx(next);
+            if self.stamp[ni] != epoch || cost < self.g[ni] {
+                self.stamp[ni] = epoch;
+                self.g[ni] = cost;
+                self.parent[ni] = at as u32;
+                self.heap
+                    .push(Reverse((cost + heuristic(next, goal), ni as u32)));
             }
         }
-        let end = if self.stamp[idx(goal)] == epoch && expanded < budget {
-            idx(goal)
-        } else {
-            nearest.1
-        };
-        if end == idx(start) {
-            return Vec::new();
-        }
-        let goal = (end % NODES, end / NODES);
-        // Walk the parents back, then keep only the corners.
-        let mut nodes = vec![goal];
+    }
+
+    /// The nodes of the last search's walk from its start to a node where
+    /// the way turns, and the node itself last.
+    fn corners(&self, start: (usize, usize), end: usize) -> Vec<(usize, usize)> {
+        let mut nodes = vec![(end % NODES, end / NODES)];
         let mut at = end;
         while at != idx(start) {
             at = self.parent[at] as usize;
@@ -192,18 +249,8 @@ impl Planner {
                 corners.push(nodes[i - 1]);
             }
         }
-        corners.push(goal);
-        let mut spots: Vec<Vec2> = corners.iter().map(|&c| Clearance::node_center(c)).collect();
-        // The walk ends on the spot asked for itself when its own node was
-        // got to, or when the spot is in a straight line from the node the
-        // walk got to: a spot may be stood on though its node's centre may
-        // not.
-        if goal == asked || ob.clear(Clearance::node_center(goal), to, room) {
-            *spots.last_mut().expect("the end is kept") = to;
-        }
-        let mut spots = pull_string(ob, from, spots, room);
-        tighten(ob, from, &mut spots, room);
-        pull_string(ob, from, spots, room)
+        corners.push(nodes[nodes.len() - 1]);
+        corners
     }
 }
 
@@ -280,8 +327,8 @@ fn node_beside(ob: &Obstacles, at: Vec2, toward: Vec2, room: Fixed) -> Option<(u
 /// The node to route a body to for a goal: the goal node itself, or the
 /// node with room nearest to it when there is none there.
 ///
-/// Ties break on the lower row, then the lower column. None when nothing
-/// within [`OPEN_SEARCH_NODES`] has room.
+/// Ties break on the inner ring, then the lower row, then the lower
+/// column. None when nothing within [`OPEN_SEARCH_NODES`] has room.
 fn routable_node(ob: &Obstacles, node: (usize, usize), room: Fixed) -> Option<(usize, usize)> {
     if ob.fits(node, room) {
         return Some(node);
@@ -316,8 +363,7 @@ fn routable_node(ob: &Obstacles, node: (usize, usize), room: Fixed) -> Option<(u
 
 /// The corners a walk keeps: from where it stands and from each corner kept,
 /// the walk goes straight to the farthest later corner the body can reach
-/// in a line, so a route that stepped round a footprint node by node rounds
-/// it in a few straight legs. The last corner is always kept.
+/// in a line. The last corner is always kept.
 fn pull_string(ob: &Obstacles, from: Vec2, corners: Vec<Vec2>, room: Fixed) -> Vec<Vec2> {
     let mut kept = Vec::with_capacity(corners.len());
     let mut anchor = from;
@@ -387,20 +433,4 @@ fn bisector(prev: Vec2, corner: Vec2, next: Vec2) -> Option<Vec2> {
         x: Fixed { raw: bx as i32 },
         y: Fixed { raw: by as i32 },
     })
-}
-
-/// The point a reach along a polyline from a position, through its points
-/// in order: the polyline's last point when it is shorter than the reach.
-pub fn along_polyline(from: Vec2, points: &[Vec2], reach: Fixed) -> Vec2 {
-    let mut at = from;
-    let mut left = i64::from(reach.raw);
-    for &point in points {
-        let leg = isqrt64(at.distance_squared(point));
-        if leg >= left {
-            return point_along(at, point, Fixed { raw: left as i32 });
-        }
-        left -= leg;
-        at = point;
-    }
-    at
 }
