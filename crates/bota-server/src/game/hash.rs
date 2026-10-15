@@ -188,7 +188,10 @@ impl World {
                 }
                 fnv.some(hook.returning);
                 for link in hook.links {
-                    fnv.entity(link);
+                    fnv.some(link.is_some());
+                    if let Some(link) = link {
+                        fnv.entity(link);
+                    }
                 }
             }
             if let Some(mark) = self.mark.get(entity) {

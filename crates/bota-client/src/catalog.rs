@@ -28,6 +28,8 @@ pub enum Art {
     Hold,
     /// A cloud on the ground, `radius` wide.
     Cloud { radius: u16 },
+    /// The spot a scroll will carry its reader to.
+    Portal,
 }
 
 /// One ability, as the client shows and aims it.
@@ -85,7 +87,7 @@ pub struct HeroFace {
 }
 
 /// Every ability, in id order.
-pub const ABILITIES: [AbilityFace; 19] = [
+pub const ABILITIES: [AbilityFace; 20] = [
     AbilityFace {
         id: 0,
         name: "Crit",
@@ -201,7 +203,7 @@ pub const ABILITIES: [AbilityFace; 19] = [
     AbilityFace {
         id: 16,
         name: "Requiem",
-        blurb: "Ultimate, no target. Lets a line fly out for every soul held, up to 20, out to 1000. Each line burns what it crosses for 80/120/160 magic damage, and every hit adds 0.6 s of fear and a 20/25/30% slow, up to 2.15 s. What stands close is crossed by many lines. The souls are kept.",
+        blurb: "Ultimate, no target. Gathers for 1.67 s, during which any order calls it off at no cost, then lets a line fly out for every soul held, up to 20, out to 1000. Each line burns what it crosses for 80/120/160 magic damage, and every hit adds 0.6 s of fear and a 20/25/30% slow, up to 2.15 s. What stands close is crossed by many lines. The souls are kept.",
         icon: None,
         art: Art::Soul,
     },
@@ -218,6 +220,13 @@ pub const ABILITIES: [AbilityFace; 19] = [
         blurb: "Passive. Enemies within 1200 wear 2/3/4/5 less armor.",
         icon: None,
         art: Art::Missile,
+    },
+    AbilityFace {
+        id: 19,
+        name: "Teleport",
+        blurb: "Where a scroll being read will carry its reader.",
+        icon: None,
+        art: Art::Portal,
     },
 ];
 

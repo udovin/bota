@@ -9,6 +9,7 @@
 mod attrs;
 mod codec;
 mod event;
+mod hall;
 mod ids;
 mod math;
 mod msg;
@@ -21,6 +22,7 @@ mod tests;
 pub use attrs::*;
 pub use codec::*;
 pub use event::*;
+pub use hall::*;
 pub use ids::*;
 pub use math::*;
 pub use msg::*;

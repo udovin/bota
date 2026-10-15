@@ -122,8 +122,9 @@ fn a_garbage_payload_is_malformed() {
 #[test]
 fn a_truncated_payload_is_malformed_not_a_wait() {
     let msg = ClientMsg::Hello {
-        role: Role::Player,
-        name: "a fairly long message body".to_string(),
+        auth: Auth::Guest {
+            name: "a fairly long message body".to_string(),
+        },
     };
     let frame = encode_frame_to_vec(&msg).unwrap();
     let payload_len = frame.len() - LEN_PREFIX;

@@ -38,7 +38,7 @@ impl MatchConfig {
     /// The projection onto the wire. Carries no secret.
     pub fn info(&self) -> MatchInfo {
         MatchInfo {
-            match_id: self.match_id,
+            match_id: bota_proto::MatchId(self.match_id),
             map: self.map,
             tick_rate: self.tick_rate,
             pregame_ticks: crate::game::rules::PREGAME_TICKS,

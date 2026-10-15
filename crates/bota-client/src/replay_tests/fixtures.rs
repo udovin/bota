@@ -9,7 +9,7 @@ use bota_proto::{
 pub fn match_start(tick_rate: u16) -> ReplayRecord {
     ReplayRecord::Msg(ServerMsg::MatchStart {
         info: MatchInfo {
-            match_id: 1,
+            match_id: bota_proto::MatchId(1),
             map: MapId(0),
             tick_rate,
             pregame_ticks: 900,

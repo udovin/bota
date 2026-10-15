@@ -4590,7 +4590,15 @@ fn a_scroll_carries_its_user_once_the_channel_runs_out() {
     );
     assert!(
         world.inventory.get(hero).expect("has a bag").slots[0].is_some(),
-        "and the scroll is not spent yet"
+        "and the scroll is in the bag while the channel stands"
+    );
+    assert_eq!(
+        world
+            .mark_of(hero, crate::game::ability::TELEPORT)
+            .and_then(|mark| world.transform.get(mark))
+            .map(|t| t.pos),
+        Some(to),
+        "and the spot it will carry to is marked"
     );
     for _ in 0..88 {
         world.step();
@@ -4618,6 +4626,11 @@ fn a_scroll_carries_its_user_once_the_channel_runs_out() {
         world.inventory.get(hero).expect("has a bag").slots[0].is_none(),
         "and the scroll went with it"
     );
+    assert_eq!(
+        world.mark_of(hero, crate::game::ability::TELEPORT),
+        None,
+        "and the mark went with the reader"
+    );
 }
 
 #[test]
@@ -4636,9 +4649,10 @@ fn a_scroll_aimed_where_nothing_of_its_own_stands_does_nothing() {
 }
 
 #[test]
-fn an_order_takes_a_channel_away_and_leaves_the_scroll() {
+fn an_order_takes_a_channel_away_and_the_scroll_with_it() {
     let (mut world, hero) = a_hero_with_a_scroll();
     let to = beside_own_tower(&world);
+    let from = world.transform.get(hero).expect("standing").pos;
     assert!(world.use_item(hero, 0, bota_proto::Target::Pos(to), &mut Vec::new()));
     world.advance(&[crate::game::Command {
         slot: bota_proto::SlotId(0),
@@ -4649,8 +4663,51 @@ fn an_order_takes_a_channel_away_and_leaves_the_scroll() {
     }]);
     assert!(!world.is_channelling(hero), "the order took it away");
     assert!(
-        world.inventory.get(hero).expect("has a bag").slots[0].is_some(),
-        "and the scroll is still there to use again"
+        world.inventory.get(hero).expect("has a bag").slots[0].is_none(),
+        "and the scroll is gone with it"
+    );
+    assert_eq!(
+        world.mark_of(hero, crate::game::ability::TELEPORT),
+        None,
+        "and so is the mark"
+    );
+    for _ in 0..rules::SCROLL_CHANNEL_TICKS + 5 {
+        world.step();
+    }
+    assert_eq!(
+        world.transform.get(hero).map(|t| t.pos),
+        Some(from),
+        "and nothing carries it anywhere"
+    );
+}
+
+#[test]
+fn a_stun_takes_a_channel_away_and_the_scroll_with_it() {
+    let (mut world, hero) = a_hero_with_a_scroll();
+    let to = beside_own_tower(&world);
+    let from = world.transform.get(hero).expect("standing").pos;
+    assert!(world.use_item(hero, 0, bota_proto::Target::Pos(to), &mut Vec::new()));
+    world.put_modifier(
+        hero,
+        crate::game::Modifier {
+            kind: ModifierKind::Stunned,
+            source: None,
+            ticks_left: Some(5),
+        },
+    );
+    world.step();
+    assert!(!world.is_channelling(hero), "the stun broke it off");
+    assert!(
+        world.inventory.get(hero).expect("has a bag").slots[0].is_none(),
+        "and the scroll is gone"
+    );
+    for _ in 0..rules::SCROLL_CHANNEL_TICKS + 5 {
+        world.step();
+    }
+    assert_eq!(
+        world.transform.get(hero).map(|t| t.pos),
+        Some(from),
+        "and nothing carries it anywhere"
     );
 }
 
@@ -5633,6 +5690,15 @@ fn a_hook_catches_what_it_flies_into_and_drags_it_home() {
         landed.within(home, bota_proto::Fixed::from_int(200)),
         "what it caught is dragged to the one who threw it: {landed:?} against {home:?}"
     );
+    // Set down in front of the thrower, the way it came, bodies touching
+    // and neither inside the other.
+    let hulls = world.hull.get(pudge).expect("has one").collision
+        + world.hull.get(mark).expect("has one").collision;
+    assert!(
+        !landed.within(home, hulls - bota_proto::Fixed::ONE),
+        "and not inside him: {landed:?} against {home:?}"
+    );
+    assert!(landed.x > home.x, "on the side it was hooked from");
     assert!(
         world.health.get(mark).expect("standing").hp.to_int() < full,
         "and an enemy feels it"
@@ -8615,6 +8681,25 @@ fn let_go(world: &mut World, slot: u8) {
     }]);
 }
 
+/// Orders the requiem and stands through its cast point, so that it has
+/// gone off by the time this returns.
+fn requiem_goes_off(world: &mut World) {
+    let_go(world, 5);
+    let fiend = world.seats[0].unit.expect("the fiend stands");
+    for _ in 0..200 {
+        if !matches!(
+            world.action.get(fiend).map(|action| action.state),
+            Some(crate::game::ActionState::CastAbility {
+                phase: crate::game::ActionPhase::Before { .. },
+                ..
+            })
+        ) {
+            break;
+        }
+        world.step();
+    }
+}
+
 /// Stands a creep of one side up at a spot.
 fn a_creep_at(world: &mut World, team: bota_proto::Team, at: bota_proto::Vec2) -> Entity {
     let creep = world.spawn_unit(&MELEE_CREEP, team, at);
@@ -8907,7 +8992,7 @@ fn a_requiem_lets_a_line_fly_for_every_soul_and_a_line_burns_what_it_crosses_onc
     hand_souls(&mut world, fiend, 5);
     world.step();
     let full = world.health.get(mark).expect("standing").hp;
-    let_go(&mut world, 5);
+    requiem_goes_off(&mut world);
     let flying = |world: &World| {
         world
             .view_full()
@@ -8962,7 +9047,7 @@ fn what_stands_at_the_fiend_is_crossed_by_every_line_and_held_the_longest() {
     hand_souls(&mut world, fiend, 5);
     world.step();
     let full = world.health.get(mark).expect("standing").hp;
-    let_go(&mut world, 5);
+    requiem_goes_off(&mut world);
     world.step();
     let taken = full - world.health.get(mark).expect("standing").hp;
     assert_eq!(
@@ -9015,7 +9100,7 @@ fn what_the_requiem_frightens_runs_from_the_fiend_and_swings_at_nothing() {
                 .distance_squared(world.transform.get(mark).expect("standing").pos),
         )
     };
-    let_go(&mut world, 5);
+    requiem_goes_off(&mut world);
     world.step();
     assert!(
         world.feared(mark),
@@ -9099,30 +9184,105 @@ fn a_raze_leaves_its_mark_where_it_lands_for_whoever_sees_the_spot() {
 }
 
 #[test]
-fn a_hook_flies_out_on_a_chain_of_links_and_takes_them_home() {
-    let (mut world, _pudge, _mark) = pudge_and_a_mark(600);
+fn a_hook_pays_its_chain_out_link_by_link_and_takes_it_home() {
+    let (mut world, pudge, _mark) = pudge_and_a_mark(600);
     throw_hook(&mut world, bota_proto::Vec2::from_ints(4000, 5000));
-    world.step();
-    let chained = |world: &World| {
+    let chain = |world: &World| -> Vec<bota_proto::Vec2> {
         world
             .view_full()
             .projectiles
             .iter()
             .filter(|shown| shown.ability == Some(crate::game::ability::MEAT_HOOK))
-            .count()
+            .map(|shown| shown.pos)
+            .collect()
     };
-    assert_eq!(
-        chained(&world),
-        rules::HOOK_LINKS + 1,
-        "the hook and every link of its chain are in the view"
-    );
+    let gap = rules::units(rules::HOOK_LINK_GAP);
+    let mut most = 0;
+    let mut out = false;
     for _ in 0..200 {
         world.step();
-        if world.entities.iter().all(|e| world.hook.get(e).is_none()) {
+        let Some(head) = world
+            .entities
+            .iter()
+            .find(|e| world.hook.get(*e).is_some())
+            .and_then(|e| world.transform.get(e))
+            .map(|t| t.pos)
+        else {
             break;
+        };
+        let shown = chain(&world);
+        // The thrower walks on meanwhile; the chain is measured from where
+        // he now stands.
+        let home = world.transform.get(pudge).expect("standing").pos;
+        let flown = crate::game::isqrt64(home.distance_squared(head)) >> 16;
+        // The hook itself and a link for every gap's length of chain out.
+        let links = ((flown / i64::from(rules::HOOK_LINK_GAP)) as usize).min(rules::HOOK_LINKS);
+        // The chain is laid before the thrower takes his step of the tick,
+        // so it may be a link short of where he now stands.
+        assert!(
+            (shown.len() as i64 - links as i64 - 1).abs() <= 1,
+            "a link every gap of chain out: {} shown for {flown} out",
+            shown.len()
+        );
+        // Each link a gap behind the one before, the first a gap behind
+        // the hook: the chain moves with the hook and comes out of the
+        // thrower.
+        let mut along: Vec<i64> = shown
+            .iter()
+            .map(|at| crate::game::isqrt64(at.distance_squared(head)) >> 16)
+            .collect();
+        along.sort_unstable();
+        for (k, far) in along.iter().enumerate() {
+            let wanted = k as i64 * i64::from(rules::HOOK_LINK_GAP);
+            assert!(
+                (far - wanted).abs() <= 1,
+                "link {k} sits {far} behind the hook, not {wanted}"
+            );
+        }
+        if let Some(last) = along.last() {
+            assert!(
+                flown - last <= i64::from(gap.to_int()) + 16,
+                "the chain reaches back to within a gap of the thrower"
+            );
+        }
+        if links < most {
+            out = true;
+        }
+        most = most.max(links);
+    }
+    assert!(
+        most >= (rules::HOOK_RANGE / rules::HOOK_LINK_GAP) as usize - 1,
+        "the chain was paid out over the hook's whole reach: {most} links"
+    );
+    assert!(out, "and came back in link by link");
+    assert!(
+        chain(&world).is_empty(),
+        "the chain went home with the hook"
+    );
+}
+
+/// A hook flies its whole reach whatever spot it was thrown at: the spot
+/// gives the way, not the distance.
+#[test]
+fn a_hook_thrown_short_flies_its_whole_reach_all_the_same() {
+    let (mut world, _pudge, _mark) = pudge_and_a_mark(4000);
+    throw_hook(&mut world, bota_proto::Vec2::from_ints(5300, 5000));
+    let mut furthest = 0;
+    for _ in 0..200 {
+        world.step();
+        for entity in world.entities.iter() {
+            if world.hook.get(entity).is_some()
+                && let Some(at) = world.transform.get(entity)
+            {
+                furthest = furthest.max(at.pos.x.to_int() - 5000);
+            }
         }
     }
-    assert_eq!(chained(&world), 0, "the chain went home with the hook");
+    assert!(
+        furthest > rules::HOOK_RANGE - 100,
+        "thrown 300 out it still flies {furthest} of its {} reach",
+        rules::HOOK_RANGE
+    );
 }
 
 #[test]
@@ -9163,11 +9323,72 @@ fn a_dismember_shows_its_hold_on_what_it_eats_until_it_lets_go() {
     );
 }
 
+/// The requiem gathers for its cast point before it goes off; an order in
+/// that time calls it off at no cost, the way the game lets the long
+/// gathering be cancelled.
+#[test]
+fn a_requiem_called_off_in_its_cast_point_costs_nothing_and_lets_nothing_fly() {
+    let (mut world, fiend, _mark) = fiend_and_a_mark(400);
+    hand_souls(&mut world, fiend, 5);
+    world.step();
+    let mana = world.mana.get(fiend).expect("has mana").mana;
+    let_go(&mut world, 5);
+    assert!(
+        world.is_casting(fiend) && !world.is_channelling(fiend),
+        "it stands gathering"
+    );
+    let shown = world
+        .view(bota_proto::Team::Radiant)
+        .units
+        .into_iter()
+        .find(|unit| unit.id == crate::game::wire_id(fiend))
+        .expect("the fiend is projected");
+    assert_ne!(
+        shown.statuses.bits & bota_proto::StatusFlags::CHANNELLING,
+        0,
+        "and the wire says so"
+    );
+    for _ in 0..20 {
+        world.step();
+    }
+    world.advance(&[crate::game::Command {
+        slot: bota_proto::SlotId(0),
+        unit: None,
+        order: bota_proto::Order::Move {
+            target: bota_proto::Target::None,
+        },
+    }]);
+    assert!(!world.is_casting(fiend), "the order called it off");
+    for _ in 0..60 {
+        world.step();
+    }
+    let flying = world
+        .view_full()
+        .projectiles
+        .iter()
+        .filter(|shown| shown.ability == Some(crate::game::ability::REQUIEM))
+        .count();
+    assert_eq!(flying, 0, "nothing flew");
+    assert_eq!(
+        world.mana.get(fiend).map(|pool| pool.mana >= mana),
+        Some(true),
+        "and no mana was spent"
+    );
+    assert_eq!(
+        world
+            .abilities
+            .get(fiend)
+            .map_or(0, |book| book.slots[5].cooldown),
+        0,
+        "nor any wait owed"
+    );
+}
+
 #[test]
 fn a_requiem_with_no_souls_gathered_touches_nobody() {
     let (mut world, fiend, mark) = fiend_and_a_mark(400);
     let full = world.health.get(mark).expect("standing").hp;
-    let_go(&mut world, 5);
+    requiem_goes_off(&mut world);
     world.step();
     world.step();
     assert_eq!(

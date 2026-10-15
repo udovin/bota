@@ -4,22 +4,32 @@ use bota_proto::{DamageKind, Fixed, Target, UnitKind, Vec2};
 
 use crate::engine::Entity;
 use crate::game::{Hook, Modifier, ModifierKind, Transform, World, ability, is_structure, rules};
-use crate::game::{facing_towards, move_towards, per_tick};
+use crate::game::{
+    clamp_to_map, facing_towards, heading_of, isqrt64, move_towards, per_tick, point_along,
+};
 
 impl World {
-    /// Throws a hook at a spot, no further out than it reaches.
+    /// Throws a hook the way of a spot, out to its whole reach.
     pub fn cast_hook(&mut self, caster: Entity, level: usize, target: Target) -> bool {
         let Target::Pos(pos) = target else {
             return false;
         };
-        let (Some(from), Some(side)) = (
+        let (Some(from), Some(facing), Some(side)) = (
             self.transform.get(caster).map(|t| t.pos),
+            self.transform.get(caster).map(|t| t.facing),
             self.team.get(caster).copied(),
         ) else {
             return false;
         };
         let reach = rules::units(rules::HOOK_RANGE);
-        let aim = move_towards(from, pos, reach);
+        // A spot under the caster's own feet gives no way to throw; the
+        // hook goes the way the caster faces.
+        let towards = if pos == from {
+            from + heading_of(facing)
+        } else {
+            pos
+        };
+        let aim = clamp_to_map(point_along(from, towards, reach));
         let hook = self.spawn();
         self.transform.insert(
             hook,
@@ -29,7 +39,6 @@ impl World {
             },
         );
         self.set_team(hook, side);
-        let links = std::array::from_fn(|_| self.spawn_mark(ability::MEAT_HOOK, caster, from, 0));
         self.hook.insert(
             hook,
             Hook {
@@ -41,20 +50,48 @@ impl World {
                 damage: rules::HOOK_DAMAGE[level],
                 caught: None,
                 returning: false,
-                links,
+                links: [None; rules::HOOK_LINKS],
             },
         );
         true
     }
 
-    /// Lays a hook's chain out evenly between the thrower and the hook.
-    fn lay_chain(&mut self, hook: &Hook, home: Vec2, at: Vec2) {
-        let count = rules::HOOK_LINKS as i32 + 1;
-        for (index, link) in hook.links.into_iter().enumerate() {
-            let along = Fixed::from_ratio(index as i32 + 1, count);
-            let spot = home + (at - home) * along;
-            if let Some(transform) = self.transform.get_mut(link) {
-                transform.pos = spot;
+    /// Lays a hook's chain out from the hook back towards the thrower: a
+    /// link every gap's length behind the hook for as much chain as is
+    /// out, so links come out of the thrower as the hook flies and go back
+    /// into the thrower as it returns.
+    fn lay_chain(&mut self, hook: &mut Hook, home: Vec2, at: Vec2) {
+        let gap = i64::from(rules::units(rules::HOOK_LINK_GAP).raw);
+        let out = isqrt64(home.distance_squared(at));
+        let count = ((out / gap) as usize).min(rules::HOOK_LINKS);
+        for k in 0..rules::HOOK_LINKS {
+            let wanted = k < count;
+            match (wanted, hook.links[k]) {
+                (true, link) => {
+                    let spot = point_along(
+                        at,
+                        home,
+                        Fixed {
+                            raw: (gap * (k as i64 + 1)) as i32,
+                        },
+                    );
+                    match link {
+                        Some(link) => {
+                            if let Some(transform) = self.transform.get_mut(link) {
+                                transform.pos = spot;
+                            }
+                        }
+                        None => {
+                            hook.links[k] =
+                                Some(self.spawn_mark(ability::MEAT_HOOK, hook.owner, spot, 0));
+                        }
+                    }
+                }
+                (false, Some(link)) => {
+                    self.take_mark(link);
+                    hook.links[k] = None;
+                }
+                (false, None) => {}
             }
         }
     }
@@ -82,15 +119,29 @@ impl World {
             }
             let step = per_tick(hook.speed);
             if hook.returning {
+                // With something caught the hook stops where the two
+                // bodies meet, the catch set down in front of the thrower;
+                // empty it comes all the way in.
+                let landing = hook.caught.map_or(Fixed::ZERO, |caught| {
+                    self.hull
+                        .get(hook.owner)
+                        .map_or(Fixed::ZERO, |h| h.collision)
+                        + self.hull.get(caught).map_or(Fixed::ZERO, |h| h.collision)
+                        + rules::units(rules::STEER_MARGIN)
+                });
                 let next = move_towards(at, home, step);
-                self.put_at(entity, next, home);
-                self.lay_chain(&hook, home, next);
-                if let Some(caught) = hook.caught {
-                    self.drag(entity, caught, next);
-                }
-                if next == home {
+                if next.within(home, landing) {
+                    let rest = point_along(home, at, landing);
+                    if let Some(caught) = hook.caught {
+                        self.drag(entity, caught, rest);
+                    }
                     self.let_go(entity);
                     continue;
+                }
+                self.put_at(entity, next, home);
+                self.lay_chain(&mut hook, home, next);
+                if let Some(caught) = hook.caught {
+                    self.drag(entity, caught, next);
                 }
                 self.hook.insert(entity, hook);
                 continue;
@@ -98,7 +149,7 @@ impl World {
             let next = move_towards(at, hook.aim, step);
             hook.reach_left -= step;
             self.put_at(entity, next, hook.aim);
-            self.lay_chain(&hook, home, next);
+            self.lay_chain(&mut hook, home, next);
             if let Some(caught) = self.caught_at(entity, hook.owner, next, hook.radius) {
                 hook.caught = Some(caught);
                 hook.returning = true;
@@ -152,7 +203,7 @@ impl World {
         }
     }
 
-    /// Drags what a hook caught to where the hook now is, and holds it there.
+    /// Drags what a hook caught to a spot, and holds it there.
     ///
     /// The hold is handed out afresh every tick, so it lifts on its own once
     /// the hook lets go.
@@ -174,7 +225,7 @@ impl World {
     /// Takes a hook and its chain out of the world.
     fn let_go(&mut self, hook: Entity) {
         if let Some(flown) = self.hook.get(hook).copied() {
-            for link in flown.links {
+            for link in flown.links.into_iter().flatten() {
                 self.take_mark(link);
             }
         }

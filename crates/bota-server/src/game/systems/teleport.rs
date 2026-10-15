@@ -37,6 +37,34 @@ impl World {
         self.teleport_spot(side, pos, range)
     }
 
+    /// Reads a scroll at a spot: whether it may carry there, and the mark
+    /// left on the spot while the reader stands through the channel.
+    pub fn read_scroll(&mut self, entity: Entity, target: Target, range: i32) -> bool {
+        if !self.may_teleport(entity, target, range) {
+            return false;
+        }
+        let Target::Pos(pos) = target else {
+            return false;
+        };
+        self.unmark_teleport(entity);
+        self.spawn_mark(crate::game::ability::TELEPORT, entity, pos, 0);
+        true
+    }
+
+    /// Takes away the mark a scroll left.
+    fn unmark_teleport(&mut self, entity: Entity) {
+        if let Some(mark) = self.mark_of(entity, crate::game::ability::TELEPORT) {
+            self.take_mark(mark);
+        }
+    }
+
+    /// A scroll whose channel was broken off: it is spent all the same, and
+    /// its mark goes.
+    pub fn tear_scroll(&mut self, entity: Entity, slot: usize) {
+        self.unmark_teleport(entity);
+        self.spend_charge(entity, slot);
+    }
+
     /// Carries an entity to the spot its scroll was read at, leaves it
     /// standing there, and spends the scroll in the slot.
     ///
@@ -46,6 +74,7 @@ impl World {
         let Target::Pos(pos) = target else {
             return;
         };
+        self.unmark_teleport(entity);
         if let Some(at) = self.transform.get_mut(entity) {
             at.pos = pos;
         }

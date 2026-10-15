@@ -200,7 +200,7 @@ pub fn tick(at: u32, units: Vec<UnitView>, players: Vec<PlayerView>) -> WorldVie
 /// The terms of a match selling the shop rows given.
 pub fn started(shop: Vec<ShopEntry>, trees: Vec<Vec2>) -> MatchInfo {
     MatchInfo {
-        match_id: 1,
+        match_id: bota_proto::MatchId(1),
         map: MapId(0),
         tick_rate: 30,
         pregame_ticks: 900,

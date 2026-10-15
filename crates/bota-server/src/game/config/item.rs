@@ -238,7 +238,7 @@ fn scroll_reads(
     _: usize,
     target: Target,
 ) -> bool {
-    world.may_teleport(user, target, 600)
+    world.read_scroll(user, target, 600)
 }
 
 fn scroll_carries(
@@ -248,6 +248,10 @@ fn scroll_carries(
     target: Target,
 ) {
     world.teleport_to(user, slot, target);
+}
+
+fn scroll_torn(world: &mut crate::game::World, user: crate::game::Entity, slot: usize, _: Target) {
+    world.tear_scroll(user, slot);
 }
 
 fn treads(
@@ -650,8 +654,9 @@ pub const ITEMS: [ItemDef; 52] = [
         shared_wait: true,
         aim: Some(Aim::Building),
         range: 600,
-        duration: 90,
+        duration: rules::SCROLL_CHANNEL_TICKS,
         on_use: scroll_reads,
+        on_cancel: scroll_torn,
         on_complete: scroll_carries,
         ..PLAIN
     },

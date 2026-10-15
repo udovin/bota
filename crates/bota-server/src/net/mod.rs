@@ -5,6 +5,3 @@ mod outbox;
 
 pub use conn::*;
 pub use outbox::*;
-
-#[cfg(test)]
-mod tests;

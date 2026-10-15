@@ -2,52 +2,26 @@
 
 use std::net::TcpListener;
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
 
-use clap::{Parser, ValueEnum};
+use clap::Parser;
 
-use bota_server::game_loop::{ServerOpts, run};
+use bota_server::hub::{HubOpts, serve};
 
 #[cfg(test)]
-mod map_cli_tests;
+mod cli_tests;
 
-/// How the server advances ticks.
-#[derive(Clone, Copy, Debug, ValueEnum)]
-enum Mode {
-    /// A fixed rate on the wall clock.
-    Realtime,
-    /// Wait for every participant each tick.
-    Lockstep,
-}
-
-/// bota match server: one lobby, one match, then exit.
+/// bota server: accounts, the hall, matches and tournaments, for as long
+/// as it runs.
 #[derive(Parser, Debug)]
 struct Args {
     /// Port to listen on.
     #[arg(long, default_value_t = 4455)]
     port: u16,
-    /// How ticks advance.
-    #[arg(long, value_enum, default_value_t = Mode::Realtime)]
-    mode: Mode,
-    /// Ticks per wall-clock second.
-    #[arg(long, default_value_t = 30)]
-    tick_rate: u16,
-    /// Seats in the match.
-    #[arg(long, default_value_t = 2)]
-    players: u8,
-    /// Write a replay to this file.
-    #[arg(long)]
-    replay: Option<PathBuf>,
-    /// Which map to play: 0 Dota, 1 hero demo, 2 mid-only Dota (two lives or first tower, fifteen game minutes).
-    #[arg(long, default_value_t = 0, value_parser = parse_map)]
-    map: u16,
-    /// Seed of the match randomness. A fresh one is drawn when absent.
-    #[arg(long)]
-    seed: Option<u64>,
-    /// Lockstep: tick-lengths to wait for a straggler before moving on.
-    #[arg(long, default_value_t = 150)]
-    ack_timeout_ticks: u32,
-    /// Honour cheat orders: gold, levels, items and refreshes for the asking.
+    /// Where replays, accounts and tournaments are kept.
+    #[arg(long, default_value = "data")]
+    data: PathBuf,
+    /// Honour cheat orders in every mode: gold, levels, items and refreshes
+    /// for the asking.
     #[arg(long)]
     cheats: bool,
 }
@@ -56,36 +30,7 @@ fn main() -> std::io::Result<()> {
     let args = Args::parse();
     let listener = TcpListener::bind(("0.0.0.0", args.port))?;
     println!("bota-server listening on {}", listener.local_addr()?);
-    let seed = args.seed.unwrap_or_else(|| {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("the clock sits after 1970")
-            .as_nanos() as u64
-    });
-    run(
-        listener,
-        ServerOpts {
-            mode: match args.mode {
-                Mode::Realtime => bota_proto::TickMode::Realtime,
-                Mode::Lockstep => bota_proto::TickMode::Lockstep,
-            },
-            tick_rate: args.tick_rate,
-            players: args.players,
-            replay: args.replay,
-            seed,
-            map: bota_proto::MapId(args.map),
-            ack_timeout_ticks: args.ack_timeout_ticks,
-            cheats: args.cheats,
-        },
-    )
-}
-
-fn parse_map(value: &str) -> Result<u16, String> {
-    value
-        .parse::<u16>()
-        .ok()
-        .filter(|id| bota_server::game::MAPS.iter().any(|map| map.id.0 == *id))
-        .ok_or_else(|| {
-            format!("unsupported map '{value}'; expected 0 (Dota), 1 (demo), or 2 (mid-only Dota)")
-        })
+    let mut opts = HubOpts::standard(args.data);
+    opts.cheats = args.cheats;
+    serve(listener, opts)
 }

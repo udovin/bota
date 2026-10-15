@@ -1,23 +1,12 @@
-//! The messages themselves, and the lobby types they carry.
+//! The messages themselves, and the match types they carry.
 
 use crate::{
-    EntityId, EventKind, HeroId, ItemId, MapId, Order, PlayerId, SlotId, Team, Vec2, WorldView,
+    AccountId, AccountInfo, Auth, EntityId, EventKind, HallReason, HeroId, ItemId, MapId,
+    MatchFilter, MatchId, MatchState, MatchSummary, ModeId, ModeInfo, Order, PlayerId, Role,
+    SlotId, Team, Token, TournamentFormat, TournamentId, TournamentInfo, TournamentSummary, Vec2,
+    WorldView,
 };
 use serde::{Deserialize, Serialize};
-
-/// Why a participant connected.
-///
-/// Decides what the server sends back: a player and a bot get their own team's
-/// fog of war, a spectator gets the whole map.
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Role {
-    /// A human at a client, taking a seat.
-    Player,
-    /// A program taking a seat. The simulation treats it exactly as a player.
-    Bot,
-    /// An observer with no seat.
-    Spectator,
-}
 
 /// How the server decides when to advance a tick.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -39,23 +28,6 @@ pub struct Pick {
     pub team: Team,
     /// Which hero it picked.
     pub hero: HeroId,
-}
-
-/// One row of the lobby, before the match starts.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub struct LobbySlot {
-    /// Which seat this row is.
-    pub slot: SlotId,
-    /// Which side it plays for.
-    pub team: Team,
-    /// Display name of whoever holds it. Empty while the seat is open.
-    pub name: String,
-    /// What holds it. Absent while the seat is open.
-    pub role: Option<Role>,
-    /// Which hero has been picked. Absent until one is.
-    pub hero: Option<HeroId>,
-    /// Whether the participant has declared itself ready.
-    pub ready: bool,
 }
 
 /// What the shop asks for one item.
@@ -81,8 +53,8 @@ pub struct ShopEntry {
 /// Sent when the match begins and to anyone joining later.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct MatchInfo {
-    /// Identifies this match in logs and replay files.
-    pub match_id: u64,
+    /// Identifies this match in the hall, the logs and the replay files.
+    pub match_id: MatchId,
     /// Which map is being played.
     pub map: MapId,
     /// Simulation ticks per second.
@@ -212,10 +184,8 @@ pub struct SlotOrder {
 pub enum ClientMsg {
     /// First message on a connection, before anything else is accepted.
     Hello {
-        /// Why this connection exists.
-        role: Role,
-        /// Display name for the lobby and the scoreboard.
-        name: String,
+        /// Who this connection is.
+        auth: Auth,
     },
     /// Choose a hero for the seat this connection holds.
     PickHero {
@@ -223,7 +193,7 @@ pub enum ClientMsg {
         hero: HeroId,
     },
     /// Declare readiness, or withdraw it. The match starts when every seat is
-    /// filled and ready.
+    /// held, picked and ready.
     SetReady(bool),
     /// Tell one of the units this seat drives what to do.
     ///
@@ -255,26 +225,125 @@ pub enum ClientMsg {
         /// Which seat to watch as. Absent for the whole map.
         seat: Option<SlotId>,
     },
+    /// Replace the account's password.
+    ChangePassword {
+        /// The password as it is.
+        old: String,
+        /// The password as it will be.
+        new: String,
+    },
+    /// Forget the token this connection signed in with, or was given.
+    Logout,
+    /// Ask for a page of the archive, newest first.
+    ListMatches {
+        /// Which matches.
+        filter: MatchFilter,
+        /// Only matches with a smaller id. Absent starts from the newest.
+        before: Option<MatchId>,
+        /// At most this many.
+        limit: u16,
+    },
+    /// Open a match and take its first seat. Leaves whatever match the
+    /// connection was in.
+    CreateMatch {
+        /// Which mode.
+        mode: ModeId,
+        /// What the hall will call it.
+        name: String,
+        /// The seed of its randomness. Absent draws a fresh one.
+        seed: Option<u64>,
+    },
+    /// Take a seat in an open match of this mode, opening one when none has
+    /// a seat free.
+    QuickPlay {
+        /// Which mode.
+        mode: ModeId,
+    },
+    /// Enter a match. Leaves whatever match the connection was in.
+    JoinMatch {
+        /// Which match.
+        id: MatchId,
+        /// With a seat or without.
+        role: Role,
+    },
+    /// Leave the match the connection is in, back to the hall. A seat in a
+    /// running match stays this account's.
+    LeaveMatch,
+    /// Move to another seat of a gathering match, or give the seat up and
+    /// watch.
+    TakeSeat {
+        /// Which seat. Absent gives the seat up.
+        slot: Option<SlotId>,
+    },
+    /// Throw an account out of a gathering match. Host only.
+    Kick {
+        /// Which account.
+        account: AccountId,
+    },
+    /// Open a tournament for registration.
+    CreateTournament {
+        /// What it is called.
+        name: String,
+        /// The mode its games are played under.
+        mode: ModeId,
+        /// How teams are paired.
+        format: TournamentFormat,
+        /// Games in a series: one, three, five or seven.
+        best_of: u8,
+    },
+    /// Register in a tournament, in a team by name. A new name makes the
+    /// team, a known name joins it.
+    JoinTournament {
+        /// Which tournament.
+        id: TournamentId,
+        /// Which team.
+        team: String,
+    },
+    /// Withdraw from the tournament this account is registered in, while it
+    /// still registers.
+    LeaveTournament,
+    /// Close registration and pair the teams. Organizer only.
+    StartTournament {
+        /// Which tournament.
+        id: TournamentId,
+    },
+    /// Take a tournament down before it starts. Organizer only.
+    CancelTournament {
+        /// Which tournament.
+        id: TournamentId,
+    },
+    /// Receive the state of a tournament whenever it changes. Absent stops.
+    ViewTournament {
+        /// Which tournament.
+        id: Option<TournamentId>,
+    },
+    /// Ask for the replay of a match, as a run of [`ServerMsg::ReplayChunk`]
+    /// ending in a [`ServerMsg::ReplayEnd`].
+    FetchReplay {
+        /// Which match.
+        match_id: MatchId,
+    },
 }
 
 /// Anything the server can say to a participant.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum ServerMsg {
-    /// Accepts a [`ClientMsg::Hello`] and states the terms of the match.
+    /// Accepts a [`ClientMsg::Hello`].
     Welcome {
         /// Handle for this connection.
         player_id: PlayerId,
-        /// Which seat was assigned. Absent for a spectator.
-        slot: Option<SlotId>,
-        /// Simulation ticks per second.
-        tick_rate: u16,
-        /// How the server advances ticks.
-        mode: TickMode,
+        /// The account signed in. Absent for a guest.
+        account: Option<AccountInfo>,
+        /// A key that signs the same account in again. Absent for a guest.
+        token: Option<Token>,
+        /// Every mode the server offers, in id order.
+        modes: Vec<ModeInfo>,
     },
-    /// The current state of the lobby, resent whenever it changes.
-    LobbyState {
-        /// Every seat, sorted by [`SlotId`].
-        slots: Vec<LobbySlot>,
+    /// The match the connection is in, resent whenever its composition or
+    /// stage changes. Receiving it means being in that match.
+    MatchState {
+        /// The match.
+        state: MatchState,
     },
     /// The match has begun.
     MatchStart {
@@ -331,6 +400,48 @@ pub enum ServerMsg {
         /// Which seat it held. Absent for a spectator. The seat stays in the
         /// match and its hero keeps standing there.
         slot: Option<SlotId>,
+    },
+    /// Something said outside a running match was not accepted.
+    Refused {
+        /// Why.
+        reason: HallReason,
+    },
+    /// What the hall holds, sent on entering it and whenever it changes.
+    /// Receiving it means being in the hall.
+    Hall {
+        /// Every match gathering, playing or lately ended, newest first.
+        matches: Vec<MatchSummary>,
+        /// Every tournament not yet finished, and the lately finished ones.
+        tournaments: Vec<TournamentSummary>,
+    },
+    /// A page of the archive, answering a [`ClientMsg::ListMatches`].
+    Matches {
+        /// The matches, newest first.
+        page: Vec<MatchSummary>,
+        /// Where the next page starts. Absent when this was the last.
+        before: Option<MatchId>,
+    },
+    /// A tournament whole, sent to its members and to whoever views it,
+    /// whenever it changes.
+    TournamentState {
+        /// The tournament.
+        state: TournamentInfo,
+    },
+    /// A piece of a replay file, in file order.
+    ReplayChunk {
+        /// Which match.
+        match_id: MatchId,
+        /// Where in the file this piece starts.
+        offset: u64,
+        /// The bytes.
+        bytes: Vec<u8>,
+    },
+    /// The replay file has been sent whole.
+    ReplayEnd {
+        /// Which match.
+        match_id: MatchId,
+        /// The size of the file.
+        total: u64,
     },
 }
 

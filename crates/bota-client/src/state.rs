@@ -1,8 +1,11 @@
 //! Everything the client knows, and how server messages change it.
 
+use std::path::PathBuf;
+
 use bota_proto::{
-    ClientMsg, EntityId, EventKind, HeroId, LobbySlot, MatchStats, Order, PlayerId, ServerMsg,
-    SlotId, Team, TickMode, UnitKind, WorldView,
+    AccountInfo, ClientMsg, EntityId, EventKind, HallReason, MatchId, MatchState, MatchStats,
+    MatchSummary, ModeInfo, Order, PlayerId, ServerMsg, SlotId, Stage, Team, TickMode, Token,
+    TournamentFormat, TournamentId, TournamentInfo, TournamentSummary, UnitKind, WorldView,
 };
 
 use crate::camera::Camera;
@@ -50,10 +53,105 @@ pub struct ShownOrder {
 /// Which screen the client is on.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Phase {
-    /// Waiting for seats, picks and readiness.
+    /// Typing a login and a password.
+    SignIn,
+    /// The lists of matches, tournaments and recordings.
+    Hall,
+    /// One tournament: its teams, its settings and its bracket.
+    Cup,
+    /// In a match, waiting for seats, picks and readiness.
     Lobby,
     /// The match itself, including its end banner.
     Playing,
+}
+
+/// A name the client is waiting to be typed.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Asking {
+    /// What to call a new match.
+    NewMatch,
+    /// What to call a new tournament.
+    NewCup,
+    /// Which team to join a tournament in.
+    JoinTeam(TournamentId),
+}
+
+impl Asking {
+    /// The line shown over the box.
+    pub fn prompt(&self) -> &'static str {
+        match self {
+            Asking::NewMatch => "name the match",
+            Asking::NewCup => "name the cup",
+            Asking::JoinTeam(_) => "team name: a new one makes a team, a known one joins it",
+        }
+    }
+}
+
+/// Which list the hall shows.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum HallTab {
+    /// Matches open, playing, or lately ended.
+    Matches,
+    /// Tournaments.
+    Tournaments,
+    /// The archive, newest first.
+    Replays,
+}
+
+/// Which box on the sign-in screen the keys type into.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Field {
+    /// The login.
+    Login,
+    /// The password.
+    Password,
+}
+
+/// A replay on its way from the server to a file.
+pub struct Fetching {
+    /// Which match.
+    pub id: MatchId,
+    /// Where it is being written.
+    pub path: PathBuf,
+    /// How many bytes have landed.
+    pub got: u64,
+    /// The file, while it is open.
+    file: Option<std::io::BufWriter<std::fs::File>>,
+}
+
+impl Fetching {
+    /// Opens the file a replay will be written to.
+    pub fn open(id: MatchId) -> Fetching {
+        let path = std::env::temp_dir().join(format!("bota-replay-{}.brp", id.0));
+        let file = std::fs::File::create(&path)
+            .ok()
+            .map(std::io::BufWriter::new);
+        Fetching {
+            id,
+            path,
+            got: 0,
+            file,
+        }
+    }
+
+    /// Appends what arrived.
+    pub fn take(&mut self, bytes: &[u8]) {
+        use std::io::Write;
+        if let Some(file) = self.file.as_mut()
+            && file.write_all(bytes).is_ok()
+        {
+            self.got += bytes.len() as u64;
+        }
+    }
+
+    /// Closes the file and hands back where it is.
+    pub fn finish(mut self) -> Option<PathBuf> {
+        use std::io::Write;
+        let mut file = self.file.take()?;
+        file.flush().ok()?;
+        drop(file);
+        Some(self.path)
+    }
 }
 
 /// What the camera is carried by.
@@ -156,6 +254,41 @@ pub fn tap_again(last: Option<(Tap, f32)>, what: Tap) -> (bool, Option<(Tap, f32
 }
 
 /// What a refusal is called in plain words.
+/// What a refusal outside a match says, in plain words.
+pub fn hall_refusal(reason: HallReason) -> &'static str {
+    use HallReason as Why;
+    match reason {
+        Why::NotSignedIn => "say who you are first",
+        Why::BadName => "that name will not do",
+        Why::BadPassword => "that password will not do",
+        Why::LoginTaken => "that login is taken",
+        Why::NoSuchLogin => "no such login",
+        Why::WrongPassword => "wrong password",
+        Why::UnknownToken => "that session has expired",
+        Why::SignedInElsewhere => "signed in from somewhere else",
+        Why::GuestsCannotPlay => "guests may only watch",
+        Why::NoSuchMode => "no such mode",
+        Why::NoSuchMatch => "no such match",
+        Why::MatchFull => "every seat is taken",
+        Why::NotGathering => "that match has started",
+        Why::NotHost => "only the host may do that",
+        Why::NoSeat => "you hold no seat there",
+        Why::SeatTaken => "that seat is taken",
+        Why::SeatsFixed => "the seats are set by the tournament",
+        Why::NotInMatch => "you are in no match",
+        Why::NoSuchTournament => "no such tournament",
+        Why::TournamentStarted => "that tournament has started",
+        Why::NotOrganizer => "only the organizer may do that",
+        Why::TeamFull => "that team is full",
+        Why::NotInTournament => "you are in no tournament",
+        Why::TooFewTeams => "two full teams are needed",
+        Why::TournamentRunning => "its games have started",
+        Why::InTournament => "you are in a tournament already",
+        Why::NoSuchReplay => "no recording of that match",
+        Why::BadSeries => "a series is one, three, five or seven games",
+    }
+}
+
 pub fn refusal(reason: bota_proto::RejectReason) -> &'static str {
     use bota_proto::RejectReason as Why;
     match reason {
@@ -258,10 +391,58 @@ pub struct App {
     pub opaque: Vec<u64>,
     /// How the server advances ticks.
     pub mode: Option<TickMode>,
-    /// The lobby as last broadcast.
-    pub lobby: Vec<LobbySlot>,
-    /// Seat names captured from the lobby for the scoreboard.
+    /// The match this client is in, as last broadcast.
+    pub room: Option<MatchState>,
+    /// Seat names captured from the match state for the scoreboard.
     pub names: Vec<(SlotId, String)>,
+    /// The account signed in. Absent for a guest and before signing in.
+    pub account: Option<AccountInfo>,
+    /// The key that signs the same account in again.
+    pub token: Option<Token>,
+    /// Where the token is kept between runs. Absent keeps it nowhere.
+    pub session_path: Option<PathBuf>,
+    /// The modes the server offers.
+    pub modes: Vec<ModeInfo>,
+    /// The login being typed, or the one signed in with.
+    pub login: String,
+    /// The password being typed.
+    pub password: String,
+    /// Which box the sign-in screen types into.
+    pub field: Field,
+    /// The last refusal, shown until something else happens.
+    pub refusal: Option<HallReason>,
+    /// Which list the hall shows.
+    pub tab: HallTab,
+    /// The matches the hall last listed.
+    pub hall_matches: Vec<MatchSummary>,
+    /// The tournaments the hall last listed.
+    pub hall_tournaments: Vec<TournamentSummary>,
+    /// The page of the archive last asked for.
+    pub replays: Vec<MatchSummary>,
+    /// Where the next page of the archive starts.
+    pub more_replays: Option<MatchId>,
+    /// The tournament being watched.
+    pub tournament: Option<TournamentInfo>,
+    /// A replay on its way over the wire.
+    pub fetching: Option<Fetching>,
+    /// A recording being watched while the connection stays in the hall.
+    pub watching: Option<Box<ReplayPlayer>>,
+    /// How far the hall list is scrolled.
+    pub hall_scroll: usize,
+    /// Which mode the hall's buttons will use.
+    pub mode_at: usize,
+    /// The format a new tournament will be run under.
+    pub cup_format: TournamentFormat,
+    /// The series length a new tournament will use.
+    pub cup_best_of: u8,
+    /// What the client is waiting to be typed, if anything.
+    pub asking: Option<Asking>,
+    /// What has been typed so far.
+    pub entry: String,
+    /// What to ask for as soon as the server signs this client in.
+    pub errand: Option<ClientMsg>,
+    /// Whether a greeting has been sent and not yet answered.
+    pub greeted: bool,
     /// The freshest state of the world.
     pub view: Option<WorldView>,
     /// The state one snapshot ago, for naming what died.
@@ -319,11 +500,18 @@ pub struct App {
 
 impl App {
     /// A client over a source, before anything has been heard.
+    ///
+    /// A live client starts at the sign-in screen; a recording starts where
+    /// its first snapshot puts it.
     pub fn new(source: Source) -> App {
+        let phase = match source {
+            Source::Live(_) => Phase::SignIn,
+            Source::Replay(_) => Phase::Lobby,
+        };
         App {
             source,
             lost: false,
-            phase: Phase::Lobby,
+            phase,
             me: None,
             my_slot: None,
             tick_rate: 30,
@@ -338,8 +526,32 @@ impl App {
             terrain: Vec::new(),
             opaque: Vec::new(),
             mode: None,
-            lobby: Vec::new(),
+            room: None,
             names: Vec::new(),
+            account: None,
+            token: None,
+            session_path: None,
+            modes: Vec::new(),
+            login: String::new(),
+            password: String::new(),
+            field: Field::Login,
+            refusal: None,
+            tab: HallTab::Matches,
+            hall_matches: Vec::new(),
+            hall_tournaments: Vec::new(),
+            replays: Vec::new(),
+            more_replays: None,
+            tournament: None,
+            fetching: None,
+            watching: None,
+            hall_scroll: 0,
+            mode_at: 0,
+            cup_format: TournamentFormat::SingleElimination,
+            cup_best_of: 1,
+            asking: None,
+            entry: String::new(),
+            errand: None,
+            greeted: false,
             view: None,
             prev_view: None,
             seen: Vec::new(),
@@ -363,6 +575,176 @@ impl App {
             over: None,
             quit: false,
         }
+    }
+
+    /// Says who this client is and waits for the answer.
+    pub fn say_hello(&mut self, auth: bota_proto::Auth) {
+        self.greeted = true;
+        self.refusal = None;
+        self.source.send(&ClientMsg::Hello { auth });
+    }
+
+    /// The mode the hall's buttons will use.
+    pub fn chosen_mode(&self) -> Option<&ModeInfo> {
+        self.modes.get(self.mode_at)
+    }
+
+    /// Takes a seat in any open match of the chosen mode.
+    pub fn quick_play(&mut self) {
+        let Some(mode) = self.chosen_mode().map(|m| m.id) else {
+            return;
+        };
+        self.source.send(&ClientMsg::QuickPlay { mode });
+    }
+
+    /// Waits for a name to be typed.
+    pub fn ask(&mut self, asking: Asking) {
+        self.entry = match asking {
+            Asking::NewMatch => format!("{}'s match", self.login),
+            Asking::NewCup => format!("{}'s cup", self.login),
+            Asking::JoinTeam(_) => self.login.clone(),
+        };
+        self.asking = Some(asking);
+    }
+
+    /// Sends whatever the typed name was for.
+    pub fn confirm_entry(&mut self) {
+        let (Some(asking), Some(mode)) = (self.asking.take(), self.chosen_mode().map(|m| m.id))
+        else {
+            self.entry.clear();
+            return;
+        };
+        let name = std::mem::take(&mut self.entry);
+        if name.trim().is_empty() {
+            return;
+        }
+        match asking {
+            Asking::NewMatch => self.source.send(&ClientMsg::CreateMatch {
+                mode,
+                name,
+                seed: None,
+            }),
+            Asking::NewCup => self.source.send(&ClientMsg::CreateTournament {
+                name,
+                mode,
+                format: self.cup_format,
+                best_of: self.cup_best_of,
+            }),
+            Asking::JoinTeam(id) => self
+                .source
+                .send(&ClientMsg::JoinTournament { id, team: name }),
+        }
+    }
+
+    /// Opens the screen of one tournament and follows it.
+    pub fn open_cup(&mut self, id: TournamentId) {
+        self.source
+            .send(&ClientMsg::ViewTournament { id: Some(id) });
+        if self.tournament.as_ref().is_none_or(|cup| cup.id != id) {
+            self.tournament = None;
+        }
+        self.phase = Phase::Cup;
+    }
+
+    /// Stops following a tournament and goes back to the hall.
+    pub fn close_cup(&mut self) {
+        self.source.send(&ClientMsg::ViewTournament { id: None });
+        self.tournament = None;
+        self.phase = Phase::Hall;
+    }
+
+    /// Asks for a page of the archive.
+    pub fn ask_for_replays(&mut self, before: Option<MatchId>) {
+        self.source.send(&ClientMsg::ListMatches {
+            filter: bota_proto::MatchFilter {
+                stage: Some(Stage::Over),
+                tournament: None,
+                account: None,
+            },
+            before,
+            limit: 40,
+        });
+    }
+
+    /// Everything due since the last frame, from the connection and from a
+    /// recording being watched over it.
+    pub fn pump(&mut self, dt: f32) -> Vec<ServerMsg> {
+        let mut msgs = self.source.poll(dt);
+        if let Some(player) = self.watching.as_mut() {
+            msgs.extend(player.poll(dt));
+        }
+        msgs
+    }
+
+    /// Whether what is on screen comes from a recording.
+    pub fn replaying(&self) -> bool {
+        self.player().is_some()
+    }
+
+    /// The recording being played, from a file or fetched from the server.
+    pub fn player(&self) -> Option<&ReplayPlayer> {
+        match (&self.watching, &self.source) {
+            (Some(player), _) => Some(player),
+            (None, Source::Replay(player)) => Some(player),
+            (None, Source::Live(_)) => None,
+        }
+    }
+
+    /// The same, to drive it.
+    pub fn player_mut(&mut self) -> Option<&mut ReplayPlayer> {
+        match (&mut self.watching, &mut self.source) {
+            (Some(player), _) => Some(player),
+            (None, Source::Replay(player)) => Some(player),
+            (None, Source::Live(_)) => None,
+        }
+    }
+
+    /// Writes the login and token where the next run will find them.
+    pub fn remember_session(&self) {
+        let (Some(path), Some(token)) = (self.session_path.as_ref(), self.token) else {
+            return;
+        };
+        let _ = std::fs::write(path, format!("{}\n{}\n", self.login, token.0));
+    }
+
+    /// Drops everything about the match this client was in.
+    pub fn leave_room(&mut self) {
+        self.room = None;
+        self.my_slot = None;
+        self.names.clear();
+        self.ready = false;
+        self.picked = false;
+        self.view = None;
+        self.prev_view = None;
+        self.seen.clear();
+        self.shown_orders.clear();
+        self.floaters.clear();
+        self.feed.clear();
+        self.eyes = None;
+        self.selected = None;
+        self.pinned = None;
+        self.found_my_hero = false;
+        self.over = None;
+        self.shop_open = false;
+        self.phase = Phase::Hall;
+    }
+
+    /// Plays a recording over the connection, which stays in the hall.
+    pub fn watch(&mut self, path: &std::path::Path) {
+        match ReplayPlayer::load(path) {
+            Ok(player) => {
+                self.leave_room();
+                self.watching = Some(Box::new(player));
+                self.phase = Phase::Lobby;
+            }
+            Err(err) => self.reject = Some((format!("the replay would not open: {err}"), 4.0)),
+        }
+    }
+
+    /// Stops watching a recording and goes back to the hall.
+    pub fn stop_watching(&mut self) {
+        self.watching = None;
+        self.leave_room();
     }
 
     /// The display name of a seat.
@@ -601,26 +983,105 @@ impl App {
         match msg {
             ServerMsg::Welcome {
                 player_id,
-                slot,
-                tick_rate,
-                mode,
+                account,
+                token,
+                modes,
             } => {
                 self.me = Some(player_id);
-                self.my_slot = slot;
-                self.tick_rate = tick_rate;
-                self.mode = Some(mode);
-                if slot.is_some() && !self.picked {
-                    self.picked = true;
-                    self.source.send(&ClientMsg::PickHero { hero: HeroId(0) });
+                self.modes = modes;
+                self.refusal = None;
+                if let Some(account) = &account {
+                    self.login = account.login.clone();
+                }
+                self.account = account;
+                self.token = token;
+                self.greeted = false;
+                self.password.clear();
+                self.remember_session();
+                // A match state follows for anybody the server put straight
+                // back into one; until then this connection is in the hall.
+                if self.phase == Phase::SignIn {
+                    self.phase = Phase::Hall;
+                }
+                if let Some(errand) = self.errand.take() {
+                    self.source.send(&errand);
                 }
             }
-            ServerMsg::LobbyState { slots } => {
-                self.names = slots
+            ServerMsg::MatchState { state } => {
+                self.names = state
+                    .slots
                     .iter()
-                    .filter(|s| !s.name.is_empty())
-                    .map(|s| (s.slot, s.name.clone()))
+                    .filter(|s| !s.login.is_empty())
+                    .map(|s| (s.slot, s.login.clone()))
                     .collect();
-                self.lobby = slots;
+                self.my_slot = state.you;
+                self.ready = state
+                    .you
+                    .and_then(|slot| state.slots.iter().find(|s| s.slot == slot))
+                    .is_some_and(|s| s.ready);
+                self.phase = match state.stage {
+                    Stage::Gathering => Phase::Lobby,
+                    _ => self.phase,
+                };
+                self.room = Some(state);
+            }
+            ServerMsg::Hall {
+                matches,
+                tournaments,
+            } => {
+                self.hall_matches = matches;
+                self.hall_tournaments = tournaments;
+                if self.phase == Phase::Lobby || self.phase == Phase::Playing {
+                    self.leave_room();
+                }
+                if self.phase == Phase::SignIn {
+                    self.phase = Phase::Hall;
+                }
+            }
+            ServerMsg::Matches { page, before } => {
+                self.replays = page;
+                self.more_replays = before;
+            }
+            ServerMsg::TournamentState { state } => self.tournament = Some(state),
+            ServerMsg::Refused {
+                reason: HallReason::NoSuchTournament,
+            } if self.phase == Phase::Cup => {
+                // The cup was taken down under us.
+                self.reject = Some((hall_refusal(HallReason::NoSuchTournament).to_string(), 4.0));
+                self.tournament = None;
+                self.phase = Phase::Hall;
+            }
+            ServerMsg::Refused { reason } => {
+                self.refusal = Some(reason);
+                self.reject = Some((hall_refusal(reason).to_string(), 4.0));
+                if self.greeted {
+                    self.greeted = false;
+                    self.errand = None;
+                    self.phase = Phase::SignIn;
+                    if reason == HallReason::UnknownToken {
+                        self.token = None;
+                    }
+                }
+            }
+            ServerMsg::ReplayChunk {
+                match_id, bytes, ..
+            } => {
+                let held = self
+                    .fetching
+                    .get_or_insert_with(|| Fetching::open(match_id));
+                if held.id == match_id {
+                    held.take(&bytes);
+                }
+            }
+            ServerMsg::ReplayEnd { match_id, .. } => {
+                if let Some(path) = self
+                    .fetching
+                    .take()
+                    .filter(|held| held.id == match_id)
+                    .and_then(Fetching::finish)
+                {
+                    self.watch(&path);
+                }
             }
             ServerMsg::Orders { tick, orders } => {
                 for given in orders {

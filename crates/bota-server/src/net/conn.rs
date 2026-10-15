@@ -33,7 +33,13 @@ pub struct Connection {
 
 impl Connection {
     /// Adopts an accepted stream: spawns its reader and writer threads.
-    pub fn spawn(id: PlayerId, stream: TcpStream, events: Sender<NetEvent>) -> Connection {
+    ///
+    /// Events reach the receiving thread wrapped into whatever it listens
+    /// for.
+    pub fn spawn<E>(id: PlayerId, stream: TcpStream, events: Sender<E>) -> Connection
+    where
+        E: From<NetEvent> + Send + 'static,
+    {
         let _ = stream.set_nodelay(true);
         let outbox = Outbox::new();
         let writer_outbox = Arc::clone(&outbox);
@@ -82,7 +88,10 @@ impl Connection {
     }
 }
 
-fn read_loop(id: PlayerId, mut stream: TcpStream, events: Sender<NetEvent>) {
+fn read_loop<E>(id: PlayerId, mut stream: TcpStream, events: Sender<E>)
+where
+    E: From<NetEvent>,
+{
     let mut reader = FrameReader::new();
     let mut buf = [0u8; 4096];
     loop {
@@ -94,27 +103,30 @@ fn read_loop(id: PlayerId, mut stream: TcpStream, events: Sender<NetEvent>) {
         loop {
             match reader.next_message::<ClientMsg>() {
                 Ok(Some(msg)) => {
-                    if events.send(NetEvent::Msg(id, msg)).is_err() {
+                    if events.send(NetEvent::Msg(id, msg).into()).is_err() {
                         return;
                     }
                 }
                 Ok(None) => break,
                 Err(_) => {
-                    let _ = events.send(NetEvent::Disconnected(id));
+                    let _ = events.send(NetEvent::Disconnected(id).into());
                     return;
                 }
             }
         }
     }
-    let _ = events.send(NetEvent::Disconnected(id));
+    let _ = events.send(NetEvent::Disconnected(id).into());
 }
 
 /// The accept thread body: hands every incoming stream to the server thread.
-pub fn accept_loop(listener: std::net::TcpListener, events: Sender<NetEvent>) {
+pub fn accept_loop<E>(listener: std::net::TcpListener, events: Sender<E>)
+where
+    E: From<NetEvent>,
+{
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
-                if events.send(NetEvent::Connected(stream)).is_err() {
+                if events.send(NetEvent::Connected(stream).into()).is_err() {
                     return;
                 }
             }

@@ -91,6 +91,29 @@ pub struct ItemSlot(pub u8);
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct MapId(pub u16);
 
+/// A registered account on the server. Seats, hosting and tournament
+/// registrations are held by accounts, not by connections.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct AccountId(pub u64);
+
+/// A session key handed out at sign-in. Presenting it signs the same
+/// account in again without its password.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Token(pub u128);
+
+/// One of the server's preset rule sets a match is played under.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ModeId(pub u16);
+
+/// A match on the server, from the moment it is created until its replay is
+/// deleted. Unique per server, never reused.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct MatchId(pub u64);
+
+/// A tournament on the server. Unique per server, never reused.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct TournamentId(pub u64);
+
 /// What kind of thing a unit in a view is.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum UnitKind {

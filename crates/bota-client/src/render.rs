@@ -22,7 +22,7 @@ fn team_color(team: Team) -> Color {
 
 /// Draws one frame.
 pub fn draw(app: &App) {
-    if let Source::Replay(player) = &app.source
+    if let Some(player) = app.player()
         && app.view.is_none()
     {
         draw_replay_loading(player.bytes_read());
@@ -35,6 +35,9 @@ pub fn draw(app: &App) {
     }
     clear_background(BACKGROUND);
     match app.phase {
+        Phase::SignIn => crate::hall::draw_signin(app),
+        Phase::Hall => crate::hall::draw_hall(app),
+        Phase::Cup => crate::hall::draw_cup(app),
         Phase::Lobby => draw_lobby(app),
         Phase::Playing => {
             if let Some(view) = &app.view {
@@ -49,11 +52,18 @@ pub fn draw(app: &App) {
             }
         }
     }
-    if let Source::Replay(player) = &app.source
-        && let Some(error) = player.error()
-    {
+    if let Some(error) = app.player().and_then(|player| player.error()) {
         draw_replay_error(&error.to_string());
     }
+    if let Some((text, _)) = &app.reject
+        && matches!(
+            app.phase,
+            Phase::SignIn | Phase::Hall | Phase::Cup | Phase::Lobby
+        )
+    {
+        center_text_at(text, screen_height() - 24.0, 22.0, ORANGE);
+    }
+    crate::hall::draw_prompt(app);
 }
 
 /// Draws replay startup progress before the first snapshot is available.
@@ -82,21 +92,37 @@ pub fn draw_replay_error(error: &str) {
 fn draw_lobby(app: &App) {
     let x = 60.0;
     let mut y = 80.0;
-    draw_text("bota", x, y, 48.0, WHITE);
-    y += 50.0;
+    let Some(room) = &app.room else {
+        draw_text("bota", x, y, 48.0, WHITE);
+        draw_text("waiting for the match...", x, y + 50.0, 24.0, GRAY);
+        return;
+    };
+    draw_text(&room.name, x, y, 40.0, WHITE);
+    y += 44.0;
+    let mode = app
+        .modes
+        .iter()
+        .find(|m| m.id == room.mode)
+        .map_or(String::new(), |m| format!("{}   ", m.name));
+    draw_text(
+        format!("{mode}match {}", room.id.0),
+        x,
+        y,
+        20.0,
+        Color::new(0.55, 0.60, 0.68, 1.0),
+    );
+    y += 34.0;
     let hint = if app.my_slot.is_some() {
         if app.ready {
-            "ready - waiting for the others (R to cancel)"
+            "ready - waiting for the others   [R] cancel   [Esc] leave"
         } else {
-            "press R when ready"
+            "pick a hero, then [R] when ready   [Esc] leave"
         }
-    } else if app.me.is_some() {
-        "spectating - waiting for the match to start"
     } else {
-        "connecting..."
+        "watching - the match starts when every seat is ready   [Esc] leave"
     };
-    draw_text(hint, x, y, 24.0, GRAY);
-    y += 40.0;
+    draw_text(hint, x, y, 22.0, GRAY);
+    y += 36.0;
     if app.my_slot.is_some() {
         let roster = crate::catalog::HEROES
             .iter()
@@ -104,15 +130,16 @@ fn draw_lobby(app: &App) {
             .map(|(id, hero)| format!("{}: {}", id + 1, hero.name))
             .collect::<Vec<_>>()
             .join("   ");
-        draw_text(format!("pick a hero   {roster}"), x, y, 22.0, GOLD);
-        y += 36.0;
+        draw_text(&roster, x, y, 22.0, GOLD);
+        y += 34.0;
     }
-    for slot in &app.lobby {
-        let holder = if slot.name.is_empty() {
+    for slot in &room.slots {
+        let holder = if slot.login.is_empty() {
             "open".to_string()
         } else {
             let ready = if slot.ready { " [ready]" } else { "" };
-            format!("{}{ready}", slot.name)
+            let away = if slot.connected { "" } else { " (away)" };
+            format!("{}{ready}{away}", slot.login)
         };
         let hero = slot
             .hero
@@ -123,6 +150,16 @@ fn draw_lobby(app: &App) {
         let color = if mine { WHITE } else { team_color(slot.team) };
         draw_text(&line, x, y, 26.0, color);
         y += 32.0;
+    }
+    if !room.watchers.is_empty() {
+        y += 12.0;
+        draw_text(
+            format!("watching: {}", room.watchers.join(", ")),
+            x,
+            y,
+            20.0,
+            GRAY,
+        );
     }
 }
 
@@ -677,6 +714,12 @@ fn draw_casts(app: &App, view: &WorldView, to_screen: &impl Fn(f32, f32) -> (f32
                 let r = (30.0 * zoom).max(8.0);
                 draw_circle_lines(x, y, r, 3.0, Color::new(0.9, 0.2, 0.2, 0.9));
             }
+            Art::Portal => {
+                let r = (48.0 * zoom).max(10.0);
+                draw_circle(x, y, r, Color::new(0.4, 0.8, 1.0, 0.15));
+                draw_circle_lines(x, y, r, 2.0, Color::new(0.5, 0.85, 1.0, 0.9));
+                draw_circle_lines(x, y, r * 0.5, 1.5, Color::new(0.5, 0.85, 1.0, 0.6));
+            }
         }
     }
 }
@@ -751,6 +794,19 @@ fn draw_unit(app: &App, u: &UnitView, mine: bool, to_screen: impl Fn(f32, f32) -
             draw_circle_lines(x, y, range, 1.0, Color::new(1.0, 0.6, 0.2, 0.5));
         }
     }
+    // Standing through a cast or a channel: a ring that breathes, so what
+    // an order would break off is seen before the order is given.
+    if u.statuses.bits & bota_proto::StatusFlags::CHANNELLING != 0 {
+        let pulse = ((get_time() * 6.0).sin() as f32 + 1.0) * 0.5;
+        let ring = r + 7.0 + pulse * 4.0;
+        draw_circle_lines(
+            x,
+            y,
+            ring,
+            2.0,
+            Color::new(0.5, 0.85, 1.0, 0.6 + pulse * 0.4),
+        );
+    }
     // What is picked is ringed, and what the camera is pinned to is ringed
     // wider, so being carried by a unit is told from merely watching it.
     if app.selected == Some(u.id) && !mine {
@@ -783,7 +839,7 @@ fn draw_unit(app: &App, u: &UnitView, mine: bool, to_screen: impl Fn(f32, f32) -
 
 fn draw_hud(app: &App, view: &WorldView) {
     // A live spectator is told whose eyes it is watching through.
-    if app.my_slot.is_none() && matches!(app.source, Source::Live(_)) {
+    if app.my_slot.is_none() && !app.replaying() {
         let eyes = match app.eyes {
             Some(slot) => {
                 let side = view

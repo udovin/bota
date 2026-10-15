@@ -9,7 +9,7 @@ use bota_proto::{
     TickMode, WorldView,
 };
 
-use crate::{Ask, Link, Seated};
+use crate::{Ask, Link, Seated, Want};
 
 /// Anything that can hold a seat in a match.
 ///
@@ -42,8 +42,12 @@ pub trait Bot {
 pub struct Chair {
     /// Where the server listens.
     pub addr: String,
-    /// The name the lobby shows.
-    pub name: String,
+    /// The account to sign in as. Registered the first time it is used.
+    pub login: String,
+    /// Its password.
+    pub password: String,
+    /// Where to play.
+    pub want: Want,
     /// Which hero to ask for.
     pub hero: HeroId,
     /// Ticks to play before leaving. Absent plays until the match ends.
@@ -73,31 +77,41 @@ pub struct Outcome {
     pub ordered: u32,
 }
 
-/// Joins a server and plays one match.
+/// Signs in, takes a seat where the chair says, and plays one match.
 pub fn play(bot: &mut dyn Bot, chair: &Chair) -> std::io::Result<Outcome> {
-    let (link, seated) = Link::join(&chair.addr, &chair.name, chair.hero)?;
-    play_on(bot, link, seated, chair)
+    let mut link = sit_down(chair)?;
+    let Some(seated) = link.take_seat(chair.hero)? else {
+        return Err(std::io::Error::other("no seat was given"));
+    };
+    play_on(bot, &mut link, seated, chair)
 }
 
-/// The same, on a connection that has already been given its seat.
+/// Signs in and asks for what the chair wants, without waiting for a seat.
+pub fn sit_down(chair: &Chair) -> std::io::Result<Link> {
+    let mut link = Link::connect(&chair.addr)?;
+    link.sign_in(&chair.login, &chair.password)?;
+    link.ask_for(&chair.want)?;
+    Ok(link)
+}
+
+/// Plays one match, on a connection that has already been given its seat.
 pub fn play_on(
     bot: &mut dyn Bot,
-    mut link: Link,
+    link: &mut Link,
     seated: Seated,
     chair: &Chair,
 ) -> std::io::Result<Outcome> {
+    let slot = seated.slot;
     let mut out = Outcome {
-        slot: seated.slot,
+        slot: Some(slot),
         ..Outcome::default()
     };
-    bot.seated(seated.slot);
-    let Some(slot) = seated.slot else {
-        return Err(std::io::Error::other("no seat was free"));
-    };
-    let lockstep = seated.mode == TickMode::Lockstep;
+    bot.seated(Some(slot));
+    let mut lockstep = false;
     while let Some(msg) = link.hear()? {
         match msg {
             ServerMsg::MatchStart { info } => {
+                lockstep = info.mode == TickMode::Lockstep;
                 out.team = info
                     .picks
                     .iter()
@@ -139,10 +153,35 @@ pub fn play_on(
                 return Ok(out);
             }
             ServerMsg::Welcome { .. }
-            | ServerMsg::LobbyState { .. }
+            | ServerMsg::MatchState { .. }
             | ServerMsg::ParticipantLeft { .. }
-            | ServerMsg::Orders { .. } => {}
+            | ServerMsg::Orders { .. }
+            | ServerMsg::Refused { .. }
+            | ServerMsg::Hall { .. }
+            | ServerMsg::Matches { .. }
+            | ServerMsg::TournamentState { .. }
+            | ServerMsg::ReplayChunk { .. }
+            | ServerMsg::ReplayEnd { .. } => {}
         }
     }
     Ok(out)
+}
+
+/// Plays every match the server seats this account in, one after another.
+///
+/// A fresh bot is made for each. Returns what every match came to, in
+/// order; ends when no seat comes, which is when a tournament is over or
+/// the server hangs up.
+pub fn play_every(
+    mut make: impl FnMut() -> Box<dyn Bot>,
+    chair: &Chair,
+) -> std::io::Result<Vec<Outcome>> {
+    let mut link = sit_down(chair)?;
+    let mut played = Vec::new();
+    while let Some(seated) = link.take_seat(chair.hero)? {
+        let mut bot = make();
+        played.push(play_on(bot.as_mut(), &mut link, seated, chair)?);
+        link.leave_match()?;
+    }
+    Ok(played)
 }

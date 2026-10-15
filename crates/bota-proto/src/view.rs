@@ -43,7 +43,8 @@ impl StatusFlags {
     pub const DEAD: u16 = 1 << 8;
     /// Cannot be attacked or damaged at all.
     pub const INVULNERABLE: u16 = 1 << 9;
-    /// Performing a channelled ability or item action.
+    /// Casting or channelling an ability or item: standing through its cast
+    /// point or through its channel, either of which an order breaks off.
     pub const CHANNELLING: u16 = 1 << 10;
     /// Running from whoever put the fear on; cannot act, and no order lands.
     pub const FEARED: u16 = 1 << 11;

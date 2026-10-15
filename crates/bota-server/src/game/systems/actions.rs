@@ -55,6 +55,23 @@ impl World {
         )
     }
 
+    /// Whether an entity is standing through the cast point or the channel
+    /// of an ability or an item: what an order breaks off.
+    pub fn is_casting(&self, entity: Entity) -> bool {
+        matches!(
+            self.action.get(entity).map(|action| action.state),
+            Some(
+                ActionState::CastAbility {
+                    phase: ActionPhase::Before { .. } | ActionPhase::During { .. },
+                    ..
+                } | ActionState::UseItem {
+                    phase: ActionPhase::Before { .. } | ActionPhase::During { .. },
+                    ..
+                }
+            )
+        )
+    }
+
     /// Points an entity at the cast it was ordered to make.
     pub fn order_cast(&mut self, entity: Entity, pending: PendingCast) {
         if let Some(orders) = self.orders.get_mut(entity) {
@@ -229,13 +246,20 @@ impl World {
                         false
                     }
                     ActionPhase::After { progress } => {
-                        action.state = ActionState::Attack {
-                            target,
-                            phase: ActionPhase::After {
-                                progress: progress + gain,
-                            },
-                        };
-                        false
+                        // Held or run off, the body does not stand through
+                        // the rest of its swing.
+                        if held {
+                            action.state = ActionState::Ready;
+                            true
+                        } else {
+                            action.state = ActionState::Attack {
+                                target,
+                                phase: ActionPhase::After {
+                                    progress: progress + gain,
+                                },
+                            };
+                            false
+                        }
                     }
                 },
                 ActionState::CastAbility { phase, .. } | ActionState::UseItem { phase, .. } => {

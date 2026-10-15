@@ -2,7 +2,10 @@ use std::cell::Cell;
 use std::io::{self, Cursor, Read};
 use std::rc::Rc;
 
-use bota_proto::{LobbySlot, MAX_PAYLOAD_LEN, ReplayRecord, ServerMsg, SlotId, Team};
+use bota_proto::{
+    LobbySlot, MAX_PAYLOAD_LEN, MatchId, MatchState, ModeId, ReplayRecord, ServerMsg, SlotId,
+    Stage, Team,
+};
 
 use super::fixtures::{CountedRead, counted, message, snapshot, wire};
 use crate::replay_play::{
@@ -133,21 +136,30 @@ fn virtual_gigabyte_replays_have_constant_startup_and_per_poll_cost() {
 }
 
 fn maximum_payload_record() -> ReplayRecord {
-    let mut record = ReplayRecord::Msg(ServerMsg::LobbyState {
-        slots: vec![LobbySlot {
-            slot: SlotId(0),
-            team: Team::Radiant,
-            name: "x".repeat(MAX_PAYLOAD_LEN - 64),
-            role: None,
-            hero: None,
-            ready: false,
-        }],
+    let mut record = ReplayRecord::Msg(ServerMsg::MatchState {
+        state: MatchState {
+            id: MatchId(1),
+            name: "x".repeat(MAX_PAYLOAD_LEN - 96),
+            mode: ModeId(0),
+            host: None,
+            stage: Stage::Gathering,
+            slots: vec![LobbySlot {
+                slot: SlotId(0),
+                team: Team::Radiant,
+                login: String::new(),
+                hero: None,
+                ready: false,
+                connected: true,
+            }],
+            watchers: Vec::new(),
+            you: None,
+        },
     });
     let length = wire(&[record.clone()]).len() - 4;
-    let ReplayRecord::Msg(ServerMsg::LobbyState { slots }) = &mut record else {
+    let ReplayRecord::Msg(ServerMsg::MatchState { state }) = &mut record else {
         unreachable!()
     };
-    slots[0]
+    state
         .name
         .extend(std::iter::repeat_n('x', MAX_PAYLOAD_LEN - length));
     assert_eq!(wire(&[record.clone()]).len(), MAX_PAYLOAD_LEN + 4);

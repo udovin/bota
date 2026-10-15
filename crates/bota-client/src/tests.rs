@@ -239,24 +239,64 @@ fn arguments_parse_and_default() {
     };
     let defaults = args(&[]).expect("no arguments is fine");
     assert_eq!(defaults.addr, "127.0.0.1:4455");
-    assert_eq!(defaults.name, "player");
-    assert!(!defaults.spectate);
+    assert_eq!(defaults.login, None);
+    assert_eq!(defaults.guest, None);
     assert_eq!(defaults.replay, None);
+    assert!(defaults.errand().is_none(), "the hall is where it starts");
 
-    let full = args(&["--addr", "10.0.0.2:5000", "--name", "alice", "--spectate"])
-        .expect("all flags are known");
+    let full = args(&[
+        "--addr",
+        "10.0.0.2:5000",
+        "--login",
+        "alice",
+        "--password",
+        "pw",
+        "--quick",
+        "2",
+    ])
+    .expect("all flags are known");
     assert_eq!(full.addr, "10.0.0.2:5000");
-    assert_eq!(full.name, "alice");
-    assert!(full.spectate);
+    assert_eq!(full.login.as_deref(), Some("alice"));
+    assert!(matches!(
+        full.errand(),
+        Some(bota_proto::ClientMsg::QuickPlay {
+            mode: bota_proto::ModeId(2)
+        })
+    ));
 
     let watching = args(&["--replay", "m.brp"]).expect("a replay is a whole way to run");
     assert_eq!(watching.replay, Some(std::path::PathBuf::from("m.brp")));
 
+    let seat = args(&["--match", "7"]).expect("one match by its number");
+    assert!(matches!(
+        seat.errand(),
+        Some(bota_proto::ClientMsg::JoinMatch {
+            id: bota_proto::MatchId(7),
+            role: bota_proto::Role::Player
+        })
+    ));
+    let eye = args(&["--watch", "7"]).expect("watching one match");
+    assert!(matches!(
+        eye.errand(),
+        Some(bota_proto::ClientMsg::JoinMatch {
+            role: bota_proto::Role::Spectator,
+            ..
+        })
+    ));
+
     assert!(args(&["--what"]).is_err(), "an unknown flag is refused");
     assert!(args(&["--addr"]).is_err(), "a missing value is refused");
     assert!(
-        args(&["--replay", "m.brp", "--spectate"]).is_err(),
-        "a file to play and a match to watch are two different runs"
+        args(&["--replay", "m.brp", "--login", "alice"]).is_err(),
+        "a file to play and a server to sign in to are two different runs"
+    );
+    assert!(
+        args(&["--register"]).is_err(),
+        "registering needs the login to register"
+    );
+    assert!(
+        args(&["--quick", "0", "--match", "7"]).is_err(),
+        "one errand at a time"
     );
 }
 

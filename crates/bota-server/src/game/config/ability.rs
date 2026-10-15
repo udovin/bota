@@ -200,6 +200,9 @@ pub const REQUIEM: AbilityId = AbilityId(16);
 pub const NECROMASTERY: AbilityId = AbilityId(17);
 /// Shadow Fiend's presence: enemies standing near him wear less armor.
 pub const PRESENCE: AbilityId = AbilityId(18);
+/// The mark a scroll leaves where it will carry its reader. Nothing casts
+/// it; it names the mark on the wire.
+pub const TELEPORT: AbilityId = AbilityId(19);
 
 /// Every ability, indexed by [`AbilityId`].
 pub const ABILITIES: [AbilityDef; 19] = [
@@ -367,6 +370,8 @@ pub const ABILITIES: [AbilityDef; 19] = [
         mana: &rules::REQUIEM_MANA,
         cooldown: &rules::REQUIEM_COOLDOWN,
         range: rules::REQUIEM_LINE_DISTANCE,
+        point: rules::REQUIEM_CAST_POINT_MS,
+        backswing: rules::REQUIEM_BACKSWING_MS,
         on_cast: requiem,
         ..PLAIN
     },

@@ -16,6 +16,7 @@ use std::sync::{Arc, Condvar, Mutex};
 pub struct Outbox {
     state: Mutex<OutboxState>,
     wake: Condvar,
+    drained: Condvar,
 }
 
 struct OutboxState {
@@ -40,7 +41,28 @@ impl Outbox {
                 closed: false,
             }),
             wake: Condvar::new(),
+            drained: Condvar::new(),
         })
+    }
+
+    /// How many frames are waiting.
+    pub fn queued(&self) -> usize {
+        self.state.lock().expect("outbox lock").queue.len()
+    }
+
+    /// Blocks until fewer than `limit` frames wait, or the outbox closes.
+    /// Returns whether it is still open.
+    pub fn wait_below(&self, limit: usize) -> bool {
+        let mut state = self.state.lock().expect("outbox lock");
+        loop {
+            if state.closed {
+                return false;
+            }
+            if state.queue.len() < limit {
+                return true;
+            }
+            state = self.drained.wait(state).expect("outbox lock");
+        }
     }
 
     /// Queues a frame that must arrive.
@@ -79,6 +101,7 @@ impl Outbox {
     pub fn close(&self) {
         self.state.lock().expect("outbox lock").closed = true;
         self.wake.notify_one();
+        self.drained.notify_all();
     }
 
     /// Whether the outbox has been closed.
@@ -94,6 +117,7 @@ impl Outbox {
                 let mut state = self.state.lock().expect("outbox lock");
                 loop {
                     if let Some(frame) = state.queue.pop_front() {
+                        self.drained.notify_all();
                         break Some(frame);
                     }
                     if state.closed {

@@ -74,7 +74,9 @@ proto/src/
 ├── event.rs      EventKind, DamageKind
 ├── view.rs       WorldView, UnitView, PlayerView, ProjectileView, AbilityView,
 │                 ItemView, StatusFlags
-├── msg.rs        ClientMsg, ServerMsg, MatchInfo, lobby, RejectReason, MatchStats,
+├── hall.rs       Auth, Role, Stage, MatchState, MatchSummary, MatchFilter,
+│                 ModeInfo, HallReason, tournaments
+├── msg.rs        ClientMsg, ServerMsg, MatchInfo, RejectReason, MatchStats,
 │                 ReplayRecord
 └── codec.rs      encode_frame, decode_payload, FrameReader, CodecError
 ```
@@ -102,8 +104,22 @@ server/src/
 │   ├── project.rs    World → WorldView
 │   └── step.rs       Command, Event, validate, step: the tick order
 ├── net/          accept loop, per-connection reader/writer threads, Outbox
-├── lobby.rs      Roster (PlayerId ↔ SlotId), seats, picks, readiness
-├── game_loop.rs  lobby phase, then the tick loop in both modes
+├── hub/          THE ALWAYS-ON PART, one thread
+│   ├── serve.rs      every session, where each one is, and what it may do
+│   ├── account.rs    the ledger, argon2 hashes, session tokens
+│   ├── session.rs    one connection: who it is and where it is
+│   ├── matches.rs    a match from Gathering to Over
+│   ├── roster.rs     Roster (AccountId ↔ SlotId), seats, picks, readiness
+│   ├── modes.rs      the preset rule sets on offer
+│   ├── bracket.rs    pairing teams and moving a cup along, apart from any match
+│   ├── tournament.rs a cup as the hub holds it: teams, members, its wire state
+│   └── opts.rs       what the command line and the tests decide
+├── run/          ONE MATCH ON ITS OWN THREAD
+│   ├── runner.rs     the tick loop in both modes
+│   └── participant.rs who it sends to, and what the hub tells it
+├── archive/      WHAT STAYS ON DISK
+│   ├── store.rs      the data directory, the ids it hands out, the index
+│   └── fetch.rs      streaming a stored replay into a connection's outbox
 ├── replay.rs     writes the replay: fogless frames plus per-tick orders
 └── main.rs       clap arguments
 ```
@@ -871,11 +887,23 @@ fields appear with the first release, when there is something to be compatible w
 
 ```rust
 enum ClientMsg {
-    Hello { role: Role, name: String },    // Role: Player|Bot|Spectator
+    Hello { auth: Auth },                  // Register | Login | Resume | Guest
+    ChangePassword { old: String, new: String }, Logout,
+    ListMatches { filter: MatchFilter, before: Option<MatchId>, limit: u16 },
+    CreateMatch { mode: ModeId, name: String, seed: Option<u64> },
+    QuickPlay { mode: ModeId },
+    JoinMatch { id: MatchId, role: Role },  // Role: Player|Spectator
+    LeaveMatch, TakeSeat { slot: Option<SlotId> }, Kick { account: AccountId },
     PickHero { hero: HeroId },
     SetReady(bool),
-    Order { seq: u32, order: Order },
+    Order { seq: u32, unit: Option<EntityId>, order: Order },
     Ack { tick: u32 },                     // lockstep: "I am ready for the tick"
+    ViewAs { seat: Option<SlotId> },
+    CreateTournament { name, mode, format, best_of },
+    StartTournament { id }, CancelTournament { id },
+    JoinTournament { id: TournamentId, team: String }, LeaveTournament,
+    ViewTournament { id: Option<TournamentId> },
+    FetchReplay { match_id: MatchId },
 }
 
 enum Order {
@@ -900,8 +928,14 @@ type that plays no part in the match is not worth its slot in the wire format.
 
 ```rust
 enum ServerMsg {
-    Welcome { player_id: PlayerId, slot: Option<SlotId>, tick_rate: u16, mode: TickMode },
-    LobbyState { slots: Vec<LobbySlot> },
+    Welcome { player_id, account: Option<AccountInfo>, token: Option<Token>,
+              modes: Vec<ModeInfo> },
+    Refused { reason: HallReason },
+    Hall { matches: Vec<MatchSummary>, tournaments: Vec<TournamentSummary> },
+    Matches { page: Vec<MatchSummary>, before: Option<MatchId> },
+    MatchState { state: MatchState },      // receiving it means being in that match
+    TournamentState { state: TournamentInfo },
+    ReplayChunk { match_id, offset, bytes }, ReplayEnd { match_id, total },
     MatchStart { info: MatchInfo },        // the type has no seed field
     Snapshot { view: WorldView },          // whole; the tick is inside the view itself
     Events { tick: u32, events: Vec<EventKind> },
@@ -1171,43 +1205,134 @@ describing a different item from the one drawn in it.
 
 - `Realtime` — 30 Hz on the wall clock, a late command applies on the next tick.
 - `Lockstep` — the server waits for `Ack(tick)` from every agent. A bot thinks as long
-  as it needs, the match reproduces bit-for-bit. `--ack-timeout` guards against a hung
-  bot (empty order).
+  as it needs, the match reproduces bit-for-bit. The mode's ack timeout guards against a
+  hung bot (empty order).
+
+Which of the two a match runs under is the mode's, not the command line's: a bot
+arena is lockstep and the modes people play are realtime, on one server at once.
 
 ## Server algorithm
 
+One process, running for as long as the machine is up, hosting many matches at once.
+It used to be one process per match: a lobby phase, one `World`, then exit. That shape
+cannot hold a tournament, and a match that has ended cannot be listed or handed back.
+
 ```
 main:
-  parse args (--mode realtime|lockstep, --tick-rate, --players, --replay out.brp)
+  parse args (--port, --data, --cheats)
   listen TCP; the accept thread queues connections
-  state = Lobby
+  Hub::open(data) reads accounts.log, every replay meta, every tournament meta
+  hub thread: loop { handle one event; housekeep }
+```
 
-Lobby:
-  Hello → Welcome + LobbyState
-  PickHero / SetReady; when every slot is ready:
-    world = World::new(&cfg, cfg.rng());
-    broadcast MatchStart { info: cfg.info() }; state = Playing
+The hub thread owns sessions, accounts, matches that are gathering or ended, the
+tournaments and the archive index. It never waits on a socket, a disk read or a
+simulation: every outgoing frame goes into that connection's `Outbox`, a replay is
+streamed by the fetch thread, and a match that starts moves onto a thread of its own.
 
-Playing (simulation thread):
+```
+match thread (run/runner.rs), one per playing match:
   loop {
-    // 1. gather input
-    realtime: drain incoming until deadline = tick_start + 1/rate
-    lockstep: wait for Ack(t) from every agent (or ack-timeout)
+    // 1. gather input: the hub forwards Order, Ack, ViewAs, Join and Leave
+    realtime: drain until deadline = tick_start + 1/rate
+    lockstep: wait for Ack(t) from every seat present (or ack-timeout)
 
-    // 2. validation and PlayerId → SlotId translation through Roster
-    cmds = incoming
-        .filter(the slot belongs to this player_id)
-        .filter(world.can_see(team, target))     // anti-cheat: no clicking into fog
-        .sort_by(slot, seq)
-        .dedup_by(slot)                          // 1 order per slot per tick, the last one wins
+    // 2. validation: the hub already turned PlayerId into a seat
     // 3. append the accepted orders to the replay
     // 4. events = world.step(&cmds)
-    // 5. broadcast: teams get their view; spectators get the fogless view;
-    //    events go out by Event.visible_to. The fogless frames also go into the replay
-    // 6. if world.winner().is_some() { broadcast MatchOver; flush; break }
+    // 5. send: seats get their team's view, spectators the fogless one or the
+    //    seat's they borrow; fogless frames also go into the replay
+    // 6. if world.winner().is_some() { send MatchOver; break }
+    //    if every seat has been away for abandon_after { break with no winner }
     realtime: sleep until the next tick with drift compensation
   }
+  rename <id>.brp.part to <id>.brp; tell the hub how it ended
 ```
+
+Nothing of the simulation changed with this. `game/` still knows only `SlotId`, the
+tick order is untouched, and a replay recorded before the hub existed still plays.
+
+### The hall, and what lives in it
+
+```
+Account     id, login, argon2 hash                 accounts.log, append only
+Session     one connection: who signed in, its token, where it is
+Mode        map, seats, tick mode, tick rate, cheats          a fixed catalogue
+Match       Gathering -> Playing -> Over | Abandoned | (cancelled, never recorded)
+Tournament  Registration -> Running -> Finished
+Archive     <id>.brp beside <id>.meta; tournaments/<id>.meta
+```
+
+A lobby is not a separate thing from a match. Every lobby became exactly one match,
+with the same people and the same settings, so they are one entity with a stage. The
+id under which seats are taken is the id the replay is written under, the id a
+tournament pairing points at, and the id the client asks the archive for.
+
+A seat belongs to an **account**, not to a connection. That is the whole of
+reconnection: a client that drops leaves its hero standing, and signing in again puts
+it back on its seat with `MatchState` and a fresh `MatchStart`. An account is signed
+in on one connection at a time; a second sign-in throws the first out, which is how a
+hung connection is taken over rather than waited for.
+
+Roles are per match, not per connection or per account: the same session may watch one
+match and then sit down in another. `JoinMatch { role }` says which, and there is no
+bot flag anywhere — the simulation never distinguished a program from a person, and
+neither does the wire.
+
+### Accounts
+
+Registration is open: a free login and a password. The password is stored as an
+argon2id PHC string over a random salt and never travels anywhere but the wire. The
+wire is plain TCP, so this is worth exactly what a local or trusted network is worth;
+TLS is a later decision, and the hash is what stops one player using another's name.
+
+A successful sign-in hands out a `Token`: 128 random bits, good for seven days, kept
+in memory only. The client writes it beside its binary and resumes with it, so a
+restart does not ask for the password again; a server restart does, which is the price
+of not storing tokens. Guests sign in with a name alone and may watch and list, never
+sit, host or enter a cup.
+
+### Tournaments
+
+A cup is teams, a format and a series length, all chosen when it is created. Its team
+size is not chosen: it is the mode's seats halved, so a 1v1 cup has teams of one and a
+2v2 cup teams of two. A team is made by being the first to name it and joined by naming
+it again, like a party code; a team short of members when the organizer starts is left
+out rather than paired against a full one.
+
+`bracket.rs` holds the pairing and the scoring and touches nothing else: single
+elimination seeds first against last with byes already won, round robin turns a circle.
+Both are pure functions over `TournamentInfo`, which is why they are tested without a
+socket in sight.
+
+When a pairing can play, the hub creates its match with the seats already assigned and
+the sides swapping every game of the series. Everybody the game is for is brought to
+it, wherever they were: the hall, a cup screen, a lobby they were waiting in, or the
+game of this series that has just ended. Only a match still being played keeps somebody
+where they are. Pulling only from the hall was the first shape and it was wrong — after
+the first game of a best-of-three, both players are sitting in a match that has ended,
+so the second game would have waited for nobody and forfeited on its ready deadline.
+
+A team that has not shown up by that deadline forfeits the game. A game that ends
+without a winner is voided and set up again, so a crash costs a rematch rather than the
+cup. The whole state is written to disk on every change, and a server that restarts
+mid-cup rebuilds it from the stored games. Only the organizer may start a cup, and only
+before it starts may they take it down.
+
+### The archive
+
+Every match that starts is recorded. The replay is written to `<id>.brp.part` and
+renamed when it is whole, so a `.part` left by a crash is unmistakable: it is kept
+under the finished name and its match is marked abandoned. Beside it sits `<id>.meta`,
+a `MatchSummary` frame plus the final `MatchStats`, which is what the hall and the
+listings read — the index is built from those at startup and never from the replays
+themselves.
+
+`FetchReplay` streams the file in 64 KiB chunks from a thread of its own, waiting for
+the connection's outbox to drain between them, so one client pulling half a gigabyte
+slows down nobody. The client writes the chunks straight to a temp file and plays it
+with the same bounded reader it uses for `--replay`, over the same connection, which
+stays in the hall.
 
 ### Order inside `world.step()`
 
@@ -2285,7 +2410,7 @@ starting a search at our budget of one match a second, which is where months go.
 | 4 | ✅ `Fixed` arithmetic | Q16.16 ops through an intermediate `i64`, `Vec2`, `distance_squared` in raw Q32.32, tests in debug and release |
 | 5 | ✅ `World` ticks | arenas, units, movement, orders, creeps, towers, Ancient; `rng.rs` with streams and Ratio/Chance |
 | 6 | ✅ combat | attacks, projectiles, damage, deaths, gold/xp, victory |
-| 7 | ✅ server networking | lobby, both tick modes, snapshot broadcast, replay recording |
+| 7 | ✅ server networking | lobby, both tick modes, snapshot broadcast, replay recording; then the always-on hub: accounts, the hall, many matches at once, tournaments, the replay archive |
 | 8 | 🔄 `bota-bot` and `bota-client` | SDK + bot, bot-vs-bot match. Done: the client — macroquad: map, units, HP bars, orders, lobby, spectating, replay playback; the bot — the `Bot` seam and `play`, a deterministic playbook for Shadow Fiend and Sylla, lockstep acks, two of it playing a match through to an Ancient |
 | 9 | hero Sylla complete and determinism test | abilities, levels, items, shop; 20 000-tick hash baseline, run on musl/wasm32; mirror test: a diagonally mirrored match ends in the mirrored outcome |
 

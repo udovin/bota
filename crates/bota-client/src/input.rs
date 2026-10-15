@@ -1,8 +1,8 @@
 //! Keys and mouse into orders and camera motion.
 
 use bota_proto::{
-    AbilitySlot, Aim, ClientMsg, EntityId, ItemId, ItemSlot, Order, Target, Team, UnitKind, Vec2,
-    WorldView,
+    AbilitySlot, Aim, Auth, ClientMsg, EntityId, ItemId, ItemSlot, Order, Role, Stage, Target,
+    Team, TournamentFormat, TournamentStage, UnitKind, Vec2, WorldView,
 };
 use macroquad::prelude::*;
 
@@ -11,6 +11,9 @@ use crate::state::{App, Phase, Source, Tap};
 
 /// Handles one frame of input.
 pub fn handle(app: &mut App) {
+    if prompt_controls(app) {
+        return;
+    }
     if console_controls(app) {
         return;
     }
@@ -21,11 +24,16 @@ pub fn handle(app: &mut App) {
             app.held_item = None;
         } else if app.shop_open {
             app.shop_open = false;
-        } else if app.over.is_some()
-            || app.phase == Phase::Lobby
-            || matches!(&app.source, Source::Replay(player)
-                if app.view.is_none() || player.error().is_some() || player.finished())
-        {
+        } else if app.watching.is_some() {
+            app.stop_watching();
+        } else if matches!(app.source, Source::Replay(_)) {
+            app.quit = true;
+        } else if matches!(app.phase, Phase::Lobby | Phase::Playing) {
+            app.source.send(&ClientMsg::LeaveMatch);
+            app.leave_room();
+        } else if app.phase == Phase::Cup {
+            app.close_cup();
+        } else {
             app.quit = true;
         }
     }
@@ -36,7 +44,7 @@ pub fn handle(app: &mut App) {
     // turn.
     if app.phase == Phase::Playing
         && app.my_slot.is_none()
-        && matches!(app.source, Source::Live(_))
+        && !app.replaying()
         && is_key_pressed(KeyCode::Tab)
     {
         let seats: Vec<bota_proto::SlotId> = app
@@ -55,8 +63,21 @@ pub fn handle(app: &mut App) {
         let seat = app.eyes;
         app.source.send(&ClientMsg::ViewAs { seat });
     }
+    if app.phase == Phase::SignIn {
+        signin_controls(app);
+        return;
+    }
+    if app.phase == Phase::Hall {
+        hall_controls(app);
+        return;
+    }
+    if app.phase == Phase::Cup {
+        cup_controls(app);
+        return;
+    }
     camera_controls(app);
     match app.phase {
+        Phase::SignIn | Phase::Hall | Phase::Cup => {}
         Phase::Lobby => lobby_controls(app),
         Phase::Playing => {
             pick_controls(app);
@@ -394,6 +415,258 @@ fn pick_controls(app: &mut App) {
     }
 }
 
+/// Types a name the client asked for. Returns whether the box took the
+/// frame's keys, so typing never doubles as anything else.
+fn prompt_controls(app: &mut App) -> bool {
+    if app.asking.is_none() {
+        return false;
+    }
+    while let Some(typed) = get_char_pressed() {
+        if !typed.is_control() {
+            app.entry.push(typed);
+        }
+    }
+    if is_key_pressed(KeyCode::Backspace) {
+        app.entry.pop();
+    }
+    if is_key_pressed(KeyCode::Escape) {
+        app.asking = None;
+        app.entry.clear();
+    } else if is_key_pressed(KeyCode::Enter) {
+        app.confirm_entry();
+    }
+    true
+}
+
+/// Presses the buttons of the tournament screen and its bracket.
+fn cup_controls(app: &mut App) {
+    let (mx, my) = mouse_position();
+    let clicked = is_mouse_button_pressed(MouseButton::Left);
+    let cup = app.tournament.as_ref().map(|cup| (cup.id, cup.stage));
+    if is_key_pressed(KeyCode::Enter)
+        && let Some((id, TournamentStage::Registration)) = cup
+    {
+        app.ask(crate::state::Asking::JoinTeam(id));
+        return;
+    }
+    if !clicked {
+        return;
+    }
+    if let Some(cup) = &app.tournament {
+        let lines = crate::hall::bracket_lines(cup, &app.hall_matches);
+        for line in lines {
+            let Some(action) = line.action else {
+                continue;
+            };
+            let button = crate::hud::UiRect {
+                x: line.rect.x + line.rect.w,
+                y: line.rect.y,
+                w: crate::hall::ACT_W,
+                h: line.rect.h,
+            };
+            if !button.contains(mx, my) {
+                continue;
+            }
+            let Some(match_id) = line.game else {
+                continue;
+            };
+            if action == "Watch" {
+                app.source.send(&ClientMsg::JoinMatch {
+                    id: match_id,
+                    role: Role::Spectator,
+                });
+            } else {
+                app.source.send(&ClientMsg::FetchReplay { match_id });
+            }
+            return;
+        }
+    }
+    let actions = crate::hall::cup_actions(app);
+    let Some(at) = (0..actions.len())
+        .find(|at| crate::hall::cup_button(*at, screen_height()).contains(mx, my))
+    else {
+        return;
+    };
+    let Some((id, _)) = cup else {
+        app.close_cup();
+        return;
+    };
+    match actions[at] {
+        "Back" => app.close_cup(),
+        "Join team" => app.ask(crate::state::Asking::JoinTeam(id)),
+        "Leave" => app.source.send(&ClientMsg::LeaveTournament),
+        "Start" => app.source.send(&ClientMsg::StartTournament { id }),
+        "Cancel" => app.source.send(&ClientMsg::CancelTournament { id }),
+        _ => {}
+    }
+}
+
+/// Types a login and a password, and sends them.
+fn signin_controls(app: &mut App) {
+    let typed: Vec<char> = std::iter::from_fn(get_char_pressed).collect();
+    let field = app.field;
+    let line = match field {
+        crate::state::Field::Login => &mut app.login,
+        crate::state::Field::Password => &mut app.password,
+    };
+    for ch in typed {
+        if !ch.is_control() {
+            line.push(ch);
+        }
+    }
+    if is_key_pressed(KeyCode::Backspace) {
+        line.pop();
+    }
+    if is_key_pressed(KeyCode::Tab) {
+        app.field = match field {
+            crate::state::Field::Login => crate::state::Field::Password,
+            crate::state::Field::Password => crate::state::Field::Login,
+        };
+    }
+    let (mx, my) = mouse_position();
+    let clicked = is_mouse_button_pressed(MouseButton::Left);
+    if clicked {
+        if crate::hall::entry(0).contains(mx, my) {
+            app.field = crate::state::Field::Login;
+        }
+        if crate::hall::entry(1).contains(mx, my) {
+            app.field = crate::state::Field::Password;
+        }
+    }
+    let pressed = |at: usize| clicked && crate::hall::entry_button(at).contains(mx, my);
+    let sign_in = is_key_pressed(KeyCode::Enter) || pressed(0);
+    if sign_in && !app.login.is_empty() {
+        let auth = Auth::Login {
+            login: app.login.clone(),
+            password: app.password.clone(),
+        };
+        app.say_hello(auth);
+    } else if pressed(1) && !app.login.is_empty() {
+        let auth = Auth::Register {
+            login: app.login.clone(),
+            password: app.password.clone(),
+        };
+        app.say_hello(auth);
+    } else if pressed(2) && !app.login.is_empty() {
+        let auth = Auth::Guest {
+            name: app.login.clone(),
+        };
+        app.say_hello(auth);
+    }
+}
+
+/// Picks a list, a mode, and what to do with a row of it.
+fn hall_controls(app: &mut App) {
+    let (mx, my) = mouse_position();
+    let clicked = is_mouse_button_pressed(MouseButton::Left);
+    let (_, wheel) = mouse_wheel();
+    if wheel != 0.0 {
+        let by = if wheel > 0.0 { -1 } else { 1 };
+        app.hall_scroll = app.hall_scroll.saturating_add_signed(by);
+    }
+    if is_key_pressed(KeyCode::Tab) {
+        let at = crate::hall::TABS
+            .iter()
+            .position(|(tab, _)| *tab == app.tab)
+            .unwrap_or(0);
+        app.tab = crate::hall::TABS[(at + 1) % crate::hall::TABS.len()].0;
+        app.hall_scroll = 0;
+        if app.tab == crate::state::HallTab::Replays {
+            app.ask_for_replays(None);
+        }
+    }
+    for (at, (tab, _)) in crate::hall::TABS.into_iter().enumerate() {
+        if clicked && crate::hall::tab(at).contains(mx, my) {
+            app.tab = tab;
+            app.hall_scroll = 0;
+            if tab == crate::state::HallTab::Replays {
+                app.ask_for_replays(None);
+            }
+        }
+    }
+    let actions = crate::hall::actions(app).len();
+    let action = (0..actions).find(|at| clicked && crate::hall::action(*at).contains(mx, my));
+    match (app.tab, action) {
+        (crate::state::HallTab::Matches, Some(0))
+        | (crate::state::HallTab::Tournaments, Some(0)) => {
+            if !app.modes.is_empty() {
+                app.mode_at = (app.mode_at + 1) % app.modes.len();
+            }
+        }
+        (crate::state::HallTab::Matches, Some(1)) => app.quick_play(),
+        (crate::state::HallTab::Matches, Some(2)) => app.ask(crate::state::Asking::NewMatch),
+        (crate::state::HallTab::Tournaments, Some(1)) => {
+            app.cup_format = match app.cup_format {
+                TournamentFormat::SingleElimination => TournamentFormat::RoundRobin,
+                TournamentFormat::RoundRobin => TournamentFormat::SingleElimination,
+            };
+        }
+        (crate::state::HallTab::Tournaments, Some(2)) => {
+            app.cup_best_of = match app.cup_best_of {
+                1 => 3,
+                3 => 5,
+                5 => 7,
+                _ => 1,
+            };
+        }
+        (crate::state::HallTab::Tournaments, Some(3)) => app.ask(crate::state::Asking::NewCup),
+        (crate::state::HallTab::Replays, Some(0)) => app.ask_for_replays(None),
+        (crate::state::HallTab::Replays, Some(1)) => {
+            let next = app.more_replays;
+            app.ask_for_replays(next);
+        }
+        _ => {}
+    }
+    if is_key_pressed(KeyCode::Enter) && app.tab == crate::state::HallTab::Matches {
+        app.quick_play();
+    }
+    if !clicked {
+        return;
+    }
+    let rows = crate::hall::rows_shown(screen_height());
+    for at in 0..rows {
+        let first = crate::hall::row_button(at, 0).contains(mx, my);
+        let second = crate::hall::row_button(at, 1).contains(mx, my);
+        if !first && !second {
+            continue;
+        }
+        match app.tab {
+            crate::state::HallTab::Matches => {
+                let Some(found) = crate::hall::match_at(app, at) else {
+                    continue;
+                };
+                let (id, stage) = (found.id, found.stage);
+                let role = if second && stage == Stage::Gathering {
+                    Role::Player
+                } else {
+                    Role::Spectator
+                };
+                app.source.send(&ClientMsg::JoinMatch { id, role });
+            }
+            crate::state::HallTab::Tournaments => {
+                let Some(found) = crate::hall::cup_at(app, at) else {
+                    continue;
+                };
+                let (id, stage) = (found.id, found.stage);
+                if second && stage == TournamentStage::Registration {
+                    app.open_cup(id);
+                    app.ask(crate::state::Asking::JoinTeam(id));
+                } else {
+                    app.open_cup(id);
+                }
+            }
+            crate::state::HallTab::Replays => {
+                let Some(found) = crate::hall::replay_at(app, at) else {
+                    continue;
+                };
+                let match_id = found.id;
+                app.source.send(&ClientMsg::FetchReplay { match_id });
+            }
+        }
+        break;
+    }
+}
+
 fn lobby_controls(app: &mut App) {
     let picks = [
         KeyCode::Key1,
@@ -514,7 +787,7 @@ pub fn edge_of(mx: f32, my: f32, sw: f32, sh: f32, pan: f32) -> (f32, f32) {
 }
 
 fn replay_controls(app: &mut App) {
-    let Source::Replay(player) = &mut app.source else {
+    let Some(player) = app.player_mut() else {
         return;
     };
     if is_key_pressed(KeyCode::Space) {

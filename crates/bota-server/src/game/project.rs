@@ -190,7 +190,7 @@ impl World {
                     } else {
                         0
                     }
-                    | if self.is_channelling(entity) {
+                    | if self.is_casting(entity) {
                         StatusFlags::CHANNELLING
                     } else {
                         0

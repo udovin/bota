@@ -108,6 +108,7 @@ New external dependencies only after discussion. Allowed:
 | `macroquad` | `bota-client` | rendering |
 | `resvg` | `bota-client` | rasterising the item art |
 | `rand_chacha` 0.10 | `bota-server` | PRNG |
+| `argon2` 0.5 | `bota-server` | password hashing for accounts |
 | `clap` (derive) | every binary | command line arguments |
 
 Every binary parses its arguments with `clap` and its derive. There is no bar low enough

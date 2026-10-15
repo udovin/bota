@@ -204,7 +204,7 @@ pub fn world_view(creeps: u32) -> WorldView {
 
 pub fn match_info() -> MatchInfo {
     MatchInfo {
-        match_id: 0xdead_beef,
+        match_id: MatchId(0xdead_beef),
         map: MapId(1),
         tick_rate: 30,
         pregame_ticks: 900,
@@ -253,10 +253,117 @@ pub fn lobby_slot() -> LobbySlot {
     LobbySlot {
         slot: SlotId(0),
         team: Team::Radiant,
-        name: "sylla-fan".to_string(),
-        role: Some(Role::Bot),
+        login: "sylla-fan".to_string(),
         hero: Some(HeroId(0)),
         ready: true,
+        connected: true,
+    }
+}
+
+pub fn match_state() -> MatchState {
+    MatchState {
+        id: MatchId(42),
+        name: "mid or feed".to_string(),
+        mode: ModeId(2),
+        host: Some(AccountId(7)),
+        stage: Stage::Gathering,
+        slots: vec![lobby_slot()],
+        watchers: vec!["eye".to_string()],
+        you: Some(SlotId(0)),
+    }
+}
+
+pub fn match_summary() -> MatchSummary {
+    MatchSummary {
+        id: MatchId(42),
+        name: "mid or feed".to_string(),
+        mode: ModeId(2),
+        map: MapId(2),
+        stage: Stage::Over,
+        host: Some(AccountId(7)),
+        seats: vec![SeatSummary {
+            slot: SlotId(0),
+            team: Team::Radiant,
+            login: "sylla-fan".to_string(),
+            hero: Some(HeroId(0)),
+        }],
+        tournament: Some(TournamentRef {
+            id: TournamentId(3),
+            round: 1,
+            pair: 0,
+            game: 2,
+        }),
+        created_at: 1_800_000_000,
+        duration: 54_000,
+        winner: Some(Team::Dire),
+        seed: Some(7),
+    }
+}
+
+pub fn mode_info() -> ModeInfo {
+    ModeInfo {
+        id: ModeId(2),
+        name: "Mid 1v1".to_string(),
+        map: MapId(2),
+        seats: 2,
+        tick: TickMode::Realtime,
+        tick_rate: 30,
+        cheats: false,
+    }
+}
+
+pub fn tournament_info() -> TournamentInfo {
+    TournamentInfo {
+        id: TournamentId(3),
+        name: "the cup".to_string(),
+        mode: ModeId(2),
+        format: TournamentFormat::SingleElimination,
+        best_of: 3,
+        team_size: 1,
+        organizer: "sylla-fan".to_string(),
+        stage: TournamentStage::Running,
+        teams: vec![
+            TeamInfo {
+                name: "radiant".to_string(),
+                members: vec!["sylla-fan".to_string()],
+            },
+            TeamInfo {
+                name: "dire".to_string(),
+                members: vec!["pudge-fan".to_string()],
+            },
+        ],
+        rounds: vec![RoundInfo {
+            pairs: vec![PairInfo {
+                a: Some(0),
+                b: Some(1),
+                games: vec![
+                    GameInfo {
+                        match_id: Some(MatchId(42)),
+                        winner: Some(1),
+                    },
+                    GameInfo {
+                        match_id: None,
+                        winner: None,
+                    },
+                ],
+                winner: None,
+            }],
+        }],
+        winner: None,
+        created_at: 1_800_000_000,
+    }
+}
+
+pub fn tournament_summary() -> TournamentSummary {
+    TournamentSummary {
+        id: TournamentId(3),
+        name: "the cup".to_string(),
+        mode: ModeId(2),
+        format: TournamentFormat::RoundRobin,
+        best_of: 1,
+        stage: TournamentStage::Registration,
+        teams: 2,
+        team_size: 1,
     }
 }
 
@@ -421,8 +528,26 @@ pub fn all_events() -> Vec<EventKind> {
 pub fn all_client_msgs() -> Vec<ClientMsg> {
     vec![
         ClientMsg::Hello {
-            role: Role::Player,
-            name: "player-one".to_string(),
+            auth: Auth::Register {
+                login: "player-one".to_string(),
+                password: "hunter2".to_string(),
+            },
+        },
+        ClientMsg::Hello {
+            auth: Auth::Login {
+                login: "player-one".to_string(),
+                password: "hunter2".to_string(),
+            },
+        },
+        ClientMsg::Hello {
+            auth: Auth::Resume {
+                token: Token(0x0123_4567_89ab_cdef_0123_4567_89ab_cdef),
+            },
+        },
+        ClientMsg::Hello {
+            auth: Auth::Guest {
+                name: "eye".to_string(),
+            },
         },
         ClientMsg::PickHero { hero: HeroId(0) },
         ClientMsg::SetReady(true),
@@ -436,6 +561,60 @@ pub fn all_client_msgs() -> Vec<ClientMsg> {
         ClientMsg::Ack { tick: 5400 },
         ClientMsg::ViewAs {
             seat: Some(SlotId(1)),
+        },
+        ClientMsg::ChangePassword {
+            old: "hunter2".to_string(),
+            new: "hunter3".to_string(),
+        },
+        ClientMsg::Logout,
+        ClientMsg::ListMatches {
+            filter: MatchFilter {
+                stage: Some(Stage::Over),
+                tournament: Some(TournamentId(3)),
+                account: Some(AccountId(7)),
+            },
+            before: Some(MatchId(42)),
+            limit: 20,
+        },
+        ClientMsg::CreateMatch {
+            mode: ModeId(2),
+            name: "mid or feed".to_string(),
+            seed: Some(7),
+        },
+        ClientMsg::QuickPlay { mode: ModeId(2) },
+        ClientMsg::JoinMatch {
+            id: MatchId(42),
+            role: Role::Spectator,
+        },
+        ClientMsg::LeaveMatch,
+        ClientMsg::TakeSeat {
+            slot: Some(SlotId(1)),
+        },
+        ClientMsg::Kick {
+            account: AccountId(8),
+        },
+        ClientMsg::CreateTournament {
+            name: "the cup".to_string(),
+            mode: ModeId(2),
+            format: TournamentFormat::SingleElimination,
+            best_of: 3,
+        },
+        ClientMsg::JoinTournament {
+            id: TournamentId(3),
+            team: "radiant".to_string(),
+        },
+        ClientMsg::LeaveTournament,
+        ClientMsg::StartTournament {
+            id: TournamentId(3),
+        },
+        ClientMsg::CancelTournament {
+            id: TournamentId(3),
+        },
+        ClientMsg::ViewTournament {
+            id: Some(TournamentId(3)),
+        },
+        ClientMsg::FetchReplay {
+            match_id: MatchId(42),
         },
     ]
 }
@@ -456,12 +635,15 @@ pub fn all_server_msgs() -> Vec<ServerMsg> {
     vec![
         ServerMsg::Welcome {
             player_id: PlayerId(3),
-            slot: Some(SlotId(0)),
-            tick_rate: 30,
-            mode: TickMode::Realtime,
+            account: Some(AccountInfo {
+                id: AccountId(7),
+                login: "sylla-fan".to_string(),
+            }),
+            token: Some(Token(0x0123_4567_89ab_cdef_0123_4567_89ab_cdef)),
+            modes: vec![mode_info()],
         },
-        ServerMsg::LobbyState {
-            slots: vec![lobby_slot()],
+        ServerMsg::MatchState {
+            state: match_state(),
         },
         ServerMsg::MatchStart { info: match_info() },
         ServerMsg::Snapshot {
@@ -486,6 +668,29 @@ pub fn all_server_msgs() -> Vec<ServerMsg> {
         ServerMsg::Orders {
             tick: 5400,
             orders: vec![slot_order(0), slot_order(1)],
+        },
+        ServerMsg::Refused {
+            reason: HallReason::SeatTaken,
+        },
+        ServerMsg::Hall {
+            matches: vec![match_summary()],
+            tournaments: vec![tournament_summary()],
+        },
+        ServerMsg::Matches {
+            page: vec![match_summary()],
+            before: Some(MatchId(41)),
+        },
+        ServerMsg::TournamentState {
+            state: tournament_info(),
+        },
+        ServerMsg::ReplayChunk {
+            match_id: MatchId(42),
+            offset: 65_536,
+            bytes: vec![1, 2, 3],
+        },
+        ServerMsg::ReplayEnd {
+            match_id: MatchId(42),
+            total: 65_539,
         },
     ]
 }
@@ -523,6 +728,22 @@ pub fn client_msg_name(msg: &ClientMsg) -> &'static str {
         ClientMsg::Order { .. } => "Order",
         ClientMsg::Ack { .. } => "Ack",
         ClientMsg::ViewAs { .. } => "ViewAs",
+        ClientMsg::ChangePassword { .. } => "ChangePassword",
+        ClientMsg::Logout => "Logout",
+        ClientMsg::ListMatches { .. } => "ListMatches",
+        ClientMsg::CreateMatch { .. } => "CreateMatch",
+        ClientMsg::QuickPlay { .. } => "QuickPlay",
+        ClientMsg::JoinMatch { .. } => "JoinMatch",
+        ClientMsg::LeaveMatch => "LeaveMatch",
+        ClientMsg::TakeSeat { .. } => "TakeSeat",
+        ClientMsg::Kick { .. } => "Kick",
+        ClientMsg::CreateTournament { .. } => "CreateTournament",
+        ClientMsg::JoinTournament { .. } => "JoinTournament",
+        ClientMsg::LeaveTournament => "LeaveTournament",
+        ClientMsg::StartTournament { .. } => "StartTournament",
+        ClientMsg::CancelTournament { .. } => "CancelTournament",
+        ClientMsg::ViewTournament { .. } => "ViewTournament",
+        ClientMsg::FetchReplay { .. } => "FetchReplay",
     }
 }
 
@@ -531,7 +752,7 @@ pub fn client_msg_name(msg: &ClientMsg) -> &'static str {
 pub fn server_msg_name(msg: &ServerMsg) -> &'static str {
     match msg {
         ServerMsg::Welcome { .. } => "Welcome",
-        ServerMsg::LobbyState { .. } => "LobbyState",
+        ServerMsg::MatchState { .. } => "MatchState",
         ServerMsg::MatchStart { .. } => "MatchStart",
         ServerMsg::Snapshot { .. } => "Snapshot",
         ServerMsg::Events { .. } => "Events",
@@ -539,5 +760,11 @@ pub fn server_msg_name(msg: &ServerMsg) -> &'static str {
         ServerMsg::MatchOver { .. } => "MatchOver",
         ServerMsg::ParticipantLeft { .. } => "ParticipantLeft",
         ServerMsg::Orders { .. } => "Orders",
+        ServerMsg::Refused { .. } => "Refused",
+        ServerMsg::Hall { .. } => "Hall",
+        ServerMsg::Matches { .. } => "Matches",
+        ServerMsg::TournamentState { .. } => "TournamentState",
+        ServerMsg::ReplayChunk { .. } => "ReplayChunk",
+        ServerMsg::ReplayEnd { .. } => "ReplayEnd",
     }
 }

@@ -840,6 +840,9 @@ pub const TREE_REGROW_TICKS: u32 = 5 * 60 * TICKS_PER_SECOND;
 pub const PLANTED_TREE_TICKS: u32 = 40 * TICKS_PER_SECOND;
 /// Ticks a hero waits between scrolls, whichever scroll it holds.
 pub const SCROLL_WAIT_TICKS: u32 = 2100;
+/// Ticks a scroll holds its reader before it carries. The scroll is spent
+/// the moment it is read; broken off, it carries nobody.
+pub const SCROLL_CHANNEL_TICKS: u32 = 90;
 
 // The courier.
 
@@ -980,8 +983,17 @@ pub const REQUIEM_HOLD_MAX_TICKS: u32 = 64;
 pub const FLEE_LOOKAHEAD: i32 = 600;
 /// Ticks a burst or a ring an ability left is seen on the ground.
 pub const MARK_TICKS: u32 = 15;
-/// Links a hook's chain is laid out with between the thrower and the hook.
-pub const HOOK_LINKS: usize = 10;
+/// World units between two links of a hook's chain.
+pub const HOOK_LINK_GAP: i32 = 64;
+/// Links a hook's chain has at most: one for every gap's length of chain
+/// paid out over its whole reach and half again, the half for a thrower
+/// that walks away from the hook meanwhile.
+pub const HOOK_LINKS: usize = (HOOK_RANGE * 3 / 2 / HOOK_LINK_GAP) as usize + 1;
+/// Milliseconds the requiem holds its caster before it goes off. Broken off
+/// in that time it costs nothing.
+pub const REQUIEM_CAST_POINT_MS: u32 = 1670;
+/// Milliseconds the requiem holds its caster after it has gone off.
+pub const REQUIEM_BACKSWING_MS: u32 = 1130;
 /// Mana the requiem costs, by level.
 pub const REQUIEM_MANA: [i32; 3] = [150, 175, 200];
 /// Ticks between requiems, by level.
