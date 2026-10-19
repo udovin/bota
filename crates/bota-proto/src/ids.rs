@@ -96,10 +96,27 @@ pub struct MapId(pub u16);
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct AccountId(pub u64);
 
-/// A session key handed out at sign-in. Presenting it signs the same
-/// account in again without its password.
+/// A session key handed out at sign-in: 256 bits from the hub's operating
+/// system generator. Presenting it signs the same account in again without
+/// its password.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Token(pub u128);
+pub struct Token(pub [u8; 32]);
+
+/// What lets a connection into one running match on its game server: 256
+/// bits from the hub's operating system generator. Good until the match
+/// ends.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Ticket(pub [u8; 32]);
+
+/// Thirty-two random bytes one side of the hub's link to a game server asks
+/// the other to prove the shared key over, once.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Nonce(pub [u8; 32]);
+
+/// A keyed hash of a [`Nonce`] under the key the hub and its game servers
+/// share, showing whoever made it holds the key.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Proof(pub [u8; 32]);
 
 /// One of the server's preset rule sets a match is played under.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]

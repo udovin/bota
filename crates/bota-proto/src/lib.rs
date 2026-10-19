@@ -9,11 +9,16 @@
 mod attrs;
 mod codec;
 mod event;
+mod game_msg;
 mod hall;
+mod hub_msg;
 mod ids;
+mod link;
 mod math;
 mod msg;
+mod names;
 mod order;
+mod rules;
 mod view;
 
 #[cfg(test)]
@@ -22,9 +27,14 @@ mod tests;
 pub use attrs::*;
 pub use codec::*;
 pub use event::*;
+pub use game_msg::*;
 pub use hall::*;
+pub use hub_msg::*;
 pub use ids::*;
+pub use link::*;
 pub use math::*;
 pub use msg::*;
+pub use names::*;
 pub use order::*;
+pub use rules::*;
 pub use view::*;

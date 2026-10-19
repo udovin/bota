@@ -25,10 +25,11 @@ pub struct World {
     pub tick: u32,
     /// A place per player.
     pub seats: Vec<Seat>,
-    /// The completed result; `Team::Neutral` denotes a Map2 draw.
+    /// How the match ended, once it has: the side that won, or
+    /// `Team::Neutral` for a draw.
     pub winner: Option<Team>,
-    /// Whether cheat orders are honoured.
-    pub cheats: bool,
+    /// What the match is played to and what runs in it.
+    pub rules: bota_proto::Rules,
     /// The map it is played on.
     pub map: &'static crate::game::MapDef,
     /// Where every roll of the dice comes from.
@@ -184,7 +185,7 @@ impl World {
             tick: 0,
             seats: Vec::new(),
             winner: None,
-            cheats: false,
+            rules: crate::game::STANDARD_RULES,
             map: crate::game::map_of(bota_proto::MapId(0)),
             rng: crate::game::MatchRng::new(&[0; 32], 0),
             clearance: crate::game::Clearance::open(),
@@ -541,9 +542,10 @@ impl World {
         });
     }
 
-    /// One tick, or no change after Map2 completes. Systems run in written order.
+    /// One tick, or no change once the match is decided. Systems run in
+    /// written order.
     pub fn step(&mut self) -> Vec<crate::game::Event> {
-        if self.map2_finished() {
+        if self.decided() {
             return Vec::new();
         }
         let mut events = Vec::new();

@@ -19,17 +19,49 @@ where
 }
 
 #[test]
-fn client_messages_survive() {
-    for msg in all_client_msgs() {
-        assert_eq!(roundtrip(&msg), msg, "{}", client_msg_name(&msg));
+fn what_a_participant_says_to_the_hub_survives() {
+    for msg in all_to_hub() {
+        assert_eq!(roundtrip(&msg), msg, "{}", to_hub_name(&msg));
     }
 }
 
 #[test]
-fn server_messages_survive() {
-    for msg in all_server_msgs() {
-        assert_eq!(roundtrip(&msg), msg, "{}", server_msg_name(&msg));
+fn what_the_hub_says_to_a_participant_survives() {
+    for msg in all_from_hub() {
+        assert_eq!(roundtrip(&msg), msg, "{}", from_hub_name(&msg));
     }
+}
+
+#[test]
+fn what_a_participant_says_to_a_game_server_survives() {
+    for msg in all_to_game() {
+        assert_eq!(roundtrip(&msg), msg, "{}", to_game_name(&msg));
+    }
+}
+
+#[test]
+fn what_a_game_server_says_to_a_participant_survives() {
+    for msg in all_from_game() {
+        assert_eq!(roundtrip(&msg), msg, "{}", from_game_name(&msg));
+    }
+}
+
+#[test]
+fn what_the_hub_and_a_game_server_say_to_each_other_survives() {
+    for msg in all_assign() {
+        assert_eq!(roundtrip(&msg), msg, "{}", assign_name(&msg));
+    }
+    for msg in all_report() {
+        assert_eq!(roundtrip(&msg), msg, "{}", report_name(&msg));
+    }
+}
+
+#[test]
+fn a_secret_crosses_whole_in_thirty_two_bytes() {
+    let ticket = Ticket([0xff; 32]);
+    let frame = encode_frame_to_vec(&ticket).expect("encode");
+    assert_eq!(frame.len(), LEN_PREFIX + 32, "no length, no padding");
+    assert_eq!(roundtrip(&ticket), ticket);
 }
 
 #[test]
@@ -128,6 +160,7 @@ fn every_reject_reason_survives() {
         RejectReason::NotYourItem,
         RejectReason::ClosedGround,
         RejectReason::NotInBag,
+        RejectReason::TooManyOrders,
     ];
     for reason in reasons {
         assert_eq!(roundtrip(&reason), reason, "{reason:?}");

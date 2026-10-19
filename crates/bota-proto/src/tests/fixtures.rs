@@ -246,6 +246,19 @@ pub fn match_info() -> MatchInfo {
                 hero: HeroId(0),
             },
         ],
+        rules: mid_rules(),
+    }
+}
+
+/// Mid alone, the side towers out of reach, two lives and a tower.
+pub fn mid_rules() -> Rules {
+    Rules {
+        waves: Lanes::MID,
+        invulnerable_towers: Lanes::SIDES,
+        death_limit: 2,
+        tower_ends_it: true,
+        time_limit: 27_000,
+        cheats: false,
     }
 }
 
@@ -254,8 +267,6 @@ pub fn lobby_slot() -> LobbySlot {
         slot: SlotId(0),
         team: Team::Radiant,
         login: "sylla-fan".to_string(),
-        hero: Some(HeroId(0)),
-        ready: true,
         connected: true,
     }
 }
@@ -266,10 +277,35 @@ pub fn match_state() -> MatchState {
         name: "mid or feed".to_string(),
         mode: ModeId(2),
         host: Some(AccountId(7)),
-        stage: Stage::Gathering,
+        stage: Stage::Picking,
         slots: vec![lobby_slot()],
         watchers: vec!["eye".to_string()],
-        you: Some(SlotId(0)),
+        yours: vec![SlotId(0), SlotId(2)],
+    }
+}
+
+/// Picking half done, as the Dire sees it: the Radiant has its hero, the
+/// Dire is set on one and has not picked it yet.
+pub fn pick_state() -> PickState {
+    PickState {
+        seats: vec![
+            PickSeat {
+                slot: SlotId(0),
+                team: Team::Radiant,
+                login: "sylla-fan".to_string(),
+                hero: Some(HeroId(2)),
+                selected: None,
+            },
+            PickSeat {
+                slot: SlotId(1),
+                team: Team::Dire,
+                login: "pudge-fan".to_string(),
+                hero: None,
+                selected: Some(HeroId(1)),
+            },
+        ],
+        yours: vec![SlotId(1)],
+        ms_left: 59_500,
     }
 }
 
@@ -278,7 +314,7 @@ pub fn match_summary() -> MatchSummary {
         id: MatchId(42),
         name: "mid or feed".to_string(),
         mode: ModeId(2),
-        map: MapId(2),
+        map: MapId(0),
         stage: Stage::Over,
         host: Some(AccountId(7)),
         seats: vec![SeatSummary {
@@ -286,6 +322,7 @@ pub fn match_summary() -> MatchSummary {
             team: Team::Radiant,
             login: "sylla-fan".to_string(),
             hero: Some(HeroId(0)),
+            abandoned: true,
         }],
         tournament: Some(TournamentRef {
             id: TournamentId(3),
@@ -304,11 +341,13 @@ pub fn mode_info() -> ModeInfo {
     ModeInfo {
         id: ModeId(2),
         name: "Mid 1v1".to_string(),
-        map: MapId(2),
+        map: MapId(0),
         seats: 2,
+        seats_per_player: 1,
         tick: TickMode::Realtime,
         tick_rate: 30,
-        cheats: false,
+        rules: mid_rules(),
+        spectator_chat: false,
     }
 }
 
@@ -325,11 +364,17 @@ pub fn tournament_info() -> TournamentInfo {
         teams: vec![
             TeamInfo {
                 name: "radiant".to_string(),
-                members: vec!["sylla-fan".to_string()],
+                members: vec![MemberInfo {
+                    login: "sylla-fan".to_string(),
+                    seats: 1,
+                }],
             },
             TeamInfo {
                 name: "dire".to_string(),
-                members: vec!["pudge-fan".to_string()],
+                members: vec![MemberInfo {
+                    login: "pudge-fan".to_string(),
+                    seats: 1,
+                }],
             },
         ],
         rounds: vec![RoundInfo {
@@ -457,18 +502,6 @@ pub fn all_orders() -> Vec<Order> {
         Order::Take {
             target: Target::Unit(entity(21)),
         },
-        Order::Cheat {
-            cheat: Cheat::Gold { amount: 500 },
-        },
-        Order::Cheat {
-            cheat: Cheat::Levels { count: 3 },
-        },
-        Order::Cheat {
-            cheat: Cheat::Refresh,
-        },
-        Order::Cheat {
-            cheat: Cheat::Item { item: ItemId(46) },
-        },
     ]
 }
 
@@ -524,50 +557,42 @@ pub fn all_events() -> Vec<EventKind> {
     ]
 }
 
-/// Every [`ClientMsg`] variant.
-pub fn all_client_msgs() -> Vec<ClientMsg> {
+/// A token, a ticket, a nonce or a proof: thirty-two bytes of one value.
+pub fn secret(byte: u8) -> [u8; 32] {
+    [byte; 32]
+}
+
+/// Every [`ToHub`] variant.
+pub fn all_to_hub() -> Vec<ToHub> {
     vec![
-        ClientMsg::Hello {
+        ToHub::Hello {
             auth: Auth::Register {
                 login: "player-one".to_string(),
                 password: "hunter2".to_string(),
             },
         },
-        ClientMsg::Hello {
+        ToHub::Hello {
             auth: Auth::Login {
                 login: "player-one".to_string(),
                 password: "hunter2".to_string(),
             },
         },
-        ClientMsg::Hello {
+        ToHub::Hello {
             auth: Auth::Resume {
-                token: Token(0x0123_4567_89ab_cdef_0123_4567_89ab_cdef),
+                token: Token(secret(0xa5)),
             },
         },
-        ClientMsg::Hello {
+        ToHub::Hello {
             auth: Auth::Guest {
                 name: "eye".to_string(),
             },
         },
-        ClientMsg::PickHero { hero: HeroId(0) },
-        ClientMsg::SetReady(true),
-        ClientMsg::Order {
-            unit: None,
-            seq: 12345,
-            order: Order::Attack {
-                target: Target::Unit(entity(7)),
-            },
-        },
-        ClientMsg::Ack { tick: 5400 },
-        ClientMsg::ViewAs {
-            seat: Some(SlotId(1)),
-        },
-        ClientMsg::ChangePassword {
+        ToHub::ChangePassword {
             old: "hunter2".to_string(),
             new: "hunter3".to_string(),
         },
-        ClientMsg::Logout,
-        ClientMsg::ListMatches {
+        ToHub::Logout,
+        ToHub::ListMatches {
             filter: MatchFilter {
                 stage: Some(Stage::Over),
                 tournament: Some(TournamentId(3)),
@@ -576,121 +601,339 @@ pub fn all_client_msgs() -> Vec<ClientMsg> {
             before: Some(MatchId(42)),
             limit: 20,
         },
-        ClientMsg::CreateMatch {
+        ToHub::CreateMatch {
             mode: ModeId(2),
             name: "mid or feed".to_string(),
             seed: Some(7),
+            seats: 2,
         },
-        ClientMsg::QuickPlay { mode: ModeId(2) },
-        ClientMsg::JoinMatch {
+        ToHub::FindMatch {
+            mode: ModeId(2),
+            seats: 5,
+        },
+        ToHub::CancelSearch,
+        ToHub::Accept { id: MatchId(43) },
+        ToHub::Decline { id: MatchId(43) },
+        ToHub::JoinMatch {
             id: MatchId(42),
             role: Role::Spectator,
         },
-        ClientMsg::LeaveMatch,
-        ClientMsg::TakeSeat {
-            slot: Some(SlotId(1)),
+        ToHub::JoinMatch {
+            id: MatchId(42),
+            role: Role::Player { seats: 3 },
         },
-        ClientMsg::Kick {
+        ToHub::LeaveMatch,
+        ToHub::StartMatch,
+        ToHub::Abandon { id: MatchId(42) },
+        ToHub::TakeSeat { slot: SlotId(1) },
+        ToHub::DropSeat { slot: None },
+        ToHub::Kick {
             account: AccountId(8),
         },
-        ClientMsg::CreateTournament {
+        ToHub::CreateTournament {
             name: "the cup".to_string(),
             mode: ModeId(2),
             format: TournamentFormat::SingleElimination,
             best_of: 3,
         },
-        ClientMsg::JoinTournament {
+        ToHub::JoinTournament {
             id: TournamentId(3),
             team: "radiant".to_string(),
+            seats: 2,
         },
-        ClientMsg::LeaveTournament,
-        ClientMsg::StartTournament {
+        ToHub::LeaveTournament,
+        ToHub::StartTournament {
             id: TournamentId(3),
         },
-        ClientMsg::CancelTournament {
+        ToHub::CancelTournament {
             id: TournamentId(3),
         },
-        ClientMsg::ViewTournament {
+        ToHub::ViewTournament {
             id: Some(TournamentId(3)),
         },
-        ClientMsg::FetchReplay {
+        ToHub::FetchReplay {
             match_id: MatchId(42),
+        },
+        ToHub::Chat {
+            text: "мид не идите".to_string(),
+            team: true,
+        },
+        ToHub::Chat {
+            text: "/roll 6".to_string(),
+            team: false,
         },
     ]
 }
 
-/// One accepted order as the wire carries it.
-pub fn slot_order(slot: u8) -> SlotOrder {
-    SlotOrder {
-        slot: SlotId(slot),
-        unit: Some(entity(30 + u32::from(slot))),
+/// Every [`ToGame`] variant.
+pub fn all_to_game() -> Vec<ToGame> {
+    vec![
+        ToGame::Join {
+            ticket: Ticket(secret(0x3c)),
+        },
+        ToGame::Select {
+            seat: SlotId(2),
+            hero: HeroId(0),
+        },
+        ToGame::Pick {
+            seat: SlotId(2),
+            hero: HeroId(1),
+        },
+        ToGame::Orders {
+            orders: vec![unit_order(7), unit_order(30)],
+        },
+        ToGame::Ack { tick: 5400 },
+        ToGame::ViewAs {
+            seat: Some(SlotId(1)),
+        },
+        ToGame::Chat {
+            text: "/item Butterfly @3".to_string(),
+            team: false,
+        },
+    ]
+}
+
+/// One order for the unit at `idx`, as it is given and as it is told back.
+pub fn unit_order(idx: u32) -> UnitOrder {
+    UnitOrder {
+        unit: entity(idx),
         order: Order::Attack {
             target: Target::Unit(entity(7)),
         },
     }
 }
 
-/// Every [`ServerMsg`] variant.
-pub fn all_server_msgs() -> Vec<ServerMsg> {
+/// Every [`FromHub`] variant.
+pub fn all_from_hub() -> Vec<FromHub> {
     vec![
-        ServerMsg::Welcome {
+        FromHub::Welcome {
             player_id: PlayerId(3),
             account: Some(AccountInfo {
                 id: AccountId(7),
                 login: "sylla-fan".to_string(),
             }),
-            token: Some(Token(0x0123_4567_89ab_cdef_0123_4567_89ab_cdef)),
+            token: Some(Token(secret(0xa5))),
             modes: vec![mode_info()],
         },
-        ServerMsg::MatchState {
+        FromHub::MatchState {
             state: match_state(),
         },
-        ServerMsg::MatchStart { info: match_info() },
-        ServerMsg::Snapshot {
-            view: world_view(4),
+        FromHub::Play {
+            match_id: MatchId(42),
+            addr: "127.0.0.1:4456".to_string(),
+            ticket: Ticket(secret(0x3c)),
         },
-        ServerMsg::Events {
-            tick: 5400,
-            events: all_events(),
-        },
-        ServerMsg::OrderRejected {
-            seq: 12345,
-            reason: RejectReason::UnknownTarget,
-        },
-        ServerMsg::MatchOver {
-            winner: Team::Radiant,
-            stats: match_stats(),
-        },
-        ServerMsg::ParticipantLeft {
-            player_id: PlayerId(3),
-            slot: Some(SlotId(0)),
-        },
-        ServerMsg::Orders {
-            tick: 5400,
-            orders: vec![slot_order(0), slot_order(1)],
-        },
-        ServerMsg::Refused {
+        FromHub::Refused {
             reason: HallReason::SeatTaken,
         },
-        ServerMsg::Hall {
+        FromHub::Hall {
             matches: vec![match_summary()],
             tournaments: vec![tournament_summary()],
         },
-        ServerMsg::Matches {
+        FromHub::Matches {
             page: vec![match_summary()],
             before: Some(MatchId(41)),
         },
-        ServerMsg::TournamentState {
+        FromHub::TournamentState {
             state: tournament_info(),
         },
-        ServerMsg::ReplayChunk {
+        FromHub::ReplayChunk {
             match_id: MatchId(42),
             offset: 65_536,
             bytes: vec![1, 2, 3],
         },
-        ServerMsg::ReplayEnd {
+        FromHub::ReplayEnd {
             match_id: MatchId(42),
             total: 65_539,
+        },
+        FromHub::Chat {
+            from: "sylla-fan".to_string(),
+            side: None,
+            team: false,
+            text: "gg".to_string(),
+        },
+        FromHub::Notice {
+            text: "sylla-fan rolls 42 (1-100)".to_string(),
+        },
+        FromHub::Search {
+            search: Search::Idle,
+        },
+        FromHub::Search {
+            search: Search::Queued {
+                mode: ModeId(2),
+                waiting: 3,
+            },
+        },
+        FromHub::Search {
+            search: Search::Found {
+                id: MatchId(43),
+                mode: ModeId(2),
+                accepted: 1,
+                players: 4,
+                yours: true,
+                ms_left: 12_250,
+            },
+        },
+    ]
+}
+
+/// Every [`FromGame`] variant.
+pub fn all_from_game() -> Vec<FromGame> {
+    vec![
+        FromGame::Picking {
+            state: pick_state(),
+        },
+        FromGame::PickRefused {
+            seat: SlotId(0),
+            hero: HeroId(1),
+            reason: PickReason::AlreadyPicked,
+        },
+        FromGame::PickRefused {
+            seat: SlotId(3),
+            hero: HeroId(9),
+            reason: PickReason::NoSuchHero,
+        },
+        FromGame::MatchStart { info: match_info() },
+        FromGame::Snapshot {
+            view: world_view(4),
+        },
+        FromGame::Events {
+            tick: 5400,
+            events: all_events(),
+        },
+        FromGame::OrderRejected {
+            order: unit_order(7),
+            reason: RejectReason::UnknownTarget,
+        },
+        FromGame::Orders {
+            tick: 5400,
+            orders: vec![unit_order(30), unit_order(31)],
+        },
+        FromGame::MatchOver {
+            winner: Team::Radiant,
+            stats: match_stats(),
+        },
+        FromGame::ParticipantLeft {
+            slots: vec![SlotId(0), SlotId(2)],
+        },
+        FromGame::Chat {
+            from: "sylla-fan".to_string(),
+            side: Some(Team::Dire),
+            team: true,
+            text: "мид не идите".to_string(),
+        },
+        FromGame::Notice {
+            text: "sylla-fan: /gold 500".to_string(),
+        },
+        FromGame::Refused {
+            reason: GameReason::UnknownTicket,
+        },
+        FromGame::Refused {
+            reason: GameReason::NotJoined,
+        },
+    ]
+}
+
+/// Who may enter a match: a seat holder.
+pub fn pass() -> Pass {
+    Pass {
+        ticket: Ticket(secret(0x3c)),
+        login: "sylla-fan".to_string(),
+        seats: vec![SlotId(0), SlotId(2)],
+    }
+}
+
+/// Everything a game server is given to run a match.
+pub fn match_setup() -> MatchSetup {
+    MatchSetup {
+        match_id: MatchId(42),
+        seed: 7,
+        map: MapId(0),
+        seats: vec![
+            SeatSetup {
+                slot: SlotId(0),
+                team: Team::Radiant,
+                login: "sylla-fan".to_string(),
+            },
+            SeatSetup {
+                slot: SlotId(1),
+                team: Team::Dire,
+                login: "pudge-fan".to_string(),
+            },
+        ],
+        pick_ms: 60_000,
+        rules: mid_rules(),
+        tick: TickMode::Lockstep,
+        tick_rate: 30,
+        ack_timeout_ticks: 150,
+        abandon_after_ms: 120_000,
+        spectator_chat: false,
+        passes: vec![
+            pass(),
+            Pass {
+                ticket: Ticket(secret(0x5a)),
+                login: "eye".to_string(),
+                seats: Vec::new(),
+            },
+        ],
+    }
+}
+
+/// Every [`Assign`] variant.
+pub fn all_assign() -> Vec<Assign> {
+    vec![
+        Assign::Challenge {
+            nonce: Nonce(secret(1)),
+        },
+        Assign::Accepted {
+            proof: Proof(secret(2)),
+        },
+        Assign::Start {
+            setup: match_setup(),
+        },
+        Assign::Admit {
+            match_id: MatchId(42),
+            pass: pass(),
+        },
+        Assign::Abandon {
+            match_id: MatchId(42),
+            seats: vec![SlotId(0), SlotId(2)],
+            login: "sylla-fan".to_string(),
+        },
+        Assign::Stop {
+            match_id: MatchId(42),
+        },
+    ]
+}
+
+/// Every [`Report`] variant.
+pub fn all_report() -> Vec<Report> {
+    vec![
+        Report::Register {
+            proof: Proof(secret(3)),
+            nonce: Nonce(secret(4)),
+            addr: "127.0.0.1:4456".to_string(),
+            capacity: 8,
+        },
+        Report::Picked {
+            match_id: MatchId(42),
+            picks: match_info().picks,
+        },
+        Report::Replay {
+            match_id: MatchId(42),
+            bytes: vec![4, 0, 0, 0, 1, 2, 3, 4],
+        },
+        Report::Ended {
+            match_id: MatchId(42),
+            winner: Some(Team::Neutral),
+            stats: match_stats(),
+            duration: 27_900,
+        },
+        Report::Ended {
+            match_id: MatchId(43),
+            winner: None,
+            stats: match_stats(),
+            duration: 120,
         },
     ]
 }
@@ -698,21 +941,20 @@ pub fn all_server_msgs() -> Vec<ServerMsg> {
 /// Every [`ReplayRecord`] variant.
 pub fn all_replay_records() -> Vec<ReplayRecord> {
     vec![
-        ReplayRecord::Msg(ServerMsg::Events {
+        ReplayRecord::Msg(FromGame::Events {
             tick: 5400,
             events: all_events(),
         }),
         ReplayRecord::Orders {
             tick: 5400,
             orders: vec![
-                SlotOrder {
-                    slot: SlotId(0),
-                    unit: None,
+                UnitOrder {
+                    unit: entity(7),
                     order: Order::Move {
                         target: Target::None,
                     },
                 },
-                slot_order(1),
+                unit_order(31),
             ],
         },
     ]
@@ -720,51 +962,107 @@ pub fn all_replay_records() -> Vec<ReplayRecord> {
 
 /// Names a variant, and fails to compile when one is added without being
 /// covered above.
-pub fn client_msg_name(msg: &ClientMsg) -> &'static str {
+pub fn to_hub_name(msg: &ToHub) -> &'static str {
     match msg {
-        ClientMsg::Hello { .. } => "Hello",
-        ClientMsg::PickHero { .. } => "PickHero",
-        ClientMsg::SetReady(_) => "SetReady",
-        ClientMsg::Order { .. } => "Order",
-        ClientMsg::Ack { .. } => "Ack",
-        ClientMsg::ViewAs { .. } => "ViewAs",
-        ClientMsg::ChangePassword { .. } => "ChangePassword",
-        ClientMsg::Logout => "Logout",
-        ClientMsg::ListMatches { .. } => "ListMatches",
-        ClientMsg::CreateMatch { .. } => "CreateMatch",
-        ClientMsg::QuickPlay { .. } => "QuickPlay",
-        ClientMsg::JoinMatch { .. } => "JoinMatch",
-        ClientMsg::LeaveMatch => "LeaveMatch",
-        ClientMsg::TakeSeat { .. } => "TakeSeat",
-        ClientMsg::Kick { .. } => "Kick",
-        ClientMsg::CreateTournament { .. } => "CreateTournament",
-        ClientMsg::JoinTournament { .. } => "JoinTournament",
-        ClientMsg::LeaveTournament => "LeaveTournament",
-        ClientMsg::StartTournament { .. } => "StartTournament",
-        ClientMsg::CancelTournament { .. } => "CancelTournament",
-        ClientMsg::ViewTournament { .. } => "ViewTournament",
-        ClientMsg::FetchReplay { .. } => "FetchReplay",
+        ToHub::Hello { .. } => "Hello",
+        ToHub::ChangePassword { .. } => "ChangePassword",
+        ToHub::Logout => "Logout",
+        ToHub::ListMatches { .. } => "ListMatches",
+        ToHub::CreateMatch { .. } => "CreateMatch",
+        ToHub::FindMatch { .. } => "FindMatch",
+        ToHub::CancelSearch => "CancelSearch",
+        ToHub::Accept { .. } => "Accept",
+        ToHub::Decline { .. } => "Decline",
+        ToHub::JoinMatch { .. } => "JoinMatch",
+        ToHub::LeaveMatch => "LeaveMatch",
+        ToHub::StartMatch => "StartMatch",
+        ToHub::Abandon { .. } => "Abandon",
+        ToHub::TakeSeat { .. } => "TakeSeat",
+        ToHub::DropSeat { .. } => "DropSeat",
+        ToHub::Kick { .. } => "Kick",
+        ToHub::CreateTournament { .. } => "CreateTournament",
+        ToHub::JoinTournament { .. } => "JoinTournament",
+        ToHub::LeaveTournament => "LeaveTournament",
+        ToHub::StartTournament { .. } => "StartTournament",
+        ToHub::CancelTournament { .. } => "CancelTournament",
+        ToHub::ViewTournament { .. } => "ViewTournament",
+        ToHub::FetchReplay { .. } => "FetchReplay",
+        ToHub::Chat { .. } => "Chat",
     }
 }
 
 /// Names a variant, and fails to compile when one is added without being
 /// covered above.
-pub fn server_msg_name(msg: &ServerMsg) -> &'static str {
+pub fn from_hub_name(msg: &FromHub) -> &'static str {
     match msg {
-        ServerMsg::Welcome { .. } => "Welcome",
-        ServerMsg::MatchState { .. } => "MatchState",
-        ServerMsg::MatchStart { .. } => "MatchStart",
-        ServerMsg::Snapshot { .. } => "Snapshot",
-        ServerMsg::Events { .. } => "Events",
-        ServerMsg::OrderRejected { .. } => "OrderRejected",
-        ServerMsg::MatchOver { .. } => "MatchOver",
-        ServerMsg::ParticipantLeft { .. } => "ParticipantLeft",
-        ServerMsg::Orders { .. } => "Orders",
-        ServerMsg::Refused { .. } => "Refused",
-        ServerMsg::Hall { .. } => "Hall",
-        ServerMsg::Matches { .. } => "Matches",
-        ServerMsg::TournamentState { .. } => "TournamentState",
-        ServerMsg::ReplayChunk { .. } => "ReplayChunk",
-        ServerMsg::ReplayEnd { .. } => "ReplayEnd",
+        FromHub::Welcome { .. } => "Welcome",
+        FromHub::MatchState { .. } => "MatchState",
+        FromHub::Play { .. } => "Play",
+        FromHub::Refused { .. } => "Refused",
+        FromHub::Hall { .. } => "Hall",
+        FromHub::Matches { .. } => "Matches",
+        FromHub::TournamentState { .. } => "TournamentState",
+        FromHub::ReplayChunk { .. } => "ReplayChunk",
+        FromHub::ReplayEnd { .. } => "ReplayEnd",
+        FromHub::Chat { .. } => "Chat",
+        FromHub::Notice { .. } => "Notice",
+        FromHub::Search { .. } => "Search",
+    }
+}
+
+/// Names a variant, and fails to compile when one is added without being
+/// covered above.
+pub fn to_game_name(msg: &ToGame) -> &'static str {
+    match msg {
+        ToGame::Join { .. } => "Join",
+        ToGame::Select { .. } => "Select",
+        ToGame::Pick { .. } => "Pick",
+        ToGame::Orders { .. } => "Orders",
+        ToGame::Ack { .. } => "Ack",
+        ToGame::ViewAs { .. } => "ViewAs",
+        ToGame::Chat { .. } => "Chat",
+    }
+}
+
+/// Names a variant, and fails to compile when one is added without being
+/// covered above.
+pub fn from_game_name(msg: &FromGame) -> &'static str {
+    match msg {
+        FromGame::Picking { .. } => "Picking",
+        FromGame::PickRefused { .. } => "PickRefused",
+        FromGame::MatchStart { .. } => "MatchStart",
+        FromGame::Snapshot { .. } => "Snapshot",
+        FromGame::Events { .. } => "Events",
+        FromGame::OrderRejected { .. } => "OrderRejected",
+        FromGame::Orders { .. } => "Orders",
+        FromGame::MatchOver { .. } => "MatchOver",
+        FromGame::ParticipantLeft { .. } => "ParticipantLeft",
+        FromGame::Chat { .. } => "Chat",
+        FromGame::Notice { .. } => "Notice",
+        FromGame::Refused { .. } => "Refused",
+    }
+}
+
+/// Names a variant, and fails to compile when one is added without being
+/// covered above.
+pub fn assign_name(msg: &Assign) -> &'static str {
+    match msg {
+        Assign::Challenge { .. } => "Challenge",
+        Assign::Accepted { .. } => "Accepted",
+        Assign::Start { .. } => "Start",
+        Assign::Admit { .. } => "Admit",
+        Assign::Abandon { .. } => "Abandon",
+        Assign::Stop { .. } => "Stop",
+    }
+}
+
+/// Names a variant, and fails to compile when one is added without being
+/// covered above.
+pub fn report_name(msg: &Report) -> &'static str {
+    match msg {
+        Report::Register { .. } => "Register",
+        Report::Picked { .. } => "Picked",
+        Report::Replay { .. } => "Replay",
+        Report::Ended { .. } => "Ended",
     }
 }

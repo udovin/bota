@@ -66,8 +66,8 @@ compilation and demands a conscious decision about what to put in it.
 
 ### Crate boundaries
 
-Four crates: `bota-proto` (shared vocabulary + codec), `bota-server` (simulation +
-networking), `bota-client`, and `bota-bot`. All depend only on `proto`, and in particular
+Four crates: `bota-proto` (shared vocabulary + codec), `bota-server` (the hub, the game
+server and the simulation), `bota-client`, and `bota-bot`. All depend only on `proto`, and in particular
 no bot depends on another: a second bot that leaned on the first would mean every future
 one carrying every past one about with it. The wire and the match loop are short enough
 to be worth writing twice.
@@ -86,6 +86,11 @@ handles, component tables, the fingerprint hasher — and knows nothing of Dota.
 `config/` for everything the game is made of — the map, the terrain, the forest, the
 units, the items, the camps and the balance constants. `game` names what it takes from
 `engine` in one place, `game/mod.rs`.
+
+Around them sit the two servers. `hub/` is accounts, the hall, matches before and after
+they play, tournaments and the archive; it never runs a tick. `host/` is a game server:
+it runs what the hub hands it, each match on its own thread from `run/`, and keeps no
+disk. They share only what both need: `net/`, `commands.rs`, `replay.rs` and `keys.rs`.
 
 ### bota-proto and bota-server
 
@@ -108,6 +113,8 @@ New external dependencies only after discussion. Allowed:
 | `macroquad` | `bota-client` | rendering |
 | `resvg` | `bota-client` | rasterising the item art |
 | `rand_chacha` 0.10 | `bota-server` | PRNG |
+| `rand` 0.10 (`sys_rng` only) | `bota-server` | OS randomness: tokens, tickets, nonces, salts, seeds |
+| `blake3` 1.8 (`pure`) | `bota-server` | keyed hash proving the shared key between hub and game server |
 | `argon2` 0.5 | `bota-server` | password hashing for accounts |
 | `clap` (derive) | every binary | command line arguments |
 

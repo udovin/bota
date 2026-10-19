@@ -3,11 +3,11 @@ use std::io::{self, Cursor, Read};
 use std::rc::Rc;
 
 use bota_proto::{
-    MapId, MatchInfo, ReplayRecord, ServerMsg, TickMode, WorldView, encode_frame_to_vec,
+    FromGame, MapId, MatchInfo, ReplayRecord, TickMode, WorldView, encode_frame_to_vec,
 };
 
 pub fn match_start(tick_rate: u16) -> ReplayRecord {
-    ReplayRecord::Msg(ServerMsg::MatchStart {
+    ReplayRecord::Msg(FromGame::MatchStart {
         info: MatchInfo {
             match_id: bota_proto::MatchId(1),
             map: MapId(0),
@@ -20,12 +20,20 @@ pub fn match_start(tick_rate: u16) -> ReplayRecord {
             mode: TickMode::Lockstep,
             picks: Vec::new(),
             shop: Vec::new(),
+            rules: bota_proto::Rules {
+                waves: bota_proto::Lanes::ALL,
+                invulnerable_towers: bota_proto::Lanes::NONE,
+                death_limit: 0,
+                tower_ends_it: false,
+                time_limit: 0,
+                cheats: false,
+            },
         },
     })
 }
 
 pub fn snapshot(tick: u32) -> ReplayRecord {
-    ReplayRecord::Msg(ServerMsg::Snapshot {
+    ReplayRecord::Msg(FromGame::Snapshot {
         view: WorldView {
             tick,
             viewer: None,
@@ -84,9 +92,9 @@ pub fn counted(
     (reader, bytes, calls)
 }
 
-pub fn message(record: ReplayRecord) -> ServerMsg {
+pub fn message(record: ReplayRecord) -> FromGame {
     match record {
         ReplayRecord::Msg(message) => message,
-        ReplayRecord::Orders { tick, orders } => ServerMsg::Orders { tick, orders },
+        ReplayRecord::Orders { tick, orders } => FromGame::Orders { tick, orders },
     }
 }

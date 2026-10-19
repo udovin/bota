@@ -32,7 +32,7 @@ fn a_creep_stays_under_83_bytes() {
 
 #[test]
 fn a_1v1_snapshot_fits_in_a_tcp_burst() {
-    let msg = ServerMsg::Snapshot {
+    let msg = FromGame::Snapshot {
         view: world_view(UNITS_1V1 - 1),
     };
     let len = encoded_len(&msg);
@@ -49,10 +49,11 @@ fn a_1v1_snapshot_fits_in_a_tcp_burst() {
 #[test]
 fn an_order_stays_small() {
     for order in all_orders() {
-        let msg = ClientMsg::Order {
-            seq: 12345,
-            unit: None,
-            order,
+        let msg = ToGame::Orders {
+            orders: vec![UnitOrder {
+                unit: entity(7),
+                order,
+            }],
         };
         let len = encoded_len(&msg);
         assert!(len <= 32, "order encoded to {len} bytes: {msg:?}");
@@ -60,8 +61,18 @@ fn an_order_stays_small() {
 }
 
 #[test]
+fn a_whole_side_of_orders_fits_one_small_message() {
+    let orders: Vec<UnitOrder> = (0..10).map(|i| unit_order(30 + i)).collect();
+    let len = encoded_len(&ToGame::Orders { orders });
+    assert!(
+        len <= 200,
+        "ten orders, hero and courier for five seats, encoded to {len} bytes"
+    );
+}
+
+#[test]
 fn an_empty_view_costs_almost_nothing() {
-    let msg = ServerMsg::Snapshot {
+    let msg = FromGame::Snapshot {
         view: WorldView {
             tick: 0,
             viewer: None,

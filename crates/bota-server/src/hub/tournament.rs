@@ -1,8 +1,8 @@
 //! A tournament as the hub holds it: its wire state and who is in it.
 
 use bota_proto::{
-    AccountId, HallReason, MatchId, TeamInfo, TournamentFormat, TournamentInfo, TournamentStage,
-    TournamentSummary,
+    AccountId, HallReason, MatchId, MemberInfo, TeamInfo, TournamentFormat, TournamentInfo,
+    TournamentStage, TournamentSummary,
 };
 
 use crate::hub::{Accounts, bracket};
@@ -10,14 +10,25 @@ use crate::hub::{Accounts, bracket};
 /// Most games in a series.
 pub const BEST_OF_MAX: u8 = 7;
 
+/// One account registered in a tournament.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Entrant {
+    /// Its team, by index.
+    pub team: u8,
+    /// Which account.
+    pub account: AccountId,
+    /// How many of the team's seats it holds in every game.
+    pub seats: u8,
+}
+
 /// One tournament.
 pub struct Tourney {
     /// The state as the wire carries it.
     pub info: TournamentInfo,
     /// The account that created it.
     pub organizer: AccountId,
-    /// Every member: which team, by index, and which account.
-    pub members: Vec<(u8, AccountId)>,
+    /// Every member, in the order they joined.
+    pub members: Vec<Entrant>,
 }
 
 impl Tourney {
@@ -43,7 +54,13 @@ impl Tourney {
             .flat_map(|(team, t)| {
                 t.members
                     .iter()
-                    .filter_map(|login| accounts.by_login(login).map(|a| (team as u8, a.id)))
+                    .filter_map(|member| {
+                        accounts.by_login(&member.login).map(|a| Entrant {
+                            team: team as u8,
+                            account: a.id,
+                            seats: member.seats,
+                        })
+                    })
                     .collect::<Vec<_>>()
             })
             .collect();
@@ -72,28 +89,54 @@ impl Tourney {
     pub fn team_of(&self, account: AccountId) -> Option<u8> {
         self.members
             .iter()
-            .find(|(_, a)| *a == account)
-            .map(|(team, _)| *team)
+            .find(|m| m.account == account)
+            .map(|m| m.team)
     }
 
-    /// Accounts of one team, by index.
+    /// Accounts of one team, by index, in the order they joined.
     pub fn accounts_of(&self, team: u8) -> Vec<AccountId> {
-        self.members
-            .iter()
-            .filter(|(t, _)| *t == team)
-            .map(|(_, a)| *a)
+        self.entrants_of(team)
+            .into_iter()
+            .map(|m| m.account)
             .collect()
     }
 
-    /// Registers an account in a team, making the team when the name is
-    /// new.
-    pub fn join(&mut self, account: AccountId, login: &str, team: &str) -> Result<(), HallReason> {
+    /// Members of one team, by index, in the order they joined.
+    pub fn entrants_of(&self, team: u8) -> Vec<Entrant> {
+        self.members
+            .iter()
+            .filter(|m| m.team == team)
+            .copied()
+            .collect()
+    }
+
+    /// Seats a team's members hold between them, by its index on the wire.
+    fn seats_of(&self, team: usize) -> usize {
+        self.info.teams[team]
+            .members
+            .iter()
+            .map(|m| usize::from(m.seats))
+            .sum()
+    }
+
+    /// Registers an account in a team with a number of its seats, making the
+    /// team when the name is new.
+    pub fn join(
+        &mut self,
+        account: AccountId,
+        login: &str,
+        team: &str,
+        seats: u8,
+    ) -> Result<(), HallReason> {
         let team_size = usize::from(self.info.team_size);
         if self.info.stage != TournamentStage::Registration {
             return Err(HallReason::TournamentStarted);
         }
         if self.team_of(account).is_some() {
             return Err(HallReason::InTournament);
+        }
+        if seats == 0 || usize::from(seats) > team_size {
+            return Err(HallReason::TooManySeats);
         }
         let at = match self
             .info
@@ -102,7 +145,7 @@ impl Tourney {
             .position(|t| t.name.eq_ignore_ascii_case(team))
         {
             Some(at) => {
-                if self.info.teams[at].members.len() >= team_size {
+                if self.seats_of(at) + usize::from(seats) > team_size {
                     return Err(HallReason::TeamFull);
                 }
                 at
@@ -118,8 +161,15 @@ impl Tourney {
                 self.info.teams.len() - 1
             }
         };
-        self.info.teams[at].members.push(login.to_string());
-        self.members.push((at as u8, account));
+        self.info.teams[at].members.push(MemberInfo {
+            login: login.to_string(),
+            seats,
+        });
+        self.members.push(Entrant {
+            team: at as u8,
+            account,
+            seats,
+        });
         Ok(())
     }
 
@@ -131,29 +181,31 @@ impl Tourney {
         let Some(team) = self.team_of(account) else {
             return Err(HallReason::NotInTournament);
         };
-        self.members.retain(|(_, a)| *a != account);
+        self.members.retain(|m| m.account != account);
         let entry = &mut self.info.teams[usize::from(team)];
-        entry.members.retain(|m| !m.eq_ignore_ascii_case(login));
+        entry
+            .members
+            .retain(|m| !m.login.eq_ignore_ascii_case(login));
         if entry.members.is_empty() {
             self.info.teams.remove(usize::from(team));
-            for (t, _) in &mut self.members {
-                if *t > team {
-                    *t -= 1;
+            for member in &mut self.members {
+                if member.team > team {
+                    member.team -= 1;
                 }
             }
         }
         Ok(())
     }
 
-    /// Closes registration: teams short of members are dropped, the rest
-    /// paired.
+    /// Closes registration: teams whose members do not fill a side are
+    /// dropped, the rest paired.
     pub fn start(&mut self) -> Result<(), HallReason> {
         let team_size = usize::from(self.info.team_size);
         if self.info.stage != TournamentStage::Registration {
             return Err(HallReason::TournamentStarted);
         }
         let full: Vec<usize> = (0..self.info.teams.len())
-            .filter(|&i| self.info.teams[i].members.len() == team_size)
+            .filter(|&i| self.seats_of(i) == team_size)
             .collect();
         if full.len() < 2 {
             return Err(HallReason::TooFewTeams);
@@ -162,9 +214,12 @@ impl Tourney {
         let mut members = Vec::new();
         for (new_index, &old) in full.iter().enumerate() {
             teams.push(self.info.teams[old].clone());
-            for (t, a) in &self.members {
-                if usize::from(*t) == old {
-                    members.push((new_index as u8, *a));
+            for member in &self.members {
+                if usize::from(member.team) == old {
+                    members.push(Entrant {
+                        team: new_index as u8,
+                        ..*member
+                    });
                 }
             }
         }

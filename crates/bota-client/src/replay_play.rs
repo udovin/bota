@@ -4,7 +4,7 @@ use std::fs::File;
 use std::io::{self, BufReader, Read};
 use std::path::Path;
 
-use bota_proto::{LEN_PREFIX, MAX_PAYLOAD_LEN, ReplayRecord, ServerMsg, decode_payload};
+use bota_proto::{FromGame, LEN_PREFIX, MAX_PAYLOAD_LEN, ReplayRecord, decode_payload};
 
 /// Maximum decoded records released or inspected in one poll.
 pub const MAX_RECORDS_PER_POLL: usize = 64;
@@ -44,7 +44,7 @@ struct ReplayStream {
 /// Feeds bounded batches of recorded messages out on the recorded clock.
 ///
 /// Snapshots and order records wait for their ticks. Messages between them
-/// retain file order. Order records become [`ServerMsg::Orders`].
+/// retain file order. Order records become [`FromGame::Orders`].
 pub struct ReplayPlayer {
     stream: ReplayStream,
     pending: Option<ReplayRecord>,
@@ -97,7 +97,7 @@ impl ReplayPlayer {
     /// Call once per GUI frame. Loading, the first snapshot's render interval,
     /// and budget-limited catch-up do not add elapsed time to the clock.
     /// Already decoded messages are returned even if a later record fails.
-    pub fn poll(&mut self, dt: f32) -> Vec<ServerMsg> {
+    pub fn poll(&mut self, dt: f32) -> Vec<FromGame> {
         assert!(dt.is_finite());
         assert!(dt >= 0.0);
         assert!(self.speed.is_finite());
@@ -151,7 +151,7 @@ impl ReplayPlayer {
         }
     }
 
-    fn drain_due(&mut self) -> Vec<ServerMsg> {
+    fn drain_due(&mut self) -> Vec<FromGame> {
         let mut due = Vec::new();
         let mut budget = ReadBudget {
             bytes: MAX_BYTES_PER_POLL,
@@ -180,7 +180,7 @@ impl ReplayPlayer {
             let record = self.pending.as_ref().expect("one record was read");
             let tick = match record {
                 ReplayRecord::Orders { tick, .. } => Some(*tick),
-                ReplayRecord::Msg(ServerMsg::Snapshot { view }) => Some(view.tick),
+                ReplayRecord::Msg(FromGame::Snapshot { view }) => Some(view.tick),
                 _ => None,
             };
             if self.started && tick.is_some_and(|tick| f64::from(tick) > self.clock_ticks) {
@@ -191,13 +191,13 @@ impl ReplayPlayer {
                 .take()
                 .expect("the pending record was inspected");
             let message = match record {
-                ReplayRecord::Orders { tick, orders } => ServerMsg::Orders { tick, orders },
+                ReplayRecord::Orders { tick, orders } => FromGame::Orders { tick, orders },
                 ReplayRecord::Msg(message) => message,
             };
-            if let ServerMsg::MatchStart { info } = &message {
+            if let FromGame::MatchStart { info } = &message {
                 self.tick_rate = f64::from(info.tick_rate.max(1));
             }
-            let first_snapshot = !self.started && matches!(message, ServerMsg::Snapshot { .. });
+            let first_snapshot = !self.started && matches!(message, FromGame::Snapshot { .. });
             if first_snapshot {
                 self.started = true;
                 self.discard_dt = true;

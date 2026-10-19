@@ -6,6 +6,16 @@ use crate::game::{BAG_SLOTS, Command, Event, MatchConfig, MatchRng, hero_spawn_p
 use crate::game::{Entity, PendingCast, Seat, UnitOrder, World};
 use crate::game::{in_stash, item_def, map_of, rules};
 
+/// Whether an order is business with the bag and the shop, which a fallen
+/// hero may still be given: buying, selling, which only marks while it lies
+/// fallen, moving items about, and learning.
+pub fn bag_business(order: &Order) -> bool {
+    matches!(
+        order,
+        Order::Buy { .. } | Order::Sell { .. } | Order::Swap { .. } | Order::Learn { .. }
+    )
+}
+
 /// Whether an order aims at the kind of thing something takes.
 pub fn aimed_right(aim: Aim, target: &Target) -> bool {
     match aim {
@@ -26,7 +36,7 @@ impl World {
         let map = map_of(cfg.map);
         let mut world = World::on_map(map);
         world.rng = rng;
-        world.cheats = cfg.cheats;
+        world.rules = cfg.rules;
         for pick in &cfg.picks {
             let at = hero_spawn_pos(map, pick.team);
             let hero = world.spawn_hero(pick.team, at, pick.slot, pick.hero);
@@ -50,9 +60,9 @@ impl World {
     /// One tick of the match.
     ///
     /// Only orders that send a body somewhere are carried over; anything else
-    /// is dropped. A completed Map2 ignores commands and advances no further.
+    /// is dropped. A decided match ignores commands and advances no further.
     pub fn advance(&mut self, cmds: &[Command]) -> Vec<Event> {
-        if self.map2_finished() {
+        if self.decided() {
             return Vec::new();
         }
         let mut events = Vec::new();
@@ -68,6 +78,9 @@ impl World {
         let Some(unit) = self.driven_by(cmd.slot, cmd.unit) else {
             return;
         };
+        if !self.alive(unit) && !bag_business(&cmd.order) {
+            return;
+        }
         // Business with the bag and the shop asks nothing of the body, so it
         // interrupts nothing the body is doing.
         match cmd.order {
@@ -85,10 +98,6 @@ impl World {
             }
             Order::Buy { item } => {
                 self.buy(cmd.slot, item, events);
-                return;
-            }
-            Order::Cheat { cheat } => {
-                self.cheat(cmd.slot, unit, cheat, events);
                 return;
             }
             _ => {}
@@ -175,11 +184,7 @@ impl World {
                 return;
             }
             // Taken before the body was interrupted.
-            Order::Learn { .. }
-            | Order::Swap { .. }
-            | Order::Sell { .. }
-            | Order::Buy { .. }
-            | Order::Cheat { .. } => {
+            Order::Learn { .. } | Order::Swap { .. } | Order::Sell { .. } | Order::Buy { .. } => {
                 return;
             }
             Order::Put { slot, target } => {
@@ -200,13 +205,14 @@ impl World {
     /// The unit an order is for, if the seat drives it.
     ///
     /// Naming nobody means the seat's own hero, which is what most orders
-    /// are for. Naming anything a seat does not drive is nobody at all.
+    /// are for, standing or fallen. Naming anything a seat does not drive is
+    /// nobody at all.
     pub fn driven_by(&self, slot: SlotId, named: Option<bota_proto::EntityId>) -> Option<Entity> {
         let seat = self.seats.iter().find(|seat| seat.slot == slot)?;
         let Some(named) = named else {
-            return seat.unit;
+            return seat.hero_unit();
         };
-        let unit = self.of_wire(named)?;
+        let unit = self.held_of_wire(named)?;
         (self.owner.get(unit) == Some(&slot)).then_some(unit)
     }
 
@@ -232,12 +238,14 @@ impl World {
         // A named unit has to be one this seat drives; naming nobody means
         // its hero, and a seat with no hero standing drives nothing.
         let unit = match named {
-            None => seat.unit.ok_or(RejectReason::HeroDead)?,
+            None => seat.hero_unit().ok_or(RejectReason::HeroDead)?,
             Some(named) => self
                 .driven_by(slot, Some(named))
                 .ok_or(RejectReason::NotYourUnit)?,
         };
-        if !self.alive(unit) {
+        // A fallen hero still sees to its bag and the shop; it does nothing
+        // that needs a body.
+        if !self.alive(unit) && !bag_business(order) {
             return Err(RejectReason::HeroDead);
         }
         match order {
@@ -310,11 +318,16 @@ impl World {
                     }
                     return Ok(());
                 }
-                let in_hand = self.at_shop(unit)
-                    && self
-                        .inventory
-                        .get(unit)
-                        .is_some_and(|bag| bag.slots.iter().any(|slot| slot.is_none()));
+                // A purchase is the seat's: whichever of its units the
+                // order names, the item goes to its hero, so the hero's
+                // place and the hero's bag decide where it fits.
+                let in_hand = seat.unit.is_some_and(|hero| {
+                    self.at_shop(hero)
+                        && self
+                            .inventory
+                            .get(hero)
+                            .is_some_and(|bag| bag.slots.iter().any(|slot| slot.is_none()))
+                });
                 if !in_hand && !seat.stash.slots.iter().any(|slot| slot.is_none()) {
                     return Err(RejectReason::InventoryFull);
                 }
@@ -458,13 +471,6 @@ impl World {
                 }
                 Ok(())
             }
-            Order::Cheat { .. } => {
-                if self.cheats {
-                    Ok(())
-                } else {
-                    Err(RejectReason::NoCheats)
-                }
-            }
             _ => Ok(()),
         }
     }
@@ -484,14 +490,31 @@ impl World {
             .is_some_and(|held| held.is_some())
     }
 
-    /// The entity behind a handle from the wire, while it still stands.
+    /// The entity behind a handle from the wire, while it still stands. A
+    /// seat's fallen hero is nobody here, so nothing takes it for a target.
     pub fn of_wire(&self, id: bota_proto::EntityId) -> Option<Entity> {
+        self.held_of_wire(id)
+            .filter(|entity| !self.lies_fallen(*entity))
+    }
+
+    /// The entity behind a handle from the wire, a seat's fallen hero
+    /// included: it still answers to its handle for the business of its bag
+    /// and the shop.
+    pub fn held_of_wire(&self, id: bota_proto::EntityId) -> Option<Entity> {
         self.entities
             .iter()
             .find(|entity| crate::game::wire_id(*entity) == id)
     }
 
-    /// The match result, when complete. `Team::Neutral` denotes a Map2 draw.
+    /// The seat that drives the unit behind a handle from the wire, its
+    /// fallen hero included. Absent for a unit no seat drives, and for one
+    /// that is gone.
+    pub fn seat_of_wire(&self, id: bota_proto::EntityId) -> Option<SlotId> {
+        let unit = self.held_of_wire(id)?;
+        self.owner.get(unit).copied()
+    }
+
+    /// The match result, when complete. `Team::Neutral` denotes a draw.
     pub fn victor(&self) -> Option<Team> {
         self.winner
     }

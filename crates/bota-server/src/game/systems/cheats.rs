@@ -1,13 +1,38 @@
 //! Shortcuts round the rules, for trying things out in a match that allows
 //! them.
 
-use bota_proto::{Cheat, EventKind, ItemId, SlotId};
+use bota_proto::{EventKind, ItemId, SlotId};
 
-use crate::game::{Entity, Event, EventVisibility, ItemStack, World, rules};
+use crate::game::{Event, EventVisibility, ItemStack, World, rules};
+
+/// A shortcut round the rules, taken for one seat.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Cheat {
+    /// Gold put into the seat's hand. Negative takes gold away, never below
+    /// nothing.
+    Gold {
+        /// How much.
+        amount: i32,
+    },
+    /// Levels the hero goes up at once, to the cap at most.
+    Levels {
+        /// How many.
+        count: u8,
+    },
+    /// Health and mana back to full, every cooldown and wait cleared. A hero
+    /// lying fallen is left as it lies.
+    Refresh,
+    /// An item put into the hero's bag for nothing, or into the stash when
+    /// the bag has no room or the hero lies fallen.
+    Item {
+        /// Which item.
+        item: ItemId,
+    },
+}
 
 impl World {
-    /// Carries out a cheat for a seat and the hero it drives.
-    pub fn cheat(&mut self, slot: SlotId, unit: Entity, cheat: Cheat, events: &mut Vec<Event>) {
+    /// Carries out a cheat for a seat.
+    pub fn cheat(&mut self, slot: SlotId, cheat: Cheat, events: &mut Vec<Event>) {
         let Some(seat) = self.seats.iter().position(|seat| seat.slot == slot) else {
             return;
         };
@@ -17,7 +42,11 @@ impl World {
                 *gold = gold.saturating_add(amount).max(0);
             }
             Cheat::Levels { count } => self.raise_levels(seat, count, events),
-            Cheat::Refresh => self.refresh(seat, unit),
+            Cheat::Refresh => {
+                if let Some(unit) = self.seats[seat].unit {
+                    self.refresh(seat, unit);
+                }
+            }
             Cheat::Item { item } => self.hand_out(seat, item, events),
         }
     }
@@ -37,7 +66,7 @@ impl World {
     /// Fills the hero's pools and clears every wait on it: ability
     /// cooldowns, item cooldowns and mutes, and the waits the seat owes on
     /// kinds of item.
-    fn refresh(&mut self, seat: usize, unit: Entity) {
+    fn refresh(&mut self, seat: usize, unit: crate::game::Entity) {
         self.fill_pools(unit);
         if let Some(book) = self.abilities.get_mut(unit) {
             for slot in book.slots.iter_mut() {

@@ -148,7 +148,7 @@ impl World {
             }
             self.seats[seat].level += 1;
             let level = self.seats[seat].level;
-            if let Some(unit) = self.seats[seat].unit {
+            if let Some(unit) = self.seats[seat].hero_unit() {
                 self.level.insert(unit, Level(level));
                 events.push(Event {
                     kind: EventKind::LevelUp {
@@ -161,8 +161,8 @@ impl World {
         }
     }
 
-    /// Runs down every respawn timer and puts the heroes back at their
-    /// fountains.
+    /// Runs down every respawn timer and stands the fallen heroes up again
+    /// at their fountains. A seat that never had a hero is given one.
     pub fn tick_respawns(&mut self) {
         let map = self.map;
         for index in 0..self.seats.len() {
@@ -180,15 +180,19 @@ impl World {
                 self.seats[index].level,
             );
             let at = hero_spawn_pos(map, team);
-            let unit = self.spawn_hero(team, at, slot, hero);
-            self.level.insert(unit, Level(level));
-            if let Some(kept) = self.seats[index].kept.take() {
-                self.abilities.insert(unit, kept.book);
-                self.inventory.insert(unit, kept.bag);
-                self.stacks.insert(unit, kept.stacks);
-            }
+            let unit = match self.seats[index].fallen.take() {
+                Some(body) => {
+                    self.stand_up_hero(body, team, at, level);
+                    body
+                }
+                None => {
+                    let unit = self.spawn_hero(team, at, slot, hero);
+                    self.level.insert(unit, Level(level));
+                    self.settle();
+                    unit
+                }
+            };
             self.seats[index].unit = Some(unit);
-            self.settle();
         }
     }
 

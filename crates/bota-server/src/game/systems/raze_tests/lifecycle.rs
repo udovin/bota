@@ -32,10 +32,12 @@ fn raze_target_death_and_respawn_do_not_restore_timed_stacks() {
     world.seats[0].respawn_left = 1;
     world.tick_respawns();
     let returned = world.seats[0].unit.unwrap();
-    assert_eq!(target.index(), returned.index());
-    assert_ne!(target.generation(), returned.generation());
+    assert_eq!(target, returned, "the same body stands up");
     prepare(&mut world, returned, TARGET);
-    assert!(effects(&world, returned).is_empty());
+    assert!(
+        effects(&world, returned).is_empty(),
+        "what was on it wore off when it fell"
+    );
     assert_eq!(land(&mut world, caster, returned, 0), 90);
 }
 
@@ -53,7 +55,7 @@ fn raze_reused_caster_index_does_not_inherit_the_previous_generations_bonus() {
 }
 
 #[test]
-fn raze_caster_death_and_respawn_cannot_use_its_old_bodys_stacks() {
+fn raze_caster_death_and_respawn_cannot_use_its_last_lifes_stacks() {
     let (mut world, caster, target) = fixture();
     let mut seat = Seat::new(SlotId(0), Team::Radiant, HeroId(2), 0, rules::STASH_SLOTS);
     seat.unit = Some(caster);
@@ -61,10 +63,19 @@ fn raze_caster_death_and_respawn_cannot_use_its_old_bodys_stacks() {
     land(&mut world, caster, target, 0);
     assert_eq!(effects(&world, target), vec![effect(1, 240)]);
     world.bury(vec![(caster, None)], &mut Vec::new());
+    assert_eq!(
+        effects(&world, target),
+        vec![effect(1, 240)],
+        "the record outlives its source's fall"
+    );
     world.seats[0].respawn_left = 1;
     world.tick_respawns();
     let returned = world.seats[0].unit.unwrap();
-    assert_ne!(caster, returned);
+    assert_eq!(caster, returned, "the same body stands up");
+    assert!(
+        effects(&world, target).is_empty(),
+        "and its last life's record ends as it does"
+    );
     prepare(&mut world, returned, ORIGIN);
     assert_eq!(land(&mut world, returned, target, 0), 90);
 }

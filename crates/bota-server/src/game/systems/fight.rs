@@ -2,7 +2,7 @@
 
 use bota_proto::{EventKind, Fixed, Team, UnitKind};
 
-use crate::game::{Entity, MAP2_ID, MAP2_TICK_CAP, UnitOrder, World, is_structure, wire_id};
+use crate::game::{Entity, UnitOrder, World, is_structure, rules, wire_id};
 use crate::game::{Event, EventVisibility};
 
 impl World {
@@ -77,19 +77,30 @@ impl World {
         }
     }
 
-    /// Clears away what has fallen and tells who may know.
+    /// Clears away what has fallen and tells who may know, then judges
+    /// whether the match is decided.
     pub fn bury(&mut self, fallen: Vec<(Entity, Option<Entity>)>, events: &mut Vec<Event>) {
         let mut structure_fell = false;
-        let mut tower_losses = [false; 2];
+        // Which side lost a tower this tick, and which its Ancient; Radiant
+        // first.
+        let mut lost_tower = [false; 2];
+        let mut lost_ancient = [false; 2];
         for (entity, killer) in fallen {
-            if !self.entities.contains(entity) {
+            // Two blows that both kill bury once: what is gone, or already
+            // lies fallen, is past burying.
+            if !self.entities.contains(entity) || self.lies_fallen(entity) {
                 continue;
             }
             if let Some((kind, side)) = self.bury_entity(entity, killer, events) {
                 structure_fell = true;
-                match (kind, side) {
-                    (UnitKind::Tower, Team::Radiant) => tower_losses[0] = true,
-                    (UnitKind::Tower, Team::Dire) => tower_losses[1] = true,
+                let at = match side {
+                    Team::Radiant => 0,
+                    Team::Dire => 1,
+                    Team::Neutral => continue,
+                };
+                match kind {
+                    UnitKind::Tower => lost_tower[at] = true,
+                    UnitKind::Ancient => lost_ancient[at] = true,
                     _ => {}
                 }
             }
@@ -97,7 +108,7 @@ impl World {
         if structure_fell {
             self.lay_passability();
         }
-        self.finish_map2_tick(tower_losses);
+        self.judge(lost_tower, lost_ancient);
     }
 
     fn bury_entity(
@@ -132,7 +143,7 @@ impl World {
             visible_to: self.who_may_know(at, side.unwrap_or(Team::Neutral)),
         });
         let structure = kind.zip(side).filter(|(kind, _)| is_structure(*kind));
-        if let Some((kind, side)) = structure {
+        if let Some((_, side)) = structure {
             events.push(Event {
                 kind: EventKind::StructureDestroyed {
                     unit: wire_id(entity),
@@ -140,13 +151,6 @@ impl World {
                 },
                 visible_to: EventVisibility::Everyone,
             });
-            if self.map.id != MAP2_ID
-                && self.winner.is_none()
-                && (kind == UnitKind::Ancient
-                    || (self.map.tower_ends_it && kind == UnitKind::Tower))
-            {
-                self.winner = Some(other_side(side));
-            }
         }
         self.bury_seat(entity);
         if let Some(index) = killer.and_then(|k| self.seats.iter().position(|s| s.unit == Some(k)))
@@ -155,66 +159,62 @@ impl World {
         {
             self.seats[index].kills += 1;
         }
-        self.despawn(entity);
-        assert!(!self.entities.contains(entity));
+        // A seat's hero lies where it fell, handle and all, until it stands
+        // again; everything else leaves the world.
+        if !self.lies_fallen(entity) {
+            self.despawn(entity);
+            assert!(!self.entities.contains(entity));
+        }
         structure
     }
 
+    /// Whether an entity is a seat's hero lying fallen.
+    pub fn lies_fallen(&self, entity: Entity) -> bool {
+        self.seats.iter().any(|seat| seat.fallen == Some(entity))
+    }
+
     fn bury_seat(&mut self, entity: Entity) {
-        let mut fallen_hero_team = None;
         for index in 0..self.seats.len() {
             if self.seats[index].unit == Some(entity) {
                 let level = self.seats[index].level;
                 self.let_souls_go(entity);
-                let kept = crate::game::Kept {
-                    book: self.abilities.remove(entity).unwrap_or_default(),
-                    bag: self.inventory.remove(entity).unwrap_or_default(),
-                    stacks: self.stacks.remove(entity).unwrap_or_default(),
-                };
+                self.lay_down_hero(entity);
                 self.seats[index].unit = None;
-                self.seats[index].kept = Some(kept);
+                self.seats[index].fallen = Some(entity);
                 self.seats[index].deaths += 1;
                 self.seats[index].respawn_left = World::respawn_wait(level);
-                fallen_hero_team = Some(self.seats[index].team);
             }
             if self.seats[index].courier == Some(entity) {
                 self.seats[index].courier_kept = self.inventory.remove(entity);
             }
         }
-        if let Some(team) = fallen_hero_team
-            && self.map.id != MAP2_ID
-            && self.map.death_limit > 0
-            && self.winner.is_none()
-        {
-            let deaths = self
-                .seats
-                .iter()
-                .filter(|seat| seat.team == team)
-                .map(|seat| u32::from(seat.deaths))
-                .sum::<u32>();
-            if deaths >= u32::from(self.map.death_limit) {
-                self.winner = Some(other_side(team));
-            }
-        }
     }
 
-    fn finish_map2_tick(&mut self, tower_losses: [bool; 2]) {
-        if self.map.id != MAP2_ID || self.winner.is_some() {
+    /// Decides the match once a side has lost, after everything that fell
+    /// on the tick is buried.
+    ///
+    /// A side loses with its Ancient, with any tower when the rules say so,
+    /// and once its heroes have died as often as the rules allow. Both sides
+    /// losing on one tick is a draw, and so is the end of the time the rules
+    /// give, whatever else that tick held.
+    fn judge(&mut self, lost_tower: [bool; 2], lost_ancient: [bool; 2]) {
+        if self.winner.is_some() {
             return;
         }
+        let ruled = self.rules;
         let deaths = |team| {
             self.seats
                 .iter()
                 .filter(|seat| seat.team == team)
                 .fold(0u16, |total, seat| total.saturating_add(seat.deaths))
         };
-        let lost = [
-            (self.map.tower_ends_it && tower_losses[0])
-                || (self.map.death_limit > 0 && deaths(Team::Radiant) >= self.map.death_limit),
-            (self.map.tower_ends_it && tower_losses[1])
-                || (self.map.death_limit > 0 && deaths(Team::Dire) >= self.map.death_limit),
-        ];
-        self.winner = match (self.tick >= MAP2_TICK_CAP, lost) {
+        let loses = |at: usize, team: Team| {
+            lost_ancient[at]
+                || (ruled.tower_ends_it && lost_tower[at])
+                || (ruled.death_limit > 0 && deaths(team) >= ruled.death_limit)
+        };
+        let lost = [loses(0, Team::Radiant), loses(1, Team::Dire)];
+        self.winner = match (self.out_of_time(), lost) {
             (true, _) | (false, [true, true]) => Some(Team::Neutral),
             (false, [true, false]) => Some(Team::Dire),
             (false, [false, true]) => Some(Team::Radiant),
@@ -222,22 +222,17 @@ impl World {
         };
     }
 
-    pub(crate) fn map2_finished(&mut self) -> bool {
-        if self.map.id != MAP2_ID {
-            return false;
-        }
-        if self.tick >= MAP2_TICK_CAP {
+    /// Whether the time the rules give the match has run out.
+    fn out_of_time(&self) -> bool {
+        self.rules.time_limit > 0 && self.tick >= rules::PREGAME_TICKS + self.rules.time_limit
+    }
+
+    /// Whether the match is decided, sealing the draw first when its time
+    /// ran out.
+    pub(crate) fn decided(&mut self) -> bool {
+        if self.out_of_time() {
             self.winner.get_or_insert(Team::Neutral);
         }
         self.winner.is_some()
-    }
-}
-
-/// The side that is not this one.
-fn other_side(team: Team) -> Team {
-    match team {
-        Team::Radiant => Team::Dire,
-        Team::Dire => Team::Radiant,
-        Team::Neutral => Team::Neutral,
     }
 }

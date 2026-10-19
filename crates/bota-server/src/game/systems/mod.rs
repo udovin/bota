@@ -29,6 +29,7 @@ mod ward;
 mod wave;
 
 pub use aura::*;
+pub use cheats::*;
 pub use gear::*;
 pub use hitting::*;
 pub use missile::*;

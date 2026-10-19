@@ -1,5 +1,5 @@
 use bota_proto::{
-    ClientMsg, GameInfo, HallReason, ModeId, Role, ServerMsg, SlotId, Stage, TournamentFormat,
+    FromHub, GameInfo, HallReason, HeroId, ModeId, Role, SlotId, Stage, ToHub, TournamentFormat,
     TournamentInfo, TournamentStage,
 };
 
@@ -19,7 +19,10 @@ fn info(format: TournamentFormat, teams: u8, best_of: u8) -> TournamentInfo {
         teams: (0..teams)
             .map(|i| bota_proto::TeamInfo {
                 name: format!("t{i}"),
-                members: vec![format!("p{i}")],
+                members: vec![bota_proto::MemberInfo {
+                    login: format!("p{i}"),
+                    seats: 1,
+                }],
             })
             .collect(),
         rounds: pair_up(format, teams),
@@ -138,61 +141,86 @@ fn a_tournament_seats_its_teams_and_a_no_show_forfeits_the_game() {
     let (addr, _dir) = hub("cup");
     let (mut alpha, _, _) = sign_up(addr, "alpha");
     let (mut beta, _, _) = sign_up(addr, "beta");
-    alpha.send(&ClientMsg::CreateTournament {
+    alpha.send(&ToHub::CreateTournament {
         name: "cup".to_string(),
         mode: REALTIME,
         format: TournamentFormat::SingleElimination,
         best_of: 2,
     });
     assert_eq!(alpha.refusal(), HallReason::BadSeries);
-    alpha.send(&ClientMsg::CreateTournament {
+    alpha.send(&ToHub::CreateTournament {
         name: "cup".to_string(),
         mode: REALTIME,
         format: TournamentFormat::SingleElimination,
         best_of: 1,
     });
     let cup = alpha.recv_until(|msg| match msg {
-        ServerMsg::TournamentState { state } => Some(state),
+        FromHub::TournamentState { state } => Some(state),
         _ => None,
     });
     assert_eq!(cup.stage, TournamentStage::Registration);
-    alpha.send(&ClientMsg::StartTournament { id: cup.id });
+    alpha.send(&ToHub::StartTournament { id: cup.id });
     assert_eq!(alpha.refusal(), HallReason::TooFewTeams);
-    alpha.send(&ClientMsg::JoinTournament {
+    alpha.send(&ToHub::JoinTournament {
         id: cup.id,
         team: "reds".to_string(),
+        seats: 1,
     });
-    beta.send(&ClientMsg::JoinTournament {
+    beta.send(&ToHub::JoinTournament {
         id: cup.id,
         team: "blues".to_string(),
+        seats: 1,
     });
     let two = beta.recv_until(|msg| match msg {
-        ServerMsg::TournamentState { state } if state.teams.len() == 2 => Some(state),
+        FromHub::TournamentState { state } if state.teams.len() == 2 => Some(state),
         _ => None,
     });
-    assert_eq!(two.teams[1].members, vec!["beta".to_string()]);
-    beta.send(&ClientMsg::StartTournament { id: cup.id });
+    assert_eq!(
+        two.teams[1].members,
+        vec![bota_proto::MemberInfo {
+            login: "beta".to_string(),
+            seats: 1
+        }]
+    );
+    beta.send(&ToHub::StartTournament { id: cup.id });
     assert_eq!(beta.refusal(), HallReason::NotOrganizer);
-    alpha.send(&ClientMsg::StartTournament { id: cup.id });
+    // Beta watches a match that has started elsewhere, which keeps it there.
+    let (mut gamma, _, _) = sign_up(addr, "gamma");
+    let (mut delta, _, _) = sign_up(addr, "delta");
+    gamma.send(&ToHub::CreateMatch {
+        mode: REALTIME,
+        name: "elsewhere".to_string(),
+        seed: None,
+        seats: 1,
+    });
+    let elsewhere = gamma.match_state().id;
+    delta.send(&ToHub::JoinMatch {
+        id: elsewhere,
+        role: Role::Player { seats: 1 },
+    });
+    delta.match_state();
+    gamma.send(&ToHub::StartMatch);
+    gamma.recv_until(|msg| matches!(msg, FromHub::Play { .. }).then_some(()));
+    beta.send(&ToHub::JoinMatch {
+        id: elsewhere,
+        role: Role::Spectator,
+    });
+    beta.match_state();
+    alpha.send(&ToHub::StartTournament { id: cup.id });
 
-    // Both were in the hall, so both are brought into the pairing's match,
-    // on fixed seats.
+    // Alpha was in the hall, so it is brought into the pairing's match, on
+    // a fixed seat; beta's seat waits for it.
     let a_state = alpha.match_state();
-    let b_state = beta.match_state();
-    assert_eq!(a_state.id, b_state.id);
     assert_eq!(a_state.host, None);
-    assert_eq!(a_state.you, Some(SlotId(0)));
-    assert_eq!(b_state.you, Some(SlotId(1)));
+    assert_eq!(a_state.yours.first().copied(), Some(SlotId(0)));
     assert_eq!(a_state.slots[1].login, "beta");
-    beta.send(&ClientMsg::TakeSeat { slot: None });
-    assert_eq!(beta.refusal(), HallReason::SeatsFixed);
+    assert!(!a_state.slots[1].connected);
+    alpha.send(&ToHub::TakeSeat { slot: SlotId(1) });
+    assert_eq!(alpha.refusal(), HallReason::SeatsFixed);
 
-    // Only alpha readies; the deadline passes and blues forfeit.
-    alpha.pick_and_ready();
-    beta.send(&ClientMsg::LeaveMatch);
-    beta.hall();
+    // The deadline passes and blues, who never came, forfeit.
     let finished = alpha.recv_until(|msg| match msg {
-        ServerMsg::TournamentState { state } if state.stage == TournamentStage::Finished => {
+        FromHub::TournamentState { state } if state.stage == TournamentStage::Finished => {
             Some(state)
         }
         _ => None,
@@ -211,26 +239,27 @@ fn a_cup_pairs_teams_of_the_size_its_mode_asks_for() {
         .into_iter()
         .map(|login| sign_up(addr, login).0)
         .collect();
-    players[0].send(&ClientMsg::CreateTournament {
+    players[0].send(&ToHub::CreateTournament {
         name: "cup".to_string(),
         mode: TWO_A_SIDE,
         format: TournamentFormat::SingleElimination,
         best_of: 1,
     });
     let cup = players[0].recv_until(|msg| match msg {
-        ServerMsg::TournamentState { state } => Some(state),
+        FromHub::TournamentState { state } => Some(state),
         _ => None,
     });
     assert_eq!(cup.team_size, 2, "a four-seat mode wants teams of two");
 
     for (at, team) in [(0, "reds"), (1, "reds"), (2, "blues")] {
-        players[at].send(&ClientMsg::JoinTournament {
+        players[at].send(&ToHub::JoinTournament {
             id: cup.id,
             team: team.to_string(),
+            seats: 1,
         });
     }
     let three = players[0].recv_until(|msg| match msg {
-        ServerMsg::TournamentState { state }
+        FromHub::TournamentState { state }
             if state.teams.len() == 2 && state.teams[0].members.len() == 2 =>
         {
             Some(state)
@@ -238,27 +267,32 @@ fn a_cup_pairs_teams_of_the_size_its_mode_asks_for() {
         _ => None,
     });
     assert_eq!(three.teams[1].members.len(), 1, "blues is a player short");
-    players[0].send(&ClientMsg::StartTournament { id: cup.id });
+    players[0].send(&ToHub::StartTournament { id: cup.id });
     assert_eq!(
         players[0].refusal(),
         HallReason::TooFewTeams,
         "a team short of members is not paired"
     );
 
-    players[3].send(&ClientMsg::JoinTournament {
+    players[3].send(&ToHub::JoinTournament {
         id: cup.id,
         team: "blues".to_string(),
+        seats: 1,
     });
     players[3].recv_until(|msg| match msg {
-        ServerMsg::TournamentState { state } if state.teams[1].members.len() == 2 => Some(()),
+        FromHub::TournamentState { state } if state.teams[1].members.len() == 2 => Some(()),
         _ => None,
     });
-    players[0].send(&ClientMsg::StartTournament { id: cup.id });
+    players[0].send(&ToHub::StartTournament { id: cup.id });
     // Every one of the four is seated, two a side, in the one game.
     let mut seats = Vec::new();
     for player in &mut players {
         let state = player.match_state();
-        seats.push((state.id, state.you.expect("a seat"), state.slots.len()));
+        seats.push((
+            state.id,
+            state.yours.first().copied().expect("a seat"),
+            state.slots.len(),
+        ));
     }
     assert!(
         seats.iter().all(|s| s.0 == seats[0].0),
@@ -271,54 +305,127 @@ fn a_cup_pairs_teams_of_the_size_its_mode_asks_for() {
 }
 
 #[test]
+fn a_member_holds_as_many_of_its_teams_seats_as_its_mode_allows() {
+    let (addr, _dir) = hub("team-seats");
+    let mut players: Vec<TestClient> = ["alpha", "beta", "gamma"]
+        .into_iter()
+        .map(|login| sign_up(addr, login).0)
+        .collect();
+    fn cup_in(organizer: &mut TestClient, mode: bota_proto::ModeId) -> bota_proto::TournamentId {
+        organizer.send(&ToHub::CreateTournament {
+            name: "cup".to_string(),
+            mode,
+            format: TournamentFormat::SingleElimination,
+            best_of: 1,
+        });
+        organizer.recv_until(|msg| match msg {
+            FromHub::TournamentState { state } if state.mode == mode => Some(state.id),
+            _ => None,
+        })
+    }
+    // A cup of one seat to an account seats nobody on two.
+    let solo = cup_in(&mut players[0], TWO_A_SIDE);
+    players[0].send(&ToHub::JoinTournament {
+        id: solo,
+        team: "reds".to_string(),
+        seats: 2,
+    });
+    assert_eq!(players[0].refusal(), HallReason::TooManySeats);
+    players[0].send(&ToHub::CancelTournament { id: solo });
+
+    // In an arena alpha is a whole team on its own.
+    let id = cup_in(&mut players[0], CREW_LOCKSTEP);
+    players[0].send(&ToHub::JoinTournament {
+        id,
+        team: "reds".to_string(),
+        seats: 2,
+    });
+    players[1].send(&ToHub::JoinTournament {
+        id,
+        team: "reds".to_string(),
+        seats: 1,
+    });
+    assert_eq!(players[1].refusal(), HallReason::TeamFull, "reds is full");
+    for at in [1, 2] {
+        players[at].send(&ToHub::JoinTournament {
+            id,
+            team: "blues".to_string(),
+            seats: 1,
+        });
+    }
+    players[2].recv_until(|msg| match msg {
+        FromHub::TournamentState { state }
+            if state.teams.len() == 2 && state.teams[1].members.len() == 2 =>
+        {
+            Some(())
+        }
+        _ => None,
+    });
+    players[0].send(&ToHub::StartTournament { id });
+    assert_eq!(
+        players[0].match_state().yours.len(),
+        2,
+        "alpha drives both of its team's seats"
+    );
+    assert_eq!(players[1].match_state().yours.len(), 1);
+    assert_eq!(players[2].match_state().yours.len(), 1);
+}
+
+#[test]
 fn a_cup_game_fetches_its_players_out_of_whatever_lobby_they_were_waiting_in() {
     let (addr, _dir) = hub("fetch-players");
     let (mut alpha, _, _) = sign_up(addr, "alpha");
     let (mut beta, _, _) = sign_up(addr, "beta");
-    alpha.send(&ClientMsg::CreateTournament {
+    alpha.send(&ToHub::CreateTournament {
         name: "cup".to_string(),
         mode: REALTIME,
         format: TournamentFormat::SingleElimination,
         best_of: 1,
     });
     let cup = alpha.recv_until(|msg| match msg {
-        ServerMsg::TournamentState { state } => Some(state),
+        FromHub::TournamentState { state } => Some(state),
         _ => None,
     });
     for (client, team) in [(&mut alpha, "reds"), (&mut beta, "blues")] {
-        client.send(&ClientMsg::JoinTournament {
+        client.send(&ToHub::JoinTournament {
             id: cup.id,
             team: team.to_string(),
+            seats: 1,
         });
     }
     beta.recv_until(|msg| match msg {
-        ServerMsg::TournamentState { state } if state.teams.len() == 2 => Some(()),
+        FromHub::TournamentState { state } if state.teams.len() == 2 => Some(()),
         _ => None,
     });
     // Beta goes off to wait in a lobby of its own while the cup starts.
-    beta.send(&ClientMsg::CreateMatch {
+    beta.send(&ToHub::CreateMatch {
         mode: REALTIME,
         name: "somewhere else".to_string(),
         seed: None,
+        seats: 1,
     });
     let elsewhere = beta.match_state();
-    alpha.send(&ClientMsg::StartTournament { id: cup.id });
+    alpha.send(&ToHub::StartTournament { id: cup.id });
 
     let seated = beta.recv_until(|msg| match msg {
-        ServerMsg::MatchState { state } if state.id != elsewhere.id => Some(state),
+        FromHub::MatchState { state } if state.id != elsewhere.id => Some(state),
         _ => None,
     });
-    assert_eq!(seated.you, Some(SlotId(1)), "beta is brought to its game");
+    assert_eq!(
+        seated.yours.first().copied(),
+        Some(SlotId(1)),
+        "beta is brought to its game"
+    );
     assert_eq!(seated.host, None, "and it is the cup's game");
     // Each arrival pushes a state, so the one that matters is the state
     // where both are in.
     let with_alpha = alpha.recv_until(|msg| match msg {
-        ServerMsg::MatchState { state } if state.slots[1].connected => Some(state),
+        FromHub::MatchState { state } if state.slots[1].connected => Some(state),
         _ => None,
     });
     assert_eq!(with_alpha.id, seated.id, "both in the one game");
     assert_eq!(with_alpha.slots[1].login, "beta");
-    assert_eq!(with_alpha.you, Some(SlotId(0)));
+    assert_eq!(with_alpha.yours.first().copied(), Some(SlotId(0)));
 }
 
 #[test]
@@ -326,30 +433,31 @@ fn a_cup_is_taken_down_by_its_organiser_and_by_nobody_else() {
     let (addr, _dir) = hub("cancel");
     let (mut alpha, _, _) = sign_up(addr, "alpha");
     let (mut beta, _, _) = sign_up(addr, "beta");
-    alpha.send(&ClientMsg::CreateTournament {
+    alpha.send(&ToHub::CreateTournament {
         name: "cup".to_string(),
         mode: REALTIME,
         format: TournamentFormat::RoundRobin,
         best_of: 3,
     });
     let cup = alpha.recv_until(|msg| match msg {
-        ServerMsg::TournamentState { state } => Some(state),
+        FromHub::TournamentState { state } => Some(state),
         _ => None,
     });
     assert_eq!(cup.best_of, 3, "the series length is the one asked for");
     assert_eq!(cup.format, TournamentFormat::RoundRobin);
-    beta.send(&ClientMsg::JoinTournament {
+    beta.send(&ToHub::JoinTournament {
         id: cup.id,
         team: "blues".to_string(),
+        seats: 1,
     });
     beta.recv_until(|msg| match msg {
-        ServerMsg::TournamentState { .. } => Some(()),
+        FromHub::TournamentState { .. } => Some(()),
         _ => None,
     });
-    beta.send(&ClientMsg::CancelTournament { id: cup.id });
+    beta.send(&ToHub::CancelTournament { id: cup.id });
     assert_eq!(beta.refusal(), HallReason::NotOrganizer);
 
-    alpha.send(&ClientMsg::CancelTournament { id: cup.id });
+    alpha.send(&ToHub::CancelTournament { id: cup.id });
     assert_eq!(
         beta.refusal(),
         HallReason::NoSuchTournament,
@@ -357,12 +465,10 @@ fn a_cup_is_taken_down_by_its_organiser_and_by_nobody_else() {
     );
     // Hall pushes queue up, so the one that matters is the first without it.
     alpha.recv_until(|msg| match msg {
-        ServerMsg::Hall { tournaments, .. } if tournaments.iter().all(|t| t.id != cup.id) => {
-            Some(())
-        }
+        FromHub::Hall { tournaments, .. } if tournaments.iter().all(|t| t.id != cup.id) => Some(()),
         _ => None,
     });
-    alpha.send(&ClientMsg::StartTournament { id: cup.id });
+    alpha.send(&ToHub::StartTournament { id: cup.id });
     assert_eq!(alpha.refusal(), HallReason::NoSuchTournament);
 }
 
@@ -371,49 +477,55 @@ fn an_abandoned_tournament_game_is_played_again() {
     let (addr, _dir) = hub("replayed");
     let (mut alpha, _, _) = sign_up(addr, "alpha");
     let (mut beta, _, _) = sign_up(addr, "beta");
-    alpha.send(&ClientMsg::CreateTournament {
+    alpha.send(&ToHub::CreateTournament {
         name: "cup".to_string(),
         mode: REALTIME,
         format: TournamentFormat::RoundRobin,
         best_of: 1,
     });
     let cup = alpha.recv_until(|msg| match msg {
-        ServerMsg::TournamentState { state } => Some(state),
+        FromHub::TournamentState { state } => Some(state),
         _ => None,
     });
-    alpha.send(&ClientMsg::JoinTournament {
+    alpha.send(&ToHub::JoinTournament {
         id: cup.id,
         team: "reds".to_string(),
+        seats: 1,
     });
-    beta.send(&ClientMsg::JoinTournament {
+    beta.send(&ToHub::JoinTournament {
         id: cup.id,
         team: "blues".to_string(),
+        seats: 1,
     });
     beta.recv_until(|msg| match msg {
-        ServerMsg::TournamentState { state } if state.teams.len() == 2 => Some(()),
+        FromHub::TournamentState { state } if state.teams.len() == 2 => Some(()),
         _ => None,
     });
-    alpha.send(&ClientMsg::StartTournament { id: cup.id });
+    alpha.send(&ToHub::StartTournament { id: cup.id });
+    // Both are in, so the game starts at once.
     let first = alpha.match_state();
     beta.match_state();
-    alpha.pick_and_ready();
-    beta.pick_and_ready();
+    alpha.pick(HeroId(0));
+    beta.pick(HeroId(0));
     alpha.match_start();
     beta.match_start();
     alpha.snapshot();
-    // Both walk out; the game is abandoned, voided, and set up again.
-    alpha.send(&ClientMsg::LeaveMatch);
-    beta.send(&ClientMsg::LeaveMatch);
+    // Both walk out of the game and back to the hall; the game is abandoned,
+    // voided, and set up again.
+    alpha.leave_game();
+    beta.leave_game();
+    alpha.send(&ToHub::LeaveMatch);
+    beta.send(&ToHub::LeaveMatch);
     alpha.hall();
     beta.hall();
     let again = alpha.recv_until(|msg| match msg {
-        ServerMsg::MatchState { state } if state.id != first.id => Some(state),
+        FromHub::MatchState { state } if state.id != first.id => Some(state),
         _ => None,
     });
     assert_eq!(again.stage, Stage::Gathering);
-    assert_eq!(again.you, Some(SlotId(0)));
+    assert_eq!(again.yours.first().copied(), Some(SlotId(0)));
     let running = beta.recv_until(|msg| match msg {
-        ServerMsg::TournamentState { state }
+        FromHub::TournamentState { state }
             if state.rounds[0].pairs[0].games.len() == 1
                 && state.rounds[0].pairs[0].games[0].match_id == Some(again.id) =>
         {
@@ -424,9 +536,9 @@ fn an_abandoned_tournament_game_is_played_again() {
     assert_eq!(running.stage, TournamentStage::Running);
     // A spectator may still watch the new game.
     let mut eye = sign_up(addr, "eye").0;
-    eye.send(&ClientMsg::JoinMatch {
+    eye.send(&ToHub::JoinMatch {
         id: again.id,
         role: Role::Spectator,
     });
-    assert_eq!(eye.match_state().you, None);
+    assert_eq!(eye.match_state().yours.first().copied(), None);
 }

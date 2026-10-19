@@ -3,7 +3,7 @@
 use bota_proto::{Team, UnitKind};
 
 use crate::engine::Entity;
-use crate::game::{StructureId, Until, World, is_structure};
+use crate::game::{StructureId, Until, World, is_structure, rules};
 
 impl World {
     /// Whether an entity is one a structure id names.
@@ -43,12 +43,27 @@ impl World {
 
     /// Whether a structure may be struck yet.
     ///
-    /// Every rule naming it must be satisfied; one no rule names is open
-    /// from the first tick.
+    /// A tower on a lane the match's rules keep invulnerable never may.
+    /// Otherwise every protection naming it must be satisfied; one no
+    /// protection names is open from the first tick.
     pub fn structure_open(&self, entity: Entity) -> bool {
         let Some(side) = self.team.get(entity).copied() else {
             return true;
         };
+        if self.kind.get(entity) == Some(&UnitKind::Tower)
+            && let Some(lane) = self.lane.get(entity).map(|lane| lane.0)
+        {
+            let kept = self.rules.invulnerable_towers;
+            let invulnerable = match lane {
+                rules::LANE_MID => kept.mid,
+                rules::LANE_TOP => kept.top,
+                rules::LANE_BOT => kept.bot,
+                _ => false,
+            };
+            if invulnerable {
+                return false;
+            }
+        }
         self.map
             .protection
             .iter()

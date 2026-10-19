@@ -1,7 +1,7 @@
 //! The hall: accounts, matches before and after they run, and tournaments.
 
 use crate::{
-    AccountId, HeroId, MapId, MatchId, ModeId, SlotId, Team, TickMode, Token, TournamentId,
+    AccountId, HeroId, MapId, MatchId, ModeId, Rules, SlotId, Team, TickMode, Token, TournamentId,
 };
 use serde::{Deserialize, Serialize};
 
@@ -23,9 +23,9 @@ pub enum Auth {
         /// Its password.
         password: String,
     },
-    /// Signs in again with a token from an earlier [`ServerMsg::Welcome`].
+    /// Signs in again with a token from an earlier [`FromHub::Welcome`].
     ///
-    /// [`ServerMsg::Welcome`]: crate::ServerMsg::Welcome
+    /// [`FromHub::Welcome`]: crate::FromHub::Welcome
     Resume {
         /// The token.
         token: Token,
@@ -41,8 +41,13 @@ pub enum Auth {
 /// What a participant joins a match as.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Role {
-    /// Takes a seat, or comes back to the one this account already holds.
-    Player,
+    /// Takes seats, all on one side, or comes back to the ones this account
+    /// already holds.
+    Player {
+        /// How many seats to take, one or more, up to the mode's
+        /// [`ModeInfo::seats_per_player`]. Not read when coming back.
+        seats: u8,
+    },
     /// Watches without a seat.
     Spectator,
 }
@@ -50,8 +55,10 @@ pub enum Role {
 /// Where a match is in its life.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Stage {
-    /// Seats are being taken, heroes picked and readiness declared.
+    /// Seats are being taken, on the hub.
     Gathering,
+    /// Heroes are being picked, on its game server.
+    Picking,
     /// The simulation runs.
     Playing,
     /// It ended with a winner.
@@ -80,12 +87,16 @@ pub struct ModeInfo {
     pub map: MapId,
     /// Seats in a match, half per side.
     pub seats: u8,
+    /// Most seats one account may hold in a match of it, all on one side.
+    pub seats_per_player: u8,
     /// How the server advances ticks.
     pub tick: TickMode,
     /// Simulation ticks per second.
     pub tick_rate: u16,
-    /// Whether cheat orders are honoured.
-    pub cheats: bool,
+    /// What its matches are played to and what runs in them.
+    pub rules: Rules,
+    /// Whether spectators may write in the chat of a match.
+    pub spectator_chat: bool,
 }
 
 /// One seat of a match, as the hall shows it.
@@ -97,10 +108,6 @@ pub struct LobbySlot {
     pub team: Team,
     /// The account holding it. Empty while the seat is open.
     pub login: String,
-    /// Which hero has been picked. Absent until one is.
-    pub hero: Option<HeroId>,
-    /// Whether the holder has declared itself ready.
-    pub ready: bool,
     /// Whether the holder is connected right now.
     pub connected: bool,
 }
@@ -115,7 +122,8 @@ pub struct MatchState {
     pub name: String,
     /// Which mode it is played under.
     pub mode: ModeId,
-    /// The account that may kick from it. Absent for a tournament match.
+    /// The account that may start it and kick from it. Absent for a match
+    /// that starts on its own: a tournament's, or the queue's.
     pub host: Option<AccountId>,
     /// Where it is in its life.
     pub stage: Stage,
@@ -123,8 +131,38 @@ pub struct MatchState {
     pub slots: Vec<LobbySlot>,
     /// Display names of everybody in it without a seat.
     pub watchers: Vec<String>,
-    /// The seat the receiver holds. Absent for a watcher.
-    pub you: Option<SlotId>,
+    /// The seats the receiver holds, in slot order, all on one side. Empty
+    /// for a watcher.
+    pub yours: Vec<SlotId>,
+}
+
+/// Where a connection stands in the matchmaking queue.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub enum Search {
+    /// Not looking for a match.
+    Idle,
+    /// Waiting in the queue of a mode.
+    Queued {
+        /// Which mode.
+        mode: ModeId,
+        /// How many connections wait in it, this one included.
+        waiting: u16,
+    },
+    /// A match was found and waits for everybody it is for to accept it.
+    Found {
+        /// The id the match will have.
+        id: MatchId,
+        /// Which mode.
+        mode: ModeId,
+        /// How many of its connections have accepted.
+        accepted: u8,
+        /// How many connections it is for.
+        players: u8,
+        /// Whether this connection has accepted.
+        yours: bool,
+        /// Milliseconds left to accept, as of sending.
+        ms_left: u32,
+    },
 }
 
 /// One seat of a match, as the archive remembers it.
@@ -136,8 +174,11 @@ pub struct SeatSummary {
     pub team: Team,
     /// The account that held it. Empty while the seat is open.
     pub login: String,
-    /// Which hero was picked. Absent until one is.
+    /// Which hero it plays. Absent until every seat of the match has one.
     pub hero: Option<HeroId>,
+    /// Whether its holder abandoned the match once it had started. An
+    /// abandoned seat is nobody's to come back to.
+    pub abandoned: bool,
 }
 
 /// Which game of which tournament pairing a match is.
@@ -166,7 +207,8 @@ pub struct MatchSummary {
     pub map: MapId,
     /// Where it is in its life.
     pub stage: Stage,
-    /// The account that created it. Absent for a tournament match.
+    /// The account that created it. Absent for a match that starts on its
+    /// own: a tournament's, or the queue's.
     pub host: Option<AccountId>,
     /// Every seat, sorted by [`SlotId`].
     pub seats: Vec<SeatSummary>,
@@ -194,12 +236,12 @@ pub struct MatchFilter {
     pub account: Option<AccountId>,
 }
 
-/// Why the server refused something said outside a running match.
+/// Why the hub refused something said to it.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum HallReason {
-    /// The first message was not a [`ClientMsg::Hello`], or a second one came.
+    /// The first message was not a [`ToHub::Hello`], or a second one came.
     ///
-    /// [`ClientMsg::Hello`]: crate::ClientMsg::Hello
+    /// [`ToHub::Hello`]: crate::ToHub::Hello
     NotSignedIn,
     /// The login or the name breaks the rules for one.
     BadName,
@@ -225,12 +267,24 @@ pub enum HallReason {
     MatchFull,
     /// The match is not gathering any more.
     NotGathering,
+    /// The match has not started, or has ended.
+    NotPlaying,
+    /// A seat is open, or its holder is not in the match.
+    NotAllHere,
+    /// The account holds a seat in a match being played, which it comes
+    /// back to or abandons first.
+    MatchInProgress,
+    /// More seats were asked for than the mode lets one account hold, or
+    /// than a side has; or none.
+    TooManySeats,
     /// Only the host may do this.
     NotHost,
     /// This account holds no seat in the match.
     NoSeat,
     /// The seat asked for is held by somebody else.
     SeatTaken,
+    /// The seat asked for is on the other side from the seats already held.
+    SeatsAcrossTeams,
     /// The seats of a tournament match are assigned and cannot be changed.
     SeatsFixed,
     /// The connection is in no match.
@@ -282,8 +336,18 @@ pub enum TournamentStage {
 pub struct TeamInfo {
     /// What it is called.
     pub name: String,
-    /// Logins of its members.
-    pub members: Vec<String>,
+    /// Its members, in the order they joined.
+    pub members: Vec<MemberInfo>,
+}
+
+/// One member of a tournament team.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct MemberInfo {
+    /// Its login.
+    pub login: String,
+    /// How many of the team's seats it holds in every game, all on the
+    /// team's side.
+    pub seats: u8,
 }
 
 /// One game of a series.
@@ -330,8 +394,9 @@ pub struct TournamentInfo {
     pub format: TournamentFormat,
     /// Games in a series: the first team to win more than half takes it.
     pub best_of: u8,
-    /// Members a team must have to be paired. A team short of them is left
-    /// out when the tournament starts.
+    /// Seats a team fills, the mode's seats on one side: its members' seats
+    /// add up to it. A team short of it is left out when the tournament
+    /// starts.
     pub team_size: u8,
     /// Login of the account that created it.
     pub organizer: String,
@@ -365,6 +430,6 @@ pub struct TournamentSummary {
     pub stage: TournamentStage,
     /// How many teams are in it.
     pub teams: u8,
-    /// Members a team must have to be paired.
+    /// Seats a team fills.
     pub team_size: u8,
 }

@@ -8,6 +8,8 @@ bota-proto = { workspace = true }
 rand_chacha = "0.10"
 clap = { version = "4", features = ["derive"] }
 argon2 = "0.5"
+rand = { version = "0.10", default-features = false, features = ["std", "sys_rng"] }
+blake3 = { version = "1.8", default-features = false, features = ["pure"] }
 
 [lints]
 workspace = true

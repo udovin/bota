@@ -9,15 +9,26 @@ use crate::game::{
 };
 
 impl World {
-    /// Puts a wave in each enabled lane when the clock calls for one.
+    /// Puts a wave in each lane the rules send waves down, mid first, when
+    /// the clock calls for one.
     pub fn spawn_waves(&mut self) {
         let Some(wave) = wave_at(self.tick) else {
             return;
         };
         let plan = wave_plan(wave);
         let map = self.map;
+        let waves = self.rules.waves;
+        let lanes: Vec<u8> = [
+            (rules::LANE_MID, waves.mid),
+            (rules::LANE_TOP, waves.top),
+            (rules::LANE_BOT, waves.bot),
+        ]
+        .into_iter()
+        .filter(|(lane, on)| *on && *lane < map.lanes)
+        .map(|(lane, _)| lane)
+        .collect();
         for team in [Team::Radiant, Team::Dire] {
-            for &lane in map.wave_lanes {
+            for &lane in &lanes {
                 let at = creep_spawn_pos(map, team, lane);
                 let forward = {
                     let route = &self.walked_lanes()[team_index(team)][usize::from(lane)];

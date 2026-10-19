@@ -7,11 +7,11 @@ use std::sync::Arc;
 use std::sync::mpsc::{Sender, channel};
 use std::thread;
 
-use bota_proto::{MatchId, ServerMsg, encode_frame_to_vec};
+use bota_proto::{FromHub, MatchId, encode_frame_to_vec};
 
 use crate::net::Outbox;
 
-/// Bytes of replay in one [`ServerMsg::ReplayChunk`].
+/// Bytes of replay in one [`FromHub::ReplayChunk`].
 pub const REPLAY_CHUNK: usize = 64 * 1024;
 
 /// Chunks allowed to wait in an outbox before the next one is read.
@@ -51,7 +51,7 @@ impl Fetcher {
 }
 
 /// Reads the file in chunks and queues each one, waiting for the outbox to
-/// drain between them. Ends with a [`ServerMsg::ReplayEnd`] carrying the
+/// drain between them. Ends with a [`FromHub::ReplayEnd`] carrying the
 /// bytes sent, whether or not the file was read whole.
 fn send_file(job: &FetchJob) {
     let mut offset = 0u64;
@@ -65,7 +65,7 @@ fn send_file(job: &FetchJob) {
                 Ok(0) | Err(_) => break,
                 Ok(n) => n,
             };
-            let chunk = ServerMsg::ReplayChunk {
+            let chunk = FromHub::ReplayChunk {
                 match_id: job.id,
                 offset,
                 bytes: buf[..read].to_vec(),
@@ -76,7 +76,7 @@ fn send_file(job: &FetchJob) {
             offset += read as u64;
         }
     }
-    if let Ok(frame) = encode_frame_to_vec(&ServerMsg::ReplayEnd {
+    if let Ok(frame) = encode_frame_to_vec(&FromHub::ReplayEnd {
         match_id: job.id,
         total: offset,
     }) {

@@ -8,7 +8,7 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use bota_proto::{
-    LEN_PREFIX, MAX_PAYLOAD_LEN, MatchStats, ReplayRecord, ServerMsg, Team, decode_payload,
+    FromGame, LEN_PREFIX, MAX_PAYLOAD_LEN, MatchStats, ReplayRecord, Team, decode_payload,
 };
 
 use super::fixtures::message;
@@ -233,15 +233,15 @@ impl Totals {
         }
     }
 
-    fn observe(&mut self, message: &ServerMsg) {
+    fn observe(&mut self, message: &FromGame) {
         assert!(self.winner.is_none(), "MatchOver is the final message");
         self.messages += 1;
         match message {
-            ServerMsg::MatchStart { info } => {
+            FromGame::MatchStart { info } => {
                 self.starts += 1;
                 assert_eq!(info.tick_rate, 30);
             }
-            ServerMsg::Snapshot { view } => {
+            FromGame::Snapshot { view } => {
                 if let Some(previous) = self.last_tick {
                     assert_eq!(view.tick, previous + 1);
                 }
@@ -249,12 +249,12 @@ impl Totals {
                 self.first_tick.get_or_insert(view.tick);
                 self.last_tick = Some(view.tick);
             }
-            ServerMsg::Events { tick, .. } => {
+            FromGame::Events { tick, .. } => {
                 self.events += 1;
                 assert_eq!(Some(*tick), self.last_tick);
             }
-            ServerMsg::Orders { .. } => self.orders += 1,
-            ServerMsg::MatchOver { winner, stats } => {
+            FromGame::Orders { .. } => self.orders += 1,
+            FromGame::MatchOver { winner, stats } => {
                 self.winner = Some(*winner);
                 self.stats = Some(stats.clone());
             }

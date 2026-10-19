@@ -829,40 +829,53 @@ fn a_fallen_ancient_ends_the_match() {
 }
 
 #[test]
-fn simultaneous_ancient_deaths_preserve_the_first_terminal_result() {
-    let mut world = World::new();
-    let radiant = world.spawn_unit(
-        crate::game::ancient_of(bota_proto::Team::Radiant),
-        bota_proto::Team::Radiant,
-        bota_proto::Vec2::from_ints(1000, 1000),
-    );
-    let dire = world.spawn_unit(
-        crate::game::ancient_of(bota_proto::Team::Dire),
-        bota_proto::Team::Dire,
-        bota_proto::Vec2::from_ints(2000, 2000),
-    );
-    world.settle();
-    let mut events = Vec::new();
+fn simultaneous_ancient_deaths_draw_in_either_order() {
+    for radiant_first in [true, false] {
+        let mut world = World::new();
+        let radiant = world.spawn_unit(
+            crate::game::ancient_of(bota_proto::Team::Radiant),
+            bota_proto::Team::Radiant,
+            bota_proto::Vec2::from_ints(1000, 1000),
+        );
+        let dire = world.spawn_unit(
+            crate::game::ancient_of(bota_proto::Team::Dire),
+            bota_proto::Team::Dire,
+            bota_proto::Vec2::from_ints(2000, 2000),
+        );
+        world.settle();
+        let fallen = if radiant_first {
+            vec![(radiant, None), (dire, None)]
+        } else {
+            vec![(dire, None), (radiant, None)]
+        };
 
-    world.bury(vec![(radiant, None), (dire, None)], &mut events);
+        world.bury(fallen, &mut Vec::new());
 
-    assert_eq!(world.victor(), Some(bota_proto::Team::Dire));
+        assert_eq!(world.victor(), Some(bota_proto::Team::Neutral));
+    }
+}
+
+/// A world on the Dota map played to the mid rules.
+fn mid_world() -> World {
+    let mut world = World::on_map(crate::game::map_of(bota_proto::MapId(0)));
+    world.rules = crate::game::MID_RULES;
+    world
 }
 
 #[test]
-fn a_fallen_tower_ends_a_skirmish_and_nothing_else() {
-    let mut skirmish = World::on_map(crate::game::map_of(bota_proto::MapId(2)));
-    let tower = skirmish.spawn_unit(
+fn a_fallen_tower_ends_a_match_whose_rules_say_so_and_nothing_else() {
+    let mut mid = mid_world();
+    let tower = mid.spawn_unit(
         crate::game::tower_def(1),
         bota_proto::Team::Dire,
         bota_proto::Vec2::from_ints(1000, 1000),
     );
-    skirmish.settle();
+    mid.settle();
     let mut events = Vec::new();
 
-    skirmish.bury(vec![(tower, None)], &mut events);
+    mid.bury(vec![(tower, None)], &mut events);
 
-    assert_eq!(skirmish.victor(), Some(bota_proto::Team::Radiant));
+    assert_eq!(mid.victor(), Some(bota_proto::Team::Radiant));
 
     let mut demo = World::on_map(crate::game::map_of(bota_proto::MapId(1)));
     let tower = demo.spawn_unit(
@@ -875,10 +888,10 @@ fn a_fallen_tower_ends_a_skirmish_and_nothing_else() {
     assert_eq!(
         demo.victor(),
         None,
-        "the one-lane map ends the way the Dota map does"
+        "the one-lane map under the standard rules ends at an Ancient"
     );
 
-    let mut simultaneous = World::on_map(crate::game::map_of(bota_proto::MapId(2)));
+    let mut simultaneous = mid_world();
     let radiant = simultaneous.spawn_unit(
         crate::game::tower_def(1),
         bota_proto::Team::Radiant,
@@ -909,9 +922,8 @@ fn a_fallen_tower_ends_a_skirmish_and_nothing_else() {
 }
 
 #[test]
-fn a_second_hero_death_loses_a_skirmish() {
-    let map = crate::game::map_of(bota_proto::MapId(2));
-    let mut world = World::on_map(map);
+fn a_second_hero_death_loses_where_the_rules_count_lives() {
+    let mut world = mid_world();
     let hero = world.spawn_hero(
         bota_proto::Team::Dire,
         bota_proto::Vec2::from_ints(1000, 1000),
@@ -933,7 +945,7 @@ fn a_second_hero_death_loses_a_skirmish() {
         0,
         rules::STASH_SLOTS,
     ));
-    world.seats[1].deaths = rules::SKIRMISH_DEATH_LIMIT - 1;
+    world.seats[1].deaths = crate::game::MID_RULES.death_limit - 1;
     world.settle();
     let mut events = Vec::new();
 
@@ -945,7 +957,7 @@ fn a_second_hero_death_loses_a_skirmish() {
 }
 
 #[test]
-fn hero_deaths_end_nothing_on_the_maps_that_are_played_to_an_ancient() {
+fn hero_deaths_end_nothing_under_the_standard_rules() {
     for id in [bota_proto::MapId(0), bota_proto::MapId(1)] {
         let map = crate::game::map_of(id);
         let mut world = World::on_map(map);
@@ -963,7 +975,7 @@ fn hero_deaths_end_nothing_on_the_maps_that_are_played_to_an_ancient() {
             rules::STASH_SLOTS,
         ));
         world.seats[0].unit = Some(hero);
-        world.seats[0].deaths = rules::SKIRMISH_DEATH_LIMIT * 3;
+        world.seats[0].deaths = 6;
         world.settle();
         let mut events = Vec::new();
         world.bury(vec![(hero, None)], &mut events);
@@ -972,25 +984,25 @@ fn hero_deaths_end_nothing_on_the_maps_that_are_played_to_an_ancient() {
 }
 
 #[test]
-fn a_skirmish_is_the_dota_map_with_a_shorter_ending() {
-    let dota = crate::game::map_of(bota_proto::MapId(0));
-    let skirmish = crate::game::map_of(bota_proto::MapId(2));
-    assert_eq!(skirmish.fountains, dota.fountains, "the same ground");
-    assert_eq!(skirmish.lanes, dota.lanes);
-    assert_eq!(skirmish.radiant_towers, dota.radiant_towers);
-    assert_eq!(skirmish.dire_towers, dota.dire_towers);
-    assert_eq!(skirmish.terrain_rle.len(), dota.terrain_rle.len());
+fn the_mid_rules_play_mid_alone_to_two_lives_or_a_tower() {
+    use bota_proto::Lanes;
+    let mid = crate::game::MID_RULES;
+    assert_eq!(mid.waves, Lanes::MID);
+    assert_eq!(mid.invulnerable_towers, Lanes::SIDES);
+    assert_eq!((mid.death_limit, mid.tower_ends_it), (2, true));
+    assert_eq!(mid.time_limit, 27_000, "fifteen minutes of play");
+    let standard = crate::game::STANDARD_RULES;
+    assert_eq!(standard.waves, Lanes::ALL);
+    assert_eq!(standard.invulnerable_towers, Lanes::NONE);
     assert_eq!(
-        (dota.death_limit, dota.tower_ends_it),
-        (0, false),
-        "the full Dota map still ends at its Ancient"
+        (
+            standard.death_limit,
+            standard.tower_ends_it,
+            standard.time_limit
+        ),
+        (0, false, 0),
+        "the standard game ends at an Ancient alone"
     );
-    assert_eq!(
-        (skirmish.death_limit, skirmish.tower_ends_it),
-        (rules::SKIRMISH_DEATH_LIMIT, true)
-    );
-    assert_eq!(skirmish.wave_lanes, &[rules::LANE_MID]);
-    assert_eq!(dota.wave_lanes.len(), 3);
 }
 
 #[test]
@@ -1946,7 +1958,7 @@ fn config() -> crate::game::MatchConfig {
         tick_rate: 30,
         mode: bota_proto::TickMode::Lockstep,
         ack_timeout_ticks: 30,
-        cheats: false,
+        rules: crate::game::STANDARD_RULES,
     }
 }
 
@@ -5778,14 +5790,16 @@ fn a_hero_keeps_what_it_learned_and_carried_through_a_death() {
     let boots = bota_proto::ItemId(crate::game::ITEM_BOOTS);
     assert!(world.buy(bota_proto::SlotId(0), boots, &mut events));
     world.bury(vec![(hero, None)], &mut events);
-    assert!(
-        world.seats[0].kept.is_some(),
-        "what it had waits with its seat while the body is gone"
+    assert_eq!(
+        world.seats[0].fallen,
+        Some(hero),
+        "the body lies fallen, handle and all, while the hero waits"
     );
     for _ in 0..=World::respawn_wait(7) {
         world.step();
     }
     let back = world.seats[0].unit.expect("it came back");
+    assert_eq!(back, hero, "and it is the same body that stands up");
     assert_eq!(world.seats[0].level, 7, "its level is its own");
     assert_eq!(
         world.abilities.get(back).expect("casts").slots[1].level,
@@ -5802,8 +5816,8 @@ fn a_hero_keeps_what_it_learned_and_carried_through_a_death() {
         "and what it carried came back with it"
     );
     assert!(
-        world.seats[0].kept.is_none(),
-        "and the seat holds nothing of it any more"
+        world.seats[0].fallen.is_none(),
+        "and nothing lies fallen any more"
     );
     world.step();
     assert_eq!(
@@ -9493,7 +9507,7 @@ fn no_creep_of_the_first_waves_is_left_wrestling_its_own_base() {
         tick_rate: 30,
         mode: bota_proto::TickMode::Realtime,
         ack_timeout_ticks: 0,
-        cheats: false,
+        rules: crate::game::STANDARD_RULES,
     };
     let mut world = World::for_match(&cfg, cfg.rng());
     for _ in 0..=rules::FIRST_WAVE_TICK {
@@ -9626,7 +9640,7 @@ fn a_hero_told_to_walk_into_a_tower_walks_up_to_it_and_stands() {
         tick_rate: 30,
         mode: bota_proto::TickMode::Realtime,
         ack_timeout_ticks: 0,
-        cheats: false,
+        rules: crate::game::STANDARD_RULES,
     };
     let mut world = World::for_match(&cfg, cfg.rng());
     let (_, _, tower) = rules::RADIANT_TOWERS[2];
@@ -9708,7 +9722,7 @@ fn a_wave_walks_over_where_its_tower_stood_once_it_has_fallen() {
         tick_rate: 30,
         mode: bota_proto::TickMode::Realtime,
         ack_timeout_ticks: 0,
-        cheats: false,
+        rules: crate::game::STANDARD_RULES,
     };
     let mut world = World::for_match(&cfg, cfg.rng());
     let (lane, _, tower) = rules::RADIANT_TOWERS[2];
@@ -9892,7 +9906,7 @@ fn a_fallen_barracks_turns_the_waves_against_it_super_and_all_of_them_mega() {
         tick_rate: 30,
         mode: bota_proto::TickMode::Realtime,
         ack_timeout_ticks: 0,
-        cheats: false,
+        rules: crate::game::STANDARD_RULES,
     };
     let mut world = World::for_match(&cfg, cfg.rng());
     // Whole barracks: plain waves.
@@ -9955,7 +9969,7 @@ fn the_demo_waves_march_out_and_meet_between_the_towers() {
         tick_rate: 30,
         mode: bota_proto::TickMode::Realtime,
         ack_timeout_ticks: 0,
-        cheats: false,
+        rules: crate::game::STANDARD_RULES,
     };
     let mut world = World::for_match(&cfg, cfg.rng());
     for _ in 0..=rules::FIRST_WAVE_TICK {
@@ -10013,7 +10027,7 @@ fn the_fountain_melts_whoever_steps_into_its_reach_and_spares_who_stays_out() {
         tick_rate: 30,
         mode: bota_proto::TickMode::Realtime,
         ack_timeout_ticks: 0,
-        cheats: false,
+        rules: crate::game::STANDARD_RULES,
     };
     let mut world = World::for_match(&cfg, cfg.rng());
     let hero = world.seats[0].unit.expect("stood up");

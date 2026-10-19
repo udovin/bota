@@ -4,21 +4,7 @@ use bota_proto::{HeroId, SlotId, Team};
 
 use bota_proto::ItemId;
 
-use crate::game::{AbilityBook, Entity, Inventory, Stacks};
-
-/// What a body leaves behind while it is gone.
-///
-/// A hero that falls takes nothing with it: what it learned and what it
-/// carried waits here until it stands up again.
-#[derive(Clone, Debug)]
-pub struct Kept {
-    /// What it had learned.
-    pub book: AbilityBook,
-    /// What it was carrying.
-    pub bag: Inventory,
-    /// What it had gathered.
-    pub stacks: Stacks,
-}
+use crate::game::{Entity, Inventory};
 
 /// One player's place at the match.
 ///
@@ -46,8 +32,10 @@ pub struct Seat {
     pub respawn_left: u32,
     /// What waits in the stash at the fountain.
     pub stash: Inventory,
-    /// What the body left behind, while it is gone.
-    pub kept: Option<Kept>,
+    /// The hero's body while it lies fallen, waiting to stand again. It keeps
+    /// its handle, what it learned and what it carries; exactly one of this
+    /// and `unit` is present once the hero has first stood.
+    pub fallen: Option<Entity>,
     /// The courier it owns, while one stands.
     pub courier: Option<Entity>,
     /// Ticks before the courier comes back. Zero while one stands.
@@ -86,7 +74,7 @@ impl Seat {
             level: 1,
             respawn_left: 0,
             stash: Inventory::empty(stash_slots),
-            kept: None,
+            fallen: None,
             courier: None,
             courier_left: 0,
             courier_kept: None,
@@ -98,5 +86,10 @@ impl Seat {
             last_hits: 0,
             denies: 0,
         }
+    }
+
+    /// The seat's hero, standing or fallen.
+    pub fn hero_unit(&self) -> Option<Entity> {
+        self.unit.or(self.fallen)
     }
 }

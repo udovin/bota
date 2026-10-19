@@ -215,6 +215,14 @@ pub fn started(shop: Vec<ShopEntry>, trees: Vec<Vec2>) -> MatchInfo {
             hero: HeroId(2),
         }],
         shop,
+        rules: bota_proto::Rules {
+            waves: bota_proto::Lanes::ALL,
+            invulnerable_towers: bota_proto::Lanes::NONE,
+            death_limit: 0,
+            tower_ends_it: false,
+            time_limit: 0,
+            cheats: false,
+        },
     }
 }
 

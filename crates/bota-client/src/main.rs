@@ -6,11 +6,12 @@
 
 mod camera;
 mod catalog;
-mod console;
+mod chat;
 mod hall;
 mod hud;
 mod icons;
 mod input;
+mod lobby;
 mod net;
 mod render;
 mod replay_play;
@@ -24,19 +25,19 @@ mod tests;
 
 use std::path::PathBuf;
 
-use bota_proto::{Auth, ClientMsg, MatchId, ModeId, Token};
+use bota_proto::{Auth, MatchId, ModeId, ToHub, Token};
 use clap::Parser;
 use macroquad::prelude::{Conf, next_frame};
 
 use crate::net::Net;
 use crate::replay_play::ReplayPlayer;
-use crate::state::{App, Phase, Source};
+use crate::state::{App, Phase, Source, token_from_text};
 
 /// bota client: rendering, input, the hall, matches and replays.
 #[derive(Parser, Clone, Debug, PartialEq, Eq)]
 #[command(version, about, long_about = None)]
 pub struct Args {
-    /// Where the server listens.
+    /// Where the hub listens.
     #[arg(long, default_value = "127.0.0.1:4455")]
     pub addr: String,
     /// The account to sign in as. Asked for on screen when absent.
@@ -54,7 +55,7 @@ pub struct Args {
     /// Where the session token is kept between runs.
     #[arg(long)]
     pub session: Option<PathBuf>,
-    /// Take a seat in any open match of this mode as soon as signed in.
+    /// Wait in the queue of this mode as soon as signed in.
     #[arg(long, value_name = "MODE", conflicts_with_all = ["match_id", "watch"])]
     pub quick: Option<u16>,
     /// Enter this match as soon as signed in.
@@ -69,18 +70,21 @@ pub struct Args {
 }
 
 impl Args {
-    /// What to do once the server has signed this client in.
-    pub fn errand(&self) -> Option<ClientMsg> {
+    /// What to do once the hub has signed this client in.
+    pub fn errand(&self) -> Option<ToHub> {
         if let Some(mode) = self.quick {
-            return Some(ClientMsg::QuickPlay { mode: ModeId(mode) });
-        }
-        if let Some(id) = self.match_id {
-            return Some(ClientMsg::JoinMatch {
-                id: MatchId(id),
-                role: bota_proto::Role::Player,
+            return Some(ToHub::FindMatch {
+                mode: ModeId(mode),
+                seats: 1,
             });
         }
-        self.watch.map(|id| ClientMsg::JoinMatch {
+        if let Some(id) = self.match_id {
+            return Some(ToHub::JoinMatch {
+                id: MatchId(id),
+                role: bota_proto::Role::Player { seats: 1 },
+            });
+        }
+        self.watch.map(|id| ToHub::JoinMatch {
             id: MatchId(id),
             role: bota_proto::Role::Spectator,
         })
@@ -146,8 +150,8 @@ fn build_app(args: &Args) -> std::io::Result<App> {
         let player = ReplayPlayer::load(path)?;
         return Ok(App::new(Source::Replay(Box::new(player))));
     }
-    let net = Net::connect(&args.addr)?;
-    let mut app = App::new(Source::Live(net));
+    let hub = Net::connect(&args.addr)?;
+    let mut app = App::new(Source::live(hub));
     let session = args.session.clone().unwrap_or_else(session_path);
     let kept = read_session(&session);
     app.session_path = Some(session);
@@ -199,6 +203,6 @@ fn read_session(path: &std::path::Path) -> Option<(String, Token)> {
     let text = std::fs::read_to_string(path).ok()?;
     let mut lines = text.lines();
     let login = lines.next()?.trim().to_string();
-    let token = lines.next()?.trim().parse::<u128>().ok()?;
-    (!login.is_empty()).then_some((login, Token(token)))
+    let token = token_from_text(lines.next()?)?;
+    (!login.is_empty()).then_some((login, token))
 }

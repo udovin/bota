@@ -1,4 +1,4 @@
-use bota_proto::{Auth, ClientMsg, HallReason, ServerMsg};
+use bota_proto::{Auth, FromHub, HallReason, ToHub};
 
 use super::fixtures::*;
 use crate::hub::{login_is_valid, password_is_valid};
@@ -11,7 +11,7 @@ fn register_login_and_resume_all_sign_in_and_the_wrong_ones_are_refused() {
     first.hall();
 
     let mut again = TestClient::connect(addr);
-    again.send(&ClientMsg::Hello {
+    again.send(&ToHub::Hello {
         auth: Auth::Register {
             login: "Alice".to_string(),
             password: "other".to_string(),
@@ -22,31 +22,31 @@ fn register_login_and_resume_all_sign_in_and_the_wrong_ones_are_refused() {
         HallReason::LoginTaken,
         "logins are one name in any case"
     );
-    again.send(&ClientMsg::Hello {
+    again.send(&ToHub::Hello {
         auth: Auth::Login {
             login: "alice".to_string(),
             password: "wrong".to_string(),
         },
     });
     assert_eq!(again.refusal(), HallReason::WrongPassword);
-    again.send(&ClientMsg::Hello {
+    again.send(&ToHub::Hello {
         auth: Auth::Login {
             login: "nobody".to_string(),
             password: "wrong".to_string(),
         },
     });
     assert_eq!(again.refusal(), HallReason::NoSuchLogin);
-    again.send(&ClientMsg::Hello {
+    again.send(&ToHub::Hello {
         auth: Auth::Resume {
-            token: bota_proto::Token(1),
+            token: bota_proto::Token([1; 32]),
         },
     });
     assert_eq!(again.refusal(), HallReason::UnknownToken);
-    again.send(&ClientMsg::Hello {
+    again.send(&ToHub::Hello {
         auth: Auth::Resume { token },
     });
     let welcomed = again.recv_until(|msg| match msg {
-        ServerMsg::Welcome { account, .. } => Some(account),
+        FromHub::Welcome { account, .. } => Some(account),
         _ => None,
     });
     assert_eq!(welcomed.map(|a| a.login), Some("alice".to_string()));
@@ -58,20 +58,21 @@ fn register_login_and_resume_all_sign_in_and_the_wrong_ones_are_refused() {
     assert!(first.hung_up());
 
     let mut guest = TestClient::connect(addr);
-    guest.send(&ClientMsg::Hello {
+    guest.send(&ToHub::Hello {
         auth: Auth::Guest {
             name: "eye".to_string(),
         },
     });
     let (account, token) = guest.recv_until(|msg| match msg {
-        ServerMsg::Welcome { account, token, .. } => Some((account, token)),
+        FromHub::Welcome { account, token, .. } => Some((account, token)),
         _ => None,
     });
     assert!(account.is_none() && token.is_none());
-    guest.send(&ClientMsg::CreateMatch {
+    guest.send(&ToHub::CreateMatch {
         mode: REALTIME,
         name: "no".to_string(),
         seed: None,
+        seats: 1,
     });
     assert_eq!(guest.refusal(), HallReason::GuestsCannotPlay);
 }
@@ -81,7 +82,7 @@ fn five_refused_sign_ins_close_the_connection() {
     let (addr, _dir) = hub("failures");
     let mut client = TestClient::connect(addr);
     for _ in 0..5 {
-        client.send(&ClientMsg::Hello {
+        client.send(&ToHub::Hello {
             auth: Auth::Login {
                 login: "nobody".to_string(),
                 password: "x".to_string(),
@@ -96,7 +97,7 @@ fn five_refused_sign_ins_close_the_connection() {
 fn anything_before_hello_closes_the_connection() {
     let (addr, _dir) = hub("nohello");
     let mut client = TestClient::connect(addr);
-    client.send(&ClientMsg::LeaveMatch);
+    client.send(&ToHub::LeaveMatch);
     assert_eq!(client.refusal(), HallReason::NotSignedIn);
     assert!(client.hung_up());
 }
@@ -106,34 +107,34 @@ fn a_changed_password_is_the_one_that_signs_in_after_a_restart() {
     let dir = fresh_dir("restart");
     let addr = start_hub(test_opts(dir.clone()));
     let (mut alice, _, _) = sign_up(addr, "alice");
-    alice.send(&ClientMsg::ChangePassword {
+    alice.send(&ToHub::ChangePassword {
         old: "wrong".to_string(),
         new: "new-pw".to_string(),
     });
     assert_eq!(alice.refusal(), HallReason::WrongPassword);
-    alice.send(&ClientMsg::ChangePassword {
+    alice.send(&ToHub::ChangePassword {
         old: "alice-pw".to_string(),
         new: "new-pw".to_string(),
     });
-    alice.send(&ClientMsg::Logout);
+    alice.send(&ToHub::Logout);
     // A second hub over the same directory reads the ledger back.
     let later = start_hub(test_opts(dir));
     let mut back = TestClient::connect(later);
-    back.send(&ClientMsg::Hello {
+    back.send(&ToHub::Hello {
         auth: Auth::Login {
             login: "alice".to_string(),
             password: "alice-pw".to_string(),
         },
     });
     assert_eq!(back.refusal(), HallReason::WrongPassword);
-    back.send(&ClientMsg::Hello {
+    back.send(&ToHub::Hello {
         auth: Auth::Login {
             login: "alice".to_string(),
             password: "new-pw".to_string(),
         },
     });
     let welcomed = back.recv_until(|msg| match msg {
-        ServerMsg::Welcome { account, .. } => Some(account),
+        FromHub::Welcome { account, .. } => Some(account),
         _ => None,
     });
     assert_eq!(welcomed.map(|a| a.login), Some("alice".to_string()));

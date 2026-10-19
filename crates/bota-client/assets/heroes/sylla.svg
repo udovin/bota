@@ -1,0 +1,58 @@
+<svg width="100%" viewBox="0 0 680 260" role="img" xmlns="http://www.w3.org/2000/svg">
+  <title>Sylla</title>
+  <defs>
+    <radialGradient id="sky" cx="0.5" cy="0.45" r="0.75">
+      <stop offset="0" stop-color="#1f4c55"/>
+      <stop offset="0.6" stop-color="#0d2429"/>
+      <stop offset="1" stop-color="#050d10"/>
+    </radialGradient>
+    <linearGradient id="cloak" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2d8277"/>
+      <stop offset="1" stop-color="#0f3a37"/>
+    </linearGradient>
+    <linearGradient id="hood" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3a9b8d"/>
+      <stop offset="0.55" stop-color="#1f6a62"/>
+      <stop offset="1" stop-color="#123f3b"/>
+    </linearGradient>
+    <radialGradient id="bolt" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="0.35" stop-color="#bdf8ff"/>
+      <stop offset="1" stop-color="#3fd6ee" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="glow" x="-1" y="-1" width="3" height="3">
+      <feGaussianBlur stdDeviation="3"/>
+    </filter>
+    <filter id="soft" x="-0.5" y="-0.5" width="2" height="2">
+      <feGaussianBlur stdDeviation="9"/>
+    </filter>
+  </defs>
+  <g transform="translate(220 50)">
+    <rect width="240" height="160" fill="url(#sky)"/>
+    <ellipse cx="120" cy="92" rx="78" ry="58" fill="#2fb3a4" opacity="0.28" filter="url(#soft)"/>
+    <path d="M150 104 Q176 74 196 52" fill="none" stroke="#56e3f2" stroke-width="2.5" stroke-dasharray="5 4" opacity="0.8"/>
+    <path d="M196 52 Q214 70 222 98" fill="none" stroke="#56e3f2" stroke-width="2" stroke-dasharray="4 4" opacity="0.6"/>
+    <path d="M30 160 C34 128 62 110 88 106 L152 106 C178 110 206 128 210 160 Z" fill="url(#cloak)"/>
+    <path d="M88 106 L120 150 L152 106" fill="none" stroke="#0b2b29" stroke-width="3"/>
+    <path d="M120 16 C152 18 174 46 176 80 C178 104 164 122 150 130 L90 130 C76 122 62 104 64 80 C66 46 88 18 120 16 Z" fill="url(#hood)"/>
+    <path d="M120 16 C152 18 174 46 176 80 C178 104 164 122 150 130" fill="none" stroke="#5fd0bf" stroke-width="2.5" opacity="0.7"/>
+    <path d="M120 50 C141 50 154 68 152 92 C150 110 136 122 120 122 C104 122 90 110 88 92 C86 68 99 50 120 50 Z" fill="#06100f"/>
+    <ellipse cx="107" cy="84" rx="8" ry="3.5" fill="#7ff4ff" filter="url(#glow)"/>
+    <ellipse cx="133" cy="84" rx="8" ry="3.5" fill="#7ff4ff" filter="url(#glow)"/>
+    <ellipse cx="107" cy="84" rx="5.5" ry="2.2" fill="#e9fdff"/>
+    <ellipse cx="133" cy="84" rx="5.5" ry="2.2" fill="#e9fdff"/>
+    <circle cx="120" cy="132" r="7" fill="#d9b45a"/>
+    <circle cx="120" cy="132" r="3" fill="#7a5a1e"/>
+    <path d="M52 18 Q8 88 52 158" fill="none" stroke="#5a3a22" stroke-width="7" stroke-linecap="round"/>
+    <path d="M52 18 Q8 88 52 158" fill="none" stroke="#8a6038" stroke-width="2.5" stroke-linecap="round"/>
+    <path d="M52 18 L52 158" stroke="#cfe3e0" stroke-width="1.3"/>
+    <circle cx="52" cy="18" r="4" fill="#e3c06a"/>
+    <circle cx="52" cy="158" r="4" fill="#e3c06a"/>
+    <circle cx="197" cy="52" r="15" fill="url(#bolt)"/>
+    <circle cx="197" cy="52" r="5" fill="#ffffff"/>
+    <circle cx="222" cy="98" r="7" fill="url(#bolt)"/>
+    <circle cx="176" cy="30" r="2" fill="#bdf8ff"/>
+    <circle cx="214" cy="40" r="1.6" fill="#bdf8ff"/>
+    <circle cx="206" cy="74" r="1.8" fill="#bdf8ff"/>
+  </g>
+</svg>

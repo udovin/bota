@@ -7,7 +7,7 @@
 //! look like.
 
 use bota_proto::{
-    AbilitySlot, AbilityView, Aim, EntityId, ItemSlot, ItemView, Order, Target, UnitView,
+    AbilitySlot, AbilityView, Aim, EntityId, ItemSlot, ItemView, Kit, Order, Target, UnitView,
 };
 
 use crate::state::App;
@@ -68,15 +68,30 @@ impl App {
         self.view.as_ref()?.units.iter().find(|u| u.id == commanded)
     }
 
+    /// What our hero has learned and carries while it lies fallen, when the
+    /// panel is about it.
+    pub fn slot_kit(&self) -> Option<&Kit> {
+        if self.commanded() != self.my_hero() {
+            return None;
+        }
+        let mine = self.my_slot?;
+        let view = self.view.as_ref()?;
+        view.players.iter().find(|p| p.slot == mine)?.kit.as_ref()
+    }
+
     /// What sits in one item slot of the panel.
     ///
     /// The bag slots are the commanded unit's — the same bag the panel
-    /// draws, a courier's as readily as the hero's. The stash is the seat's
-    /// own whatever is commanded.
+    /// draws, a courier's as readily as the hero's, a fallen hero's as
+    /// readily as a standing one's. The stash is the seat's own whatever is
+    /// commanded.
     pub fn item_in(&self, slot: u8) -> Option<ItemView> {
         if slot < BAG_SLOTS {
-            let unit = self.slot_unit()?;
-            unit.items.get(usize::from(slot)).copied().flatten()
+            let carried = match self.slot_unit() {
+                Some(unit) => &unit.items,
+                None => &self.slot_kit()?.items,
+            };
+            carried.get(usize::from(slot)).copied().flatten()
         } else {
             let view = self.view.as_ref()?;
             let mine = self.my_slot?;
@@ -172,14 +187,15 @@ pub fn decide(
     }
 }
 
-/// How a slot is aimed, and whether there is anything in it at all.
+/// How a slot is aimed, and whether there is anything in it to press.
 ///
 /// The outer answer says whether the slot holds something; the inner one how
-/// that something is aimed, absent for one that is never used.
+/// that something is aimed, absent for one that is never used. Nothing a
+/// fallen hero holds is there to press: its bag is reached by dragging.
 fn filled(app: &App, slot: Slot) -> Option<Option<Aim>> {
+    let unit = app.slot_unit()?;
     match slot {
-        Slot::Ability(at) => app
-            .slot_unit()?
+        Slot::Ability(at) => unit
             .abilities
             .get(usize::from(at))
             .map(|held| Some(held.aim)),

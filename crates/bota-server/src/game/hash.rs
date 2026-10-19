@@ -256,18 +256,11 @@ impl World {
             if let Some(bag) = &seat.courier_kept {
                 hash_bag(&mut fnv, bag);
             }
-            fnv.some(seat.kept.is_some());
-            if let Some(kept) = &seat.kept {
-                for slot in kept.book.slots.iter() {
-                    fnv.u32(u32::from(slot.id.0));
-                    fnv.u8(slot.level);
-                    fnv.u32(slot.cooldown);
-                }
-                hash_bag(&mut fnv, &kept.bag);
-                for (kind, many) in kept.stacks.held() {
-                    fnv.u32(kind.at() as u32);
-                    fnv.u32(many);
-                }
+            // A fallen hero's book, bag and stacks stay on its body and are
+            // walked with every other entity's.
+            fnv.some(seat.fallen.is_some());
+            if let Some(body) = seat.fallen {
+                fnv.entity(body);
             }
         }
         fnv.done()

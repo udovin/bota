@@ -3,7 +3,7 @@
 use super::fixtures::*;
 use crate::*;
 
-fn wire(msgs: &[ClientMsg]) -> Vec<u8> {
+fn wire(msgs: &[ToHub]) -> Vec<u8> {
     let mut out = Vec::new();
     for msg in msgs {
         encode_frame(msg, &mut out).expect("encode");
@@ -14,31 +14,31 @@ fn wire(msgs: &[ClientMsg]) -> Vec<u8> {
 #[test]
 fn empty_reader_yields_nothing() {
     let mut reader = FrameReader::new();
-    assert_eq!(reader.next_message::<ClientMsg>().unwrap(), None);
+    assert_eq!(reader.next_message::<ToHub>().unwrap(), None);
     assert_eq!(reader.buffered(), 0);
 }
 
 #[test]
 fn a_prefix_alone_yields_nothing() {
-    let msgs = all_client_msgs();
+    let msgs = all_to_hub();
     let bytes = wire(&msgs[..1]);
 
     let mut reader = FrameReader::new();
     reader.push(&bytes[..LEN_PREFIX]);
-    assert_eq!(reader.next_message::<ClientMsg>().unwrap(), None);
+    assert_eq!(reader.next_message::<ToHub>().unwrap(), None);
     assert_eq!(reader.buffered(), LEN_PREFIX);
 }
 
 #[test]
 fn one_byte_at_a_time() {
-    let msgs = all_client_msgs();
+    let msgs = all_to_hub();
     let bytes = wire(&msgs);
 
     let mut reader = FrameReader::new();
     let mut got = Vec::new();
     for byte in &bytes {
         reader.push(std::slice::from_ref(byte));
-        while let Some(msg) = reader.next_message::<ClientMsg>().unwrap() {
+        while let Some(msg) = reader.next_message::<ToHub>().unwrap() {
             got.push(msg);
         }
     }
@@ -49,14 +49,14 @@ fn one_byte_at_a_time() {
 
 #[test]
 fn many_frames_in_one_push() {
-    let msgs = all_client_msgs();
+    let msgs = all_to_hub();
     let bytes = wire(&msgs);
 
     let mut reader = FrameReader::new();
     reader.push(&bytes);
 
     let mut got = Vec::new();
-    while let Some(msg) = reader.next_message::<ClientMsg>().unwrap() {
+    while let Some(msg) = reader.next_message::<ToHub>().unwrap() {
         got.push(msg);
     }
 
@@ -66,7 +66,7 @@ fn many_frames_in_one_push() {
 
 #[test]
 fn a_trailing_partial_frame_is_kept() {
-    let msgs = all_client_msgs();
+    let msgs = all_to_hub();
     let bytes = wire(&msgs);
     let cut = bytes.len() - 1;
 
@@ -74,7 +74,7 @@ fn a_trailing_partial_frame_is_kept() {
     reader.push(&bytes[..cut]);
 
     let mut got = 0;
-    while reader.next_message::<ClientMsg>().unwrap().is_some() {
+    while reader.next_message::<ToHub>().unwrap().is_some() {
         got += 1;
     }
     assert_eq!(got, msgs.len() - 1, "the last frame is incomplete");
@@ -82,7 +82,7 @@ fn a_trailing_partial_frame_is_kept() {
 
     reader.push(&bytes[cut..]);
     assert_eq!(
-        reader.next_message::<ClientMsg>().unwrap(),
+        reader.next_message::<ToHub>().unwrap(),
         Some(msgs[msgs.len() - 1].clone())
     );
     assert_eq!(reader.buffered(), 0);
@@ -98,7 +98,7 @@ fn an_oversized_length_is_rejected_before_any_payload_arrives() {
     reader.push(&bytes);
 
     assert_eq!(
-        reader.next_message::<ClientMsg>(),
+        reader.next_message::<ToHub>(),
         Err(CodecError::TooLarge { len: claimed }),
         "the reader must refuse on the prefix alone, not wait for the payload"
     );
@@ -113,15 +113,12 @@ fn a_garbage_payload_is_malformed() {
     let mut reader = FrameReader::new();
     reader.push(&bytes);
 
-    assert_eq!(
-        reader.next_message::<ClientMsg>(),
-        Err(CodecError::Malformed)
-    );
+    assert_eq!(reader.next_message::<ToHub>(), Err(CodecError::Malformed));
 }
 
 #[test]
 fn a_truncated_payload_is_malformed_not_a_wait() {
-    let msg = ClientMsg::Hello {
+    let msg = ToHub::Hello {
         auth: Auth::Guest {
             name: "a fairly long message body".to_string(),
         },
@@ -134,28 +131,27 @@ fn a_truncated_payload_is_malformed_not_a_wait() {
 
     let mut reader = FrameReader::new();
     reader.push(&bytes);
-    assert_eq!(
-        reader.next_message::<ClientMsg>(),
-        Err(CodecError::Malformed)
-    );
+    assert_eq!(reader.next_message::<ToHub>(), Err(CodecError::Malformed));
 }
 
 #[test]
 fn decoding_as_the_wrong_message_type_fails() {
-    let frame = encode_frame_to_vec(&ServerMsg::ParticipantLeft {
-        player_id: PlayerId(3),
-        slot: Some(SlotId(0)),
+    // The last of the many things said to the hub is a variant past every
+    // one a game server says.
+    let frame = encode_frame_to_vec(&ToHub::Chat {
+        text: "gg".to_string(),
+        team: false,
     })
     .unwrap();
 
     let mut reader = FrameReader::new();
     reader.push(&frame);
-    assert!(reader.next_message::<ClientMsg>().is_err());
+    assert!(reader.next_message::<FromGame>().is_err());
 }
 
 #[test]
 fn encode_frame_appends_rather_than_clears() {
-    let msgs = all_client_msgs();
+    let msgs = all_to_hub();
     let mut out = Vec::new();
     encode_frame(&msgs[0], &mut out).unwrap();
     let after_first = out.len();
@@ -167,7 +163,7 @@ fn encode_frame_appends_rather_than_clears() {
 
 #[test]
 fn a_frame_is_a_prefix_plus_its_payload() {
-    let msg = ClientMsg::Ack { tick: 5400 };
+    let msg = ToGame::Ack { tick: 5400 };
     let frame = encode_frame_to_vec(&msg).unwrap();
 
     let mut prefix = [0u8; LEN_PREFIX];
@@ -175,8 +171,5 @@ fn a_frame_is_a_prefix_plus_its_payload() {
     let declared = u32::from_le_bytes(prefix) as usize;
 
     assert_eq!(declared, frame.len() - LEN_PREFIX);
-    assert_eq!(
-        decode_payload::<ClientMsg>(&frame[LEN_PREFIX..]).unwrap(),
-        msg
-    );
+    assert_eq!(decode_payload::<ToGame>(&frame[LEN_PREFIX..]).unwrap(), msg);
 }

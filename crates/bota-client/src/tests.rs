@@ -2,71 +2,25 @@
 
 use bota_proto::{
     AbilityId, AbilitySlot, AbilityView, Aim, Angle, Attributes, EntityId, Fixed, HeroId, ItemId,
-    ItemSlot, ItemView, Order, PlayerView, ShopEntry, SlotId, StatusFlags, Target, Team, UnitKind,
-    UnitView, Vec2, WorldView,
+    ItemSlot, ItemView, Kit, Order, PlayerView, ShopEntry, SlotId, StatusFlags, Target, Team,
+    UnitKind, UnitView, Vec2, WorldView,
 };
 use clap::Parser;
 
-use crate::slots::{Look, Press, Slot, ability_look, decide, item_look};
-use crate::state::{Tap, body_in, known_in, remember, tap_again};
+use crate::replay_play::ReplayPlayer;
+use crate::slots::{Look, Press, Slot, ability_look, decide, item_look, press};
+use crate::state::{
+    App, Heard, Source, Tap, body_in, known_in, remember, tap_again, token_from_text, token_text,
+};
 
 use crate::Args;
 use crate::camera::Camera;
 
 #[test]
-fn the_console_turns_a_typed_line_into_a_cheat_order() {
-    use bota_proto::Cheat;
-    let parse = crate::console::parse;
-    assert_eq!(
-        parse("-gold 500"),
-        Ok(Order::Cheat {
-            cheat: Cheat::Gold { amount: 500 }
-        })
-    );
-    assert_eq!(
-        parse("gold"),
-        Ok(Order::Cheat {
-            cheat: Cheat::Gold { amount: 1000 }
-        }),
-        "gold alone is worth a thousand"
-    );
-    assert_eq!(
-        parse("-lvlup 3"),
-        Ok(Order::Cheat {
-            cheat: Cheat::Levels { count: 3 }
-        })
-    );
-    assert_eq!(
-        parse("-refresh"),
-        Ok(Order::Cheat {
-            cheat: Cheat::Refresh
-        })
-    );
-    assert_eq!(
-        parse("-item Butterfly"),
-        Ok(Order::Cheat {
-            cheat: Cheat::Item { item: ItemId(46) }
-        }),
-        "an item goes by the name the catalog shows"
-    );
-    assert_eq!(
-        parse("-item 42"),
-        Ok(Order::Cheat {
-            cheat: Cheat::Item { item: ItemId(42) }
-        }),
-        "or by its id"
-    );
-    assert!(parse("-fly").is_err(), "a command that is not one");
-    assert!(parse("-gold lots").is_err(), "a number that is not one");
-    assert!(parse("-item wings").is_err(), "an item that is not one");
-    assert!(parse("").is_err(), "nothing at all");
-}
-
-#[test]
 fn mechanics_catalog_mango_has_an_append_only_id_and_describes_consumption() {
     let mango = crate::catalog::item(42).expect("Mango catalog entry");
     assert_eq!(mango.id, 42);
-    assert_eq!(mango.name, "Mango");
+    assert_eq!(mango.name(), "Mango");
     assert!(mango.blurb.contains("100 mana"));
     assert_eq!(crate::catalog::ITEMS.len(), 52);
 }
@@ -76,7 +30,8 @@ fn mechanics_catalog_mango_icon_rasterises_visible_fruit_inside_the_item_frame()
     let mango = crate::catalog::item(42).expect("Mango catalog entry");
     let art = mango.icon.expect("Mango must have embedded item art");
 
-    let (width, height, bytes) = crate::icons::pixels(art).expect("Mango SVG must rasterise");
+    let (width, height, bytes) =
+        crate::icons::pixels_at(art, crate::icons::ICON_SCALE).expect("Mango SVG must rasterise");
 
     assert_eq!((width, height), (192, 128));
     assert_eq!(bytes.len(), (width * height * 4) as usize);
@@ -231,6 +186,36 @@ fn the_bottom_panel_stays_on_screen() {
 }
 
 #[test]
+fn a_session_token_is_kept_as_sixty_four_hex_digits() {
+    let mut bytes = [0u8; 32];
+    for (at, byte) in bytes.iter_mut().enumerate() {
+        *byte = (at as u8).wrapping_mul(37) ^ 0xa5;
+    }
+    let token = bota_proto::Token(bytes);
+    let text = token_text(&token);
+    assert_eq!(text.len(), 64);
+    assert!(text.chars().all(|c| c.is_ascii_hexdigit()));
+    assert_eq!(token_from_text(&text), Some(token), "it reads back whole");
+    assert_eq!(
+        token_from_text(&format!("  {text}\n")),
+        Some(token),
+        "the line around it does not matter"
+    );
+    assert_eq!(token_from_text(&text[..62]), None, "too short");
+    assert_eq!(token_from_text(&format!("{text}00")), None, "too long");
+    assert_eq!(
+        token_from_text(&format!("zz{}", &text[2..])),
+        None,
+        "not hexadecimal"
+    );
+    assert_eq!(
+        token_from_text(&format!("\u{e9}{}", &text[2..])),
+        None,
+        "sixty-four bytes, but not ASCII"
+    );
+}
+
+#[test]
 fn arguments_parse_and_default() {
     let args = |list: &[&str]| {
         let mut whole = vec!["bota-client"];
@@ -259,8 +244,9 @@ fn arguments_parse_and_default() {
     assert_eq!(full.login.as_deref(), Some("alice"));
     assert!(matches!(
         full.errand(),
-        Some(bota_proto::ClientMsg::QuickPlay {
-            mode: bota_proto::ModeId(2)
+        Some(bota_proto::ToHub::FindMatch {
+            mode: bota_proto::ModeId(2),
+            seats: 1
         })
     ));
 
@@ -270,15 +256,15 @@ fn arguments_parse_and_default() {
     let seat = args(&["--match", "7"]).expect("one match by its number");
     assert!(matches!(
         seat.errand(),
-        Some(bota_proto::ClientMsg::JoinMatch {
+        Some(bota_proto::ToHub::JoinMatch {
             id: bota_proto::MatchId(7),
-            role: bota_proto::Role::Player
+            role: bota_proto::Role::Player { seats: 1 }
         })
     ));
     let eye = args(&["--watch", "7"]).expect("watching one match");
     assert!(matches!(
         eye.errand(),
-        Some(bota_proto::ClientMsg::JoinMatch {
+        Some(bota_proto::ToHub::JoinMatch {
             role: bota_proto::Role::Spectator,
             ..
         })
@@ -303,9 +289,10 @@ fn arguments_parse_and_default() {
 #[test]
 fn every_item_drawing_rasterises_to_something_visible() {
     for face in crate::catalog::ITEMS {
-        let name = face.name;
+        let name = face.name();
         let art = face.icon.expect("every item is drawn");
-        let (w, h, bytes) = crate::icons::pixels(art).expect("the drawing is readable");
+        let (w, h, bytes) = crate::icons::pixels_at(art, crate::icons::ICON_SCALE)
+            .expect("the drawing is readable");
         assert_eq!(w, 192, "{name} is drawn to the frame");
         assert_eq!(h, 128, "{name} is drawn to the frame");
         assert_eq!(bytes.len(), (w * h * 4) as usize);
@@ -359,13 +346,11 @@ fn every_catalog_entry_answers_to_its_own_id() {
             usize::from(face.id),
             index,
             "item {} is in place",
-            face.name
+            face.name()
         );
-        assert_eq!(
-            crate::catalog::item(face.id).map(|found| found.name),
-            Some(face.name)
-        );
+        assert_ne!(face.name(), "?", "item {index} has a name");
     }
+    assert_eq!(crate::catalog::ITEMS.len(), bota_proto::ITEM_NAMES.len());
     for (index, face) in crate::catalog::EFFECTS.iter().enumerate() {
         assert_eq!(
             usize::from(face.id),
@@ -399,7 +384,7 @@ fn every_catalog_entry_has_something_to_say() {
     }
     for face in crate::catalog::ITEMS {
         assert!(
-            !face.name.is_empty() && !face.blurb.is_empty() && !face.stats.is_empty(),
+            !face.name().is_empty() && !face.blurb.is_empty() && !face.stats.is_empty(),
             "{}",
             face.id
         );
@@ -925,7 +910,7 @@ fn a_tick(tick: u32, units: Vec<UnitView>, players: Vec<PlayerView>) -> WorldVie
     }
 }
 
-/// A seat with the body it stands in, or none while it is down.
+/// A seat with the unit the wire names for it, if any.
 fn a_seat(slot: SlotId, unit: Option<EntityId>) -> PlayerView {
     let mut seat = a_player();
     seat.slot = slot;
@@ -1022,4 +1007,538 @@ fn a_hero_that_comes_back_leaves_only_one_body_behind() {
         Some(fresh),
         "and the seat answers with the one it stood in last"
     );
+}
+
+/// A client with no window, playing one seat and looking at one tick.
+fn an_app(mine: SlotId, view: WorldView) -> App {
+    let player = ReplayPlayer::from_reader(std::io::Cursor::new(Vec::new()));
+    let mut app = App::new(Source::Replay(Box::new(player)));
+    app.my_slot = Some(mine);
+    app.view = Some(view);
+    app
+}
+
+#[test]
+fn a_fallen_hero_picked_in_the_panel_still_shops_learns_and_drags() {
+    let hero = EntityId {
+        idx: 7,
+        generation: 1,
+    };
+    let foe = EntityId {
+        idx: 8,
+        generation: 1,
+    };
+    let salve = an_item(Some(1), 0, 0, Some(Aim::Unit));
+    let mut fallen = a_seat(SlotId(0), Some(hero));
+    fallen.respawn_left = 300;
+    fallen.kit = Some(Kit {
+        abilities: vec![an_ability(1, 0, 0, false, false)],
+        items: vec![Some(salve), None, None, None, None, None, None, None, None],
+    });
+    let mut other = a_seat(SlotId(1), Some(foe));
+    other.team = Team::Dire;
+    other.respawn_left = 300;
+    let mut app = an_app(SlotId(0), a_tick(100, Vec::new(), vec![fallen, other]));
+    app.selected = Some(hero);
+
+    assert!(!app.hero_stands(), "nothing of it is on the field");
+    assert!(app.controls_selection(), "it is still ours to command");
+    assert_eq!(
+        app.item_in(0),
+        Some(salve),
+        "its bag is the one it fell with"
+    );
+    assert_eq!(
+        press(&app, Slot::Item(0), false),
+        Press::Nothing,
+        "nothing in that bag is pressed"
+    );
+    assert_eq!(
+        press(&app, Slot::Ability(0), true),
+        Press::Send(Order::Learn {
+            slot: AbilitySlot(0)
+        }),
+        "a skill point is spent all the same"
+    );
+    let bought = app.send_order(Order::Buy { item: ItemId(1) });
+    assert_eq!(
+        bought.map(|given| given.unit),
+        Some(hero),
+        "a purchase names the fallen hero"
+    );
+
+    app.selected = Some(foe);
+    assert!(
+        !app.controls_selection(),
+        "a fallen enemy is nobody's to command"
+    );
+    assert_eq!(app.item_in(0), None, "nor is its bag ours to reach into");
+}
+
+/// A match as the hall tells its members, with every field named.
+fn a_room(id: u64) -> bota_proto::MatchState {
+    bota_proto::MatchState {
+        id: bota_proto::MatchId(id),
+        name: "mid".to_string(),
+        mode: bota_proto::ModeId(0),
+        host: None,
+        stage: bota_proto::Stage::Gathering,
+        slots: Vec::new(),
+        watchers: Vec::new(),
+        yours: Vec::new(),
+    }
+}
+
+/// A match as it begins, with every field named and nothing on its map.
+fn a_match_info() -> bota_proto::MatchInfo {
+    bota_proto::MatchInfo {
+        match_id: bota_proto::MatchId(5),
+        map: bota_proto::MapId(0),
+        tick_rate: 30,
+        pregame_ticks: 900,
+        trees: Vec::new(),
+        terrain_cells: 0,
+        terrain_rle: Vec::new(),
+        opaque_cells: Vec::new(),
+        mode: bota_proto::TickMode::Realtime,
+        picks: Vec::new(),
+        shop: Vec::new(),
+        rules: bota_proto::Rules {
+            waves: bota_proto::Lanes::ALL,
+            invulnerable_towers: bota_proto::Lanes::NONE,
+            death_limit: 0,
+            tower_ends_it: false,
+            time_limit: 0,
+            cheats: false,
+        },
+    }
+}
+
+#[test]
+fn the_chat_keeps_its_newest_lines_and_leaves_the_hall_behind() {
+    use crate::chat::shown;
+    use bota_proto::{FromGame, FromHub};
+
+    let mut app = an_app(SlotId(0), a_tick(0, Vec::new(), Vec::new()));
+    app.handle(Heard::Hub(FromHub::Chat {
+        from: "anna".to_string(),
+        side: None,
+        team: false,
+        text: "hi".to_string(),
+    }));
+    app.handle(Heard::Hub(FromHub::Notice {
+        text: "anna rolls 3 (1-6)".to_string(),
+    }));
+    assert_eq!(shown(&app.chat[0]), "anna: hi");
+    assert_eq!(shown(&app.chat[1]), "anna rolls 3 (1-6)");
+    for n in 0..crate::state::CHAT_KEPT + 5 {
+        app.handle(Heard::Hub(FromHub::Notice {
+            text: n.to_string(),
+        }));
+    }
+    assert_eq!(app.chat.len(), crate::state::CHAT_KEPT, "the oldest go");
+    assert_eq!(
+        app.chat.last().map(|line| line.text.clone()),
+        Some((crate::state::CHAT_KEPT + 4).to_string())
+    );
+
+    app.handle(Heard::Hub(FromHub::MatchState { state: a_room(5) }));
+    assert!(app.chat.is_empty(), "the hall's lines stay in the hall");
+    app.handle(Heard::Game(FromGame::Chat {
+        from: "anna".to_string(),
+        side: Some(Team::Dire),
+        team: true,
+        text: "push".to_string(),
+    }));
+    assert_eq!(
+        shown(&app.chat[0]),
+        "[team] anna: push",
+        "the game server's chat lands in the same place"
+    );
+    app.handle(Heard::Hub(FromHub::MatchState { state: a_room(5) }));
+    assert_eq!(app.chat.len(), 1, "news of the same match keeps its chat");
+}
+
+#[test]
+fn a_refusal_from_the_game_server_is_said_and_shown() {
+    let mut app = an_app(SlotId(0), a_tick(0, Vec::new(), Vec::new()));
+    app.handle(Heard::Game(bota_proto::FromGame::Refused {
+        reason: bota_proto::GameReason::UnknownTicket,
+    }));
+    assert!(app.game_lost, "the match is out of reach");
+    assert_eq!(
+        app.feed.last().map(|line| line.text.as_str()),
+        Some("the game server does not know this ticket")
+    );
+    app.leave_room();
+    assert!(!app.game_lost, "leaving the match forgets it");
+}
+
+#[test]
+fn the_next_game_of_a_cup_starts_with_nothing_of_the_last() {
+    use bota_proto::{FromGame, FromHub, MatchStats};
+
+    let mut app = an_app(SlotId(0), a_tick(900, Vec::new(), Vec::new()));
+    app.handle(Heard::Hub(FromHub::MatchState { state: a_room(5) }));
+    app.handle(Heard::Game(FromGame::MatchOver {
+        winner: Team::Radiant,
+        stats: MatchStats {
+            duration: 900,
+            slots: Vec::new(),
+        },
+    }));
+    assert!(app.over.is_some());
+
+    // The hub brings the seat straight to the next game of the series.
+    app.handle(Heard::Hub(FromHub::MatchState { state: a_room(6) }));
+    assert!(app.over.is_none(), "the last game's end is not this one's");
+    assert!(app.view.is_none(), "nor is its world");
+    assert_eq!(app.room.as_ref().map(|room| room.id.0), Some(6));
+    assert!(app.phase == crate::state::Phase::Lobby, "its lobby");
+}
+
+#[test]
+fn every_hero_has_a_portrait_that_fills_its_frame_and_a_kit_the_catalog_names() {
+    for face in crate::catalog::HEROES {
+        let art = face.icon.expect("every hero is drawn");
+        let (w, h, bytes) = crate::icons::pixels_at(art, crate::icons::PORTRAIT_SCALE)
+            .expect("the drawing is readable");
+        assert_eq!((w, h), (360, 240), "{} is drawn to the frame", face.name);
+        let painted = bytes.chunks_exact(4).filter(|px| px[3] == 255).count();
+        assert_eq!(painted, (w * h) as usize, "{} covers its frame", face.name);
+        let corner = &bytes[..4];
+        let figure = bytes.chunks_exact(4).filter(|px| *px != corner).count();
+        assert!(
+            figure > (w * h / 2) as usize,
+            "{} stands out of its background: {figure} of {}",
+            face.name,
+            w * h
+        );
+        assert!(!face.abilities.is_empty(), "{} has a kit", face.name);
+        for id in face.abilities {
+            assert!(
+                crate::catalog::ability(*id).is_some(),
+                "{} carries ability {id}, which the catalog names",
+                face.name
+            );
+        }
+    }
+}
+
+#[test]
+fn a_box_of_another_shape_shows_the_middle_of_a_portrait() {
+    let narrow = crate::icons::middle_cut(360.0, 240.0, 1.0);
+    assert_eq!(
+        (narrow.x, narrow.y, narrow.w, narrow.h),
+        (60.0, 0.0, 240.0, 240.0)
+    );
+    let wide = crate::icons::middle_cut(360.0, 240.0, 3.0);
+    assert_eq!((wide.x, wide.y, wide.w, wide.h), (0.0, 60.0, 360.0, 120.0));
+    let same = crate::icons::middle_cut(360.0, 240.0, 1.5);
+    assert_eq!((same.x, same.y, same.w, same.h), (0.0, 0.0, 360.0, 240.0));
+}
+
+#[test]
+fn hero_cards_sit_apart_between_the_seats_the_chat_and_the_buttons() {
+    let (sw, sh) = (1280.0, 800.0);
+    let chat = crate::hall::chat_panel(sw, sh);
+    let ready = crate::lobby::action_button(sw, sh);
+    let leave = crate::lobby::leave_button(sw, sh);
+    assert!(leave.x + leave.w < ready.x, "the lobby's buttons sit apart");
+    let random = crate::lobby::random_button(sw, sh);
+    let walk_out = crate::lobby::picking_leave_button(sw, sh);
+    assert!(
+        walk_out.x + walk_out.w < random.x && random.x + random.w < ready.x,
+        "the picking's buttons sit apart"
+    );
+    assert!(walk_out.x > crate::hall::LEFT + 260.0, "clear of the count");
+    assert!(ready.x + ready.w <= chat.x, "and of the chat");
+    for (heroes, per_side) in [(3, 1), (3, 5), (7, 1), (12, 2)] {
+        let cards = crate::lobby::hero_cards(heroes, per_side, sw, sh);
+        assert_eq!(cards.len(), heroes);
+        let seats_end = crate::lobby::seat_row(0, per_side - 1, sw, sh);
+        for (at, card) in cards.iter().enumerate() {
+            assert!(
+                card.x >= crate::hall::LEFT,
+                "{heroes} heroes: card {at} starts on screen"
+            );
+            assert!(
+                card.x + card.w <= chat.x,
+                "{heroes} heroes: card {at} keeps off the chat"
+            );
+            assert!(
+                card.y > seats_end.y + seats_end.h,
+                "{heroes} heroes: card {at} is under the seats"
+            );
+            for other in &cards[at + 1..] {
+                let apart = card.x + card.w <= other.x
+                    || other.x + other.w <= card.x
+                    || card.y + card.h <= other.y
+                    || other.y + other.h <= card.y;
+                assert!(apart, "{heroes} heroes: cards overlap");
+            }
+        }
+        if heroes <= 3 {
+            let last = cards.last().expect("cards");
+            assert!(
+                last.y + last.h <= ready.y,
+                "{per_side} a side: a row of cards stays above the buttons"
+            );
+        }
+    }
+}
+
+#[test]
+fn heroes_are_picked_on_the_game_server_once_and_for_good() {
+    use bota_proto::{FromGame, FromHub, PickReason, PickSeat, PickState};
+
+    let picking = |mine: Option<HeroId>, set_on: Option<HeroId>| PickState {
+        seats: vec![
+            PickSeat {
+                slot: SlotId(0),
+                team: Team::Radiant,
+                login: "anna".to_string(),
+                hero: mine,
+                selected: set_on,
+            },
+            PickSeat {
+                slot: SlotId(1),
+                team: Team::Dire,
+                login: "boris".to_string(),
+                hero: None,
+                selected: None,
+            },
+        ],
+        yours: vec![SlotId(0)],
+        ms_left: 60_000,
+    };
+    let mut app = an_app(SlotId(0), a_tick(0, Vec::new(), Vec::new()));
+    app.handle(Heard::Hub(FromHub::MatchState {
+        state: bota_proto::MatchState {
+            stage: bota_proto::Stage::Picking,
+            yours: vec![SlotId(0)],
+            ..a_room(5)
+        },
+    }));
+    assert!(
+        !app.may_pick(),
+        "nothing is picked before the game server says so"
+    );
+    app.handle(Heard::Game(FromGame::Picking {
+        state: picking(None, None),
+    }));
+    assert!(app.phase == crate::state::Phase::Picking);
+    assert!(app.may_pick());
+    assert_eq!(app.my_pick(), None);
+    assert_eq!(app.my_selection(), None, "set on nothing yet");
+
+    // A selection told back by the game server, as after coming back, and
+    // one made here, which is the one that counts.
+    app.handle(Heard::Game(FromGame::Picking {
+        state: picking(None, Some(HeroId(1))),
+    }));
+    assert_eq!(app.my_selection(), Some(HeroId(1)));
+    app.select_hero(HeroId(0));
+    assert_eq!(app.my_selection(), Some(HeroId(0)));
+    assert_eq!(app.my_pick(), None, "selecting picks nothing");
+
+    app.handle(Heard::Game(FromGame::Picking {
+        state: picking(Some(HeroId(2)), None),
+    }));
+    assert_eq!(app.my_pick(), Some(HeroId(2)));
+    assert!(!app.may_pick(), "a pick is final");
+    assert_eq!(app.my_selection(), None, "nothing is selected once picked");
+    app.handle(Heard::Game(FromGame::PickRefused {
+        seat: SlotId(0),
+        hero: HeroId(1),
+        reason: PickReason::AlreadyPicked,
+    }));
+    assert_eq!(
+        app.reject.as_ref().map(|(text, _)| text.as_str()),
+        Some("your hero is picked for good")
+    );
+    app.handle(Heard::Game(FromGame::MatchStart {
+        info: a_match_info(),
+    }));
+    assert!(
+        app.picking.is_none(),
+        "the picking is over once the match begins"
+    );
+    assert!(app.phase == crate::state::Phase::Playing);
+}
+
+#[test]
+fn a_lobby_is_ready_to_start_once_every_seat_is_held_by_somebody_here() {
+    let seat = |login: &str, connected: bool| bota_proto::LobbySlot {
+        slot: SlotId(0),
+        team: Team::Radiant,
+        login: login.to_string(),
+        connected,
+    };
+    let room = |slots| bota_proto::MatchState { slots, ..a_room(5) };
+    assert!(crate::lobby::all_here(&room(vec![
+        seat("anna", true),
+        seat("boris", true)
+    ])));
+    assert!(!crate::lobby::all_here(&room(vec![
+        seat("anna", true),
+        seat("", false)
+    ])));
+    assert!(!crate::lobby::all_here(&room(vec![
+        seat("anna", true),
+        seat("boris", false)
+    ])));
+}
+
+#[test]
+fn the_hall_offers_back_a_running_match_until_its_seat_is_given_up() {
+    use bota_proto::{
+        AccountId, AccountInfo, MapId, MatchId, MatchSummary, ModeId, SeatSummary, Stage,
+    };
+
+    let summary = |stage: Stage, abandoned: bool| MatchSummary {
+        id: MatchId(9),
+        name: "duel".to_string(),
+        mode: ModeId(0),
+        map: MapId(0),
+        stage,
+        host: None,
+        seats: vec![
+            SeatSummary {
+                slot: SlotId(0),
+                team: Team::Radiant,
+                login: "anna".to_string(),
+                hero: Some(HeroId(2)),
+                abandoned,
+            },
+            SeatSummary {
+                slot: SlotId(1),
+                team: Team::Dire,
+                login: "boris".to_string(),
+                hero: Some(HeroId(1)),
+                abandoned: false,
+            },
+        ],
+        tournament: None,
+        created_at: 0,
+        duration: 0,
+        winner: None,
+        seed: None,
+    };
+    let player = ReplayPlayer::from_reader(std::io::Cursor::new(Vec::new()));
+    let mut app = App::new(Source::Replay(Box::new(player)));
+    app.account = Some(AccountInfo {
+        id: AccountId(1),
+        login: "anna".to_string(),
+    });
+    app.hall_matches = vec![summary(Stage::Gathering, false)];
+    assert_eq!(
+        app.match_to_rejoin().map(|m| m.id),
+        Some(MatchId(9)),
+        "a seat kept in a gathering match is the queue's or a cup's"
+    );
+    app.hall_matches = vec![summary(Stage::Playing, false)];
+    assert_eq!(app.match_to_rejoin().map(|m| m.id), Some(MatchId(9)));
+    app.hall_matches = vec![summary(Stage::Playing, true)];
+    assert!(
+        app.match_to_rejoin().is_none(),
+        "a seat given up is not offered back"
+    );
+    app.hall_matches = vec![summary(Stage::Over, false)];
+    assert!(app.match_to_rejoin().is_none(), "an ended match is not");
+    app.account = Some(AccountInfo {
+        id: AccountId(2),
+        login: "carl".to_string(),
+    });
+    app.hall_matches = vec![summary(Stage::Playing, false)];
+    assert!(
+        app.match_to_rejoin().is_none(),
+        "nor is one this account has no seat in"
+    );
+}
+
+#[test]
+fn the_panel_offering_a_match_back_sits_under_the_chat_with_its_buttons_apart() {
+    for (sw, sh) in [(1280.0, 800.0), (1920.0, 1080.0), (1024.0, 640.0)] {
+        let chat = crate::hall::chat_panel(sw, sh);
+        let panel = crate::hall::rejoin_panel(sw, sh);
+        let back = crate::hall::rejoin_button(sw, sh);
+        let give_up = crate::hall::abandon_button(sw, sh);
+        assert!(panel.y >= chat.y + chat.h, "under the chat at {sw}x{sh}");
+        assert!(panel.y + panel.h <= sh, "on screen at {sw}x{sh}");
+        for button in [&back, &give_up] {
+            assert!(button.x >= panel.x && button.x + button.w <= panel.x + panel.w);
+            assert!(button.y >= panel.y && button.y + button.h <= panel.y + panel.h);
+        }
+        assert!(back.x + back.w < give_up.x, "apart at {sw}x{sh}");
+    }
+}
+
+#[test]
+fn a_search_keeps_its_own_clock_and_a_found_match_the_time_it_first_gave() {
+    use bota_proto::{FromHub, MatchId, ModeId, Search};
+
+    let player = ReplayPlayer::from_reader(std::io::Cursor::new(Vec::new()));
+    let mut app = App::new(Source::Replay(Box::new(player)));
+    assert!(!app.searching());
+    let queued = |waiting| {
+        Heard::Hub(FromHub::Search {
+            search: Search::Queued {
+                mode: ModeId(1),
+                waiting,
+            },
+        })
+    };
+    let found = |accepted, ms_left| {
+        Heard::Hub(FromHub::Search {
+            search: Search::Found {
+                id: MatchId(7),
+                mode: ModeId(1),
+                accepted,
+                players: 2,
+                yours: accepted > 0,
+                ms_left,
+            },
+        })
+    };
+    app.handle(queued(1));
+    assert!(app.searching());
+    app.tick_effects(5.0);
+    app.handle(queued(2));
+    assert_eq!(
+        app.searched_for, 5.0,
+        "news of who else waits does not restart the clock"
+    );
+
+    app.handle(found(0, 15_000));
+    assert_eq!(app.found_span, 15.0);
+    app.tick_effects(3.0);
+    let Search::Found { ms_left, .. } = app.search else {
+        panic!("a match is found");
+    };
+    assert_eq!(App::seconds_left(ms_left, app.search_age), 12.0);
+    app.handle(found(1, 11_000));
+    assert_eq!(app.found_span, 15.0, "the bar keeps its full length");
+    assert_eq!(App::seconds_left(40, 2.0), 0.0, "never below zero");
+
+    app.handle(Heard::Hub(FromHub::Search {
+        search: Search::Idle,
+    }));
+    assert!(!app.searching());
+    app.handle(queued(1));
+    assert_eq!(app.searched_for, 0.0, "a new search starts its clock again");
+}
+
+#[test]
+fn a_match_found_is_answered_from_buttons_inside_its_box() {
+    for (sw, sh) in [(1280.0, 800.0), (1920.0, 1080.0), (1024.0, 640.0)] {
+        let rect = crate::hall::found_box(sw, sh);
+        let accept = crate::hall::found_accept(sw, sh);
+        let decline = crate::hall::found_decline(sw, sh);
+        for button in [&accept, &decline] {
+            assert!(button.x >= rect.x && button.x + button.w <= rect.x + rect.w);
+            assert!(button.y >= rect.y && button.y + button.h <= rect.y + rect.h);
+        }
+        assert!(decline.x + decline.w < accept.x, "apart at {sw}x{sh}");
+    }
 }

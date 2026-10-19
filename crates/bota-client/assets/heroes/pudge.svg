@@ -1,0 +1,57 @@
+<svg width="100%" viewBox="0 0 680 260" role="img" xmlns="http://www.w3.org/2000/svg">
+  <title>Pudge</title>
+  <defs>
+    <radialGradient id="cellar" cx="0.5" cy="0.4" r="0.8">
+      <stop offset="0" stop-color="#4a2419"/>
+      <stop offset="0.6" stop-color="#22100b"/>
+      <stop offset="1" stop-color="#0b0504"/>
+    </radialGradient>
+    <linearGradient id="flesh" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#9aa873"/>
+      <stop offset="1" stop-color="#596637"/>
+    </linearGradient>
+    <radialGradient id="head" cx="0.45" cy="0.35" r="0.7">
+      <stop offset="0" stop-color="#a9b67f"/>
+      <stop offset="1" stop-color="#6c7a45"/>
+    </radialGradient>
+    <linearGradient id="steel" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#e3eaec"/>
+      <stop offset="0.5" stop-color="#9aa6aa"/>
+      <stop offset="1" stop-color="#4c5558"/>
+    </linearGradient>
+    <filter id="haze" x="-0.5" y="-0.5" width="2" height="2">
+      <feGaussianBlur stdDeviation="8"/>
+    </filter>
+  </defs>
+  <g transform="translate(220 50)">
+    <rect width="240" height="160" fill="url(#cellar)"/>
+    <ellipse cx="120" cy="160" rx="130" ry="42" fill="#6f9a2a" opacity="0.45" filter="url(#haze)"/>
+    <path d="M150 116 C168 92 176 70 182 40" fill="none" stroke="#3c3f40" stroke-width="5" stroke-dasharray="7 3"/>
+    <path d="M150 116 C168 92 176 70 182 40" fill="none" stroke="#8b9497" stroke-width="2.5" stroke-dasharray="7 3"/>
+    <path d="M182 44 C176 20 200 6 218 18 C232 28 228 50 210 54 L206 46 C218 42 220 30 210 24 C198 18 188 28 192 42 Z" fill="url(#steel)"/>
+    <path d="M206 46 L218 60 L204 54 Z" fill="#c9d2d4"/>
+    <path d="M22 160 C22 116 62 90 120 90 C178 90 218 116 218 160 Z" fill="url(#flesh)"/>
+    <path d="M58 104 C90 120 150 120 182 104" fill="none" stroke="#4d5a2c" stroke-width="2"/>
+    <path d="M40 160 C60 124 92 112 120 128 C148 112 180 124 200 160 Z" fill="#6b3f2a"/>
+    <path d="M40 160 C60 124 92 112 120 128 C148 112 180 124 200 160" fill="none" stroke="#3e2216" stroke-width="2.5"/>
+    <path d="M70 100 L170 150" stroke="#4a2a1c" stroke-width="10" stroke-linecap="round"/>
+    <circle cx="96" cy="113" r="2.5" fill="#c8b07a"/>
+    <circle cx="122" cy="126" r="2.5" fill="#c8b07a"/>
+    <circle cx="148" cy="139" r="2.5" fill="#c8b07a"/>
+    <path d="M60 140 C80 132 96 134 108 146" fill="none" stroke="#2c1a10" stroke-width="2"/>
+    <path d="M66 132 L70 142 M76 130 L79 140 M86 131 L88 141 M96 134 L97 144" stroke="#2c1a10" stroke-width="1.6"/>
+    <ellipse cx="120" cy="64" rx="38" ry="33" fill="url(#head)"/>
+    <ellipse cx="83" cy="66" rx="7" ry="10" fill="#7f8d58"/>
+    <ellipse cx="157" cy="66" rx="7" ry="10" fill="#7f8d58"/>
+    <path d="M94 52 L114 58 M146 52 L126 58" stroke="#2f3a1a" stroke-width="5" stroke-linecap="round"/>
+    <ellipse cx="108" cy="62" rx="5" ry="3.5" fill="#f2df6e"/>
+    <ellipse cx="132" cy="62" rx="5" ry="3.5" fill="#f2df6e"/>
+    <circle cx="108" cy="62" r="1.8" fill="#1a1205"/>
+    <circle cx="132" cy="62" r="1.8" fill="#1a1205"/>
+    <path d="M98 78 Q120 90 142 78 Q138 94 120 96 Q102 94 98 78 Z" fill="#2a110c"/>
+    <path d="M102 80 L106 86 L110 81 L114 87 L118 82 L122 87 L126 82 L130 87 L134 81 L138 85 L139 80 Z" fill="#e9e1c2"/>
+    <path d="M100 38 L124 32" stroke="#3b2a1e" stroke-width="2"/>
+    <path d="M104 33 L106 40 M110 32 L112 39 M116 31 L118 38" stroke="#3b2a1e" stroke-width="1.6"/>
+    <path d="M136 74 L150 70" stroke="#3b2a1e" stroke-width="1.6"/>
+  </g>
+</svg>

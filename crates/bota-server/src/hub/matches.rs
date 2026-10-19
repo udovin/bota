@@ -1,15 +1,14 @@
 //! A match as the hub holds it, from creation to the archive.
 
-use std::sync::mpsc::Sender;
+use std::fs::File;
 use std::time::Instant;
 
 use bota_proto::{
-    AccountId, MatchId, MatchState, MatchStats, MatchSummary, ModeId, PlayerId, SlotId, Stage,
-    Team, TournamentRef,
+    AccountId, MatchId, MatchState, MatchStats, MatchSummary, ModeId, Pass, PlayerId, SlotId,
+    Stage, Team, TournamentRef,
 };
 
 use crate::hub::{Mode, Roster};
-use crate::run::MatchEvent;
 
 /// One match, at whatever stage.
 pub struct Match {
@@ -19,7 +18,8 @@ pub struct Match {
     pub name: String,
     /// Which mode it is played under.
     pub mode: ModeId,
-    /// The account that may kick from it. Absent for a tournament match.
+    /// The account that may start it and kick from it. Absent for a match
+    /// that starts on its own: a tournament's, or the queue's.
     pub host: Option<AccountId>,
     /// The seed of its randomness.
     pub seed: u64,
@@ -31,14 +31,25 @@ pub struct Match {
     pub watchers: Vec<(PlayerId, String)>,
     /// The tournament game it is.
     pub tournament: Option<TournamentRef>,
+    /// Whether the matchmaking queue made it. Its seats are its accounts'
+    /// from the start, and it starts as it is made.
+    pub matchmade: bool,
     /// When it was created, in seconds since the Unix epoch.
     pub created_at: u64,
     /// When its stage last changed, or it was last left empty.
     pub since: Instant,
-    /// Tournament only: when a team that has not shown up forfeits.
+    /// While a tournament game gathers: when a team that has not shown up
+    /// forfeits it.
     pub deadline: Option<Instant>,
-    /// The running thread's inbox, while it plays.
-    pub run: Option<Sender<MatchEvent>>,
+    /// The link of the game server it is on, from its start to its end.
+    pub server: Option<PlayerId>,
+    /// Everybody let into it on its game server, from its start to its end.
+    pub passes: Vec<Pass>,
+    /// Its replay file as its game server sends it, from its start to its
+    /// end.
+    pub replay: Option<File>,
+    /// Whether it was started and waits for a game server with room.
+    pub waiting_server: bool,
     /// Which side won. Absent until it ends with a winner.
     pub winner: Option<Team>,
     /// The final numbers, once it ended.
@@ -67,10 +78,14 @@ impl Match {
             roster: Roster::new(mode.seats),
             watchers: Vec::new(),
             tournament: None,
+            matchmade: false,
             created_at,
             since: Instant::now(),
             deadline: None,
-            run: None,
+            server: None,
+            passes: Vec::new(),
+            replay: None,
+            waiting_server: false,
             winner: None,
             stats: None,
             duration: 0,
@@ -79,22 +94,38 @@ impl Match {
 
     /// Whether a connection is in the match, seated or watching.
     pub fn holds(&self, player: PlayerId) -> bool {
-        self.roster.seat_of_player(player).is_some() || self.watchers.iter().any(|w| w.0 == player)
+        !self.roster.sat_on_by(player).is_empty() || self.watchers.iter().any(|w| w.0 == player)
     }
 
-    /// Every connection in the match.
+    /// Every connection in the match, each once.
     pub fn players(&self) -> Vec<PlayerId> {
-        self.roster
+        let mut players: Vec<PlayerId> = self
+            .roster
             .seats
             .iter()
             .filter_map(|s| s.player)
             .chain(self.watchers.iter().map(|w| w.0))
-            .collect()
+            .collect();
+        players.sort_unstable();
+        players.dedup();
+        players
     }
 
     /// Whether anybody is connected to it.
     pub fn anyone_here(&self) -> bool {
         self.roster.anyone_present() || !self.watchers.is_empty()
+    }
+
+    /// Whether its seats belong to the accounts they were given to, a
+    /// tournament's or the queue's, rather than to whoever takes them.
+    pub fn seats_fixed(&self) -> bool {
+        self.tournament.is_some() || self.matchmade
+    }
+
+    /// Whether it is on its game server, its heroes being picked or it
+    /// being played.
+    pub fn started(&self) -> bool {
+        matches!(self.stage, Stage::Picking | Stage::Playing)
     }
 
     /// The match as one connection sees it.
@@ -107,7 +138,7 @@ impl Match {
             stage: self.stage,
             slots: self.roster.lobby_slots(),
             watchers: self.watchers.iter().map(|w| w.1.clone()).collect(),
-            you: self.roster.seat_of_player(player).map(|s| s.slot),
+            yours: self.roster.sat_on_by(player),
         }
     }
 
@@ -127,13 +158,19 @@ impl Match {
             winner: self.winner,
             seed: match self.stage {
                 Stage::Over | Stage::Abandoned => Some(self.seed),
-                Stage::Gathering | Stage::Playing => None,
+                Stage::Gathering | Stage::Picking | Stage::Playing => None,
             },
         }
     }
 
-    /// The seat a connection holds.
-    pub fn seat_of_player(&self, player: PlayerId) -> Option<SlotId> {
-        self.roster.seat_of_player(player).map(|s| s.slot)
+    /// The seats a connection sits on, in slot order.
+    pub fn seats_of_player(&self, player: PlayerId) -> Vec<SlotId> {
+        self.roster.sat_on_by(player)
+    }
+
+    /// The side a connection's seats are on. Absent for a spectator.
+    pub fn side_of_player(&self, player: PlayerId) -> Option<Team> {
+        let slot = *self.roster.sat_on_by(player).first()?;
+        self.roster.at(slot).map(|seat| seat.team)
     }
 }

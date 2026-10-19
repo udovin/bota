@@ -2,7 +2,7 @@ use std::cell::Cell;
 use std::io::{self, Cursor, Read};
 use std::rc::Rc;
 
-use bota_proto::{MAX_PAYLOAD_LEN, ReplayRecord, ServerMsg};
+use bota_proto::{FromGame, MAX_PAYLOAD_LEN, ReplayRecord};
 
 use super::fixtures::{counted, snapshot, wire};
 use crate::replay_play::{MAX_READS_PER_POLL, ReplayPlayer};
@@ -95,7 +95,7 @@ fn every_partial_payload_reports_the_missing_bytes() {
 
 #[test]
 fn deferred_failure_preserves_prior_messages_and_reports_record_and_offset() {
-    let event = ReplayRecord::Msg(ServerMsg::Events {
+    let event = ReplayRecord::Msg(FromGame::Events {
         tick: 0,
         events: Vec::new(),
     });

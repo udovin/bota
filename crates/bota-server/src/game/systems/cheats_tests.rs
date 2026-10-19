@@ -1,14 +1,13 @@
-//! Cheats: what each one does, and that a match without them refuses them.
+//! Cheats: what each one does for a seat, standing or fallen.
 
-use bota_proto::{
-    Cheat, EventKind, Fixed, HeroId, ItemId, MapId, Order, Pick, RejectReason, SlotId, Team,
-    TickMode,
+use bota_proto::{EventKind, Fixed, HeroId, ItemId, MapId, Pick, Rules, SlotId, Team, TickMode};
+
+use crate::game::{
+    Cheat, Entity, Event, ITEM_BUTTERFLY, ItemStack, MatchConfig, STANDARD_RULES, World, rules,
 };
 
-use crate::game::{Command, Entity, Event, ITEM_BUTTERFLY, ItemStack, MatchConfig, World, rules};
-
-/// A one-seat match on the demo map, with or without cheats.
-fn config(cheats: bool) -> MatchConfig {
+/// A one-seat match on the demo map with cheats on.
+fn config() -> MatchConfig {
     MatchConfig {
         match_id: 5,
         master_key: [9; 32],
@@ -21,25 +20,26 @@ fn config(cheats: bool) -> MatchConfig {
         tick_rate: 30,
         mode: TickMode::Lockstep,
         ack_timeout_ticks: 30,
-        cheats,
+        rules: Rules {
+            cheats: true,
+            ..STANDARD_RULES
+        },
     }
 }
 
 /// A world with cheats on and its one hero.
 fn cheating_world() -> (World, Entity) {
-    let cfg = config(true);
+    let cfg = config();
     let world = World::for_match(&cfg, cfg.rng());
     let hero = world.seats[0].unit.expect("stood up");
     (world, hero)
 }
 
-/// Hands one cheat to the seat and runs the tick it lands in.
+/// Takes one cheat for the seat.
 fn cheat(world: &mut World, cheat: Cheat) -> Vec<Event> {
-    world.advance(&[Command {
-        slot: SlotId(0),
-        unit: None,
-        order: Order::Cheat { cheat },
-    }])
+    let mut events = Vec::new();
+    world.cheat(SlotId(0), cheat, &mut events);
+    events
 }
 
 #[test]
@@ -137,16 +137,37 @@ fn an_item_is_handed_out_for_nothing_and_told_of_as_bought() {
 }
 
 #[test]
-fn a_match_without_cheats_refuses_them_and_one_with_them_takes_them() {
-    let order = Order::Cheat {
-        cheat: Cheat::Gold { amount: 1 },
-    };
-    let cfg = config(false);
-    let world = World::for_match(&cfg, cfg.rng());
+fn a_fallen_hero_levels_and_gets_items_but_is_not_refreshed() {
+    let (mut world, hero) = cheating_world();
+    world.bury(vec![(hero, None)], &mut Vec::new());
+    assert_eq!(world.seats[0].fallen, Some(hero));
+
+    cheat(&mut world, Cheat::Refresh);
     assert_eq!(
-        world.validate_order(SlotId(0), None, &order),
-        Err(RejectReason::NoCheats)
+        world.health.get(hero).map(|h| h.hp),
+        Some(Fixed::ZERO),
+        "a body lying fallen is left as it lies"
     );
-    let (world, _hero) = cheating_world();
-    assert_eq!(world.validate_order(SlotId(0), None, &order), Ok(()));
+
+    cheat(&mut world, Cheat::Levels { count: 2 });
+    assert_eq!(world.seats[0].level, 3);
+    assert_eq!(
+        world.level.get(hero).map(|level| level.0),
+        Some(3),
+        "the fallen body has the points to spend at once"
+    );
+
+    cheat(
+        &mut world,
+        Cheat::Item {
+            item: ItemId(ITEM_BUTTERFLY),
+        },
+    );
+    assert!(
+        world.seats[0]
+            .stash
+            .held()
+            .any(|stack| stack.id == ItemId(ITEM_BUTTERFLY)),
+        "what a fallen hero is given waits in the stash"
+    );
 }

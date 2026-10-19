@@ -90,7 +90,7 @@ impl World {
                     slot: seat.slot,
                     team: seat.team,
                     hero: seat.hero,
-                    unit: seat.unit.map(wire_id),
+                    unit: seat.hero_unit().map(wire_id),
                     level: seat.level,
                     xp: seat.xp,
                     // A side is told its own gold and its own stash, nobody
@@ -109,9 +109,17 @@ impl World {
                     // is its own business to remember.
                     kit: match viewer {
                         Some(team) if team != seat.team => None,
-                        _ => seat.kept.as_ref().map(|kept| bota_proto::Kit {
-                            abilities: ability_views(&kept.book),
-                            items: item_views(&kept.bag),
+                        _ => seat.fallen.map(|body| bota_proto::Kit {
+                            abilities: self.abilities.get(body).map_or_else(Vec::new, |book| {
+                                book.slots
+                                    .iter()
+                                    .map(|held| {
+                                        let can_level = self.can_level(body, held.id, held.level);
+                                        ability_view(held, false, can_level)
+                                    })
+                                    .collect()
+                            }),
+                            items: self.inventory.get(body).map(item_views).unwrap_or_default(),
                         }),
                     },
                     kills: seat.kills,
@@ -244,8 +252,7 @@ fn shown(held: Fixed) -> i32 {
 /// One ability slot on the wire.
 ///
 /// What is worked out from the body it sits on — whether a toggle is running
-/// and whether a point could go into it — is asked of the caller, since a
-/// book that outlived its body has neither.
+/// and whether a point could go into it — is asked of the caller.
 fn ability_view(held: &crate::game::AbilityState, on: bool, can_level: bool) -> AbilityView {
     let def = crate::game::ability_def(held.id);
     AbilityView {
@@ -260,17 +267,6 @@ fn ability_view(held: &crate::game::AbilityState, on: bool, can_level: bool) -> 
         on,
         can_level,
     }
-}
-
-/// A whole book on the wire, as it stands with no body under it.
-///
-/// Nothing is toggled on and no point may be spent: both want a body, and a
-/// kept book has none.
-fn ability_views(book: &crate::game::AbilityBook) -> Vec<AbilityView> {
-    book.slots
-        .iter()
-        .map(|held| ability_view(held, false, false))
-        .collect()
 }
 
 /// Which effect one kind is on the wire.

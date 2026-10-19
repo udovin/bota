@@ -1,4 +1,4 @@
-use bota_proto::{EventKind, Fixed, HeroId, ServerMsg, SlotId, Target, Team};
+use bota_proto::{EventKind, Fixed, FromGame, HeroId, SlotId, Target, Team};
 
 use crate::game::{EventVisibility, wire_id};
 
@@ -92,12 +92,12 @@ fn mango_mana_event_uses_upstream_visibility_and_round_trips_on_the_wire() {
                 EventVisibility::OneTeam(Team::Radiant)
             }
         );
-        let message = ServerMsg::Events {
+        let message = FromGame::Events {
             tick: world.tick,
             events: vec![events[0].kind.clone()],
         };
         let encoded = bota_proto::encode_frame_to_vec(&message).unwrap();
-        let decoded: ServerMsg =
+        let decoded: FromGame =
             bota_proto::decode_payload(&encoded[bota_proto::LEN_PREFIX..]).unwrap();
         assert_eq!(decoded, message);
     }

@@ -38,7 +38,8 @@ pub fn draw(app: &App) {
         Phase::SignIn => crate::hall::draw_signin(app),
         Phase::Hall => crate::hall::draw_hall(app),
         Phase::Cup => crate::hall::draw_cup(app),
-        Phase::Lobby => draw_lobby(app),
+        Phase::Lobby => crate::lobby::draw_lobby(app),
+        Phase::Picking => crate::lobby::draw_picking(app),
         Phase::Playing => {
             if let Some(view) = &app.view {
                 draw_world(app, view);
@@ -58,12 +59,14 @@ pub fn draw(app: &App) {
     if let Some((text, _)) = &app.reject
         && matches!(
             app.phase,
-            Phase::SignIn | Phase::Hall | Phase::Cup | Phase::Lobby
+            Phase::SignIn | Phase::Hall | Phase::Cup | Phase::Lobby | Phase::Picking
         )
     {
         center_text_at(text, screen_height() - 24.0, 22.0, ORANGE);
     }
     crate::hall::draw_prompt(app);
+    crate::hall::draw_confirm(app);
+    crate::hall::draw_found(app);
 }
 
 /// Draws replay startup progress before the first snapshot is available.
@@ -87,80 +90,6 @@ pub fn draw_replay_error(error: &str) {
     let size = 20.0 * ((screen_width() - 32.0).max(1.0) / width).min(1.0);
     center_text_at(error, middle + 12.0, size, WHITE);
     center_text_at("[Esc] close", middle + 48.0, 20.0, GRAY);
-}
-
-fn draw_lobby(app: &App) {
-    let x = 60.0;
-    let mut y = 80.0;
-    let Some(room) = &app.room else {
-        draw_text("bota", x, y, 48.0, WHITE);
-        draw_text("waiting for the match...", x, y + 50.0, 24.0, GRAY);
-        return;
-    };
-    draw_text(&room.name, x, y, 40.0, WHITE);
-    y += 44.0;
-    let mode = app
-        .modes
-        .iter()
-        .find(|m| m.id == room.mode)
-        .map_or(String::new(), |m| format!("{}   ", m.name));
-    draw_text(
-        format!("{mode}match {}", room.id.0),
-        x,
-        y,
-        20.0,
-        Color::new(0.55, 0.60, 0.68, 1.0),
-    );
-    y += 34.0;
-    let hint = if app.my_slot.is_some() {
-        if app.ready {
-            "ready - waiting for the others   [R] cancel   [Esc] leave"
-        } else {
-            "pick a hero, then [R] when ready   [Esc] leave"
-        }
-    } else {
-        "watching - the match starts when every seat is ready   [Esc] leave"
-    };
-    draw_text(hint, x, y, 22.0, GRAY);
-    y += 36.0;
-    if app.my_slot.is_some() {
-        let roster = crate::catalog::HEROES
-            .iter()
-            .enumerate()
-            .map(|(id, hero)| format!("{}: {}", id + 1, hero.name))
-            .collect::<Vec<_>>()
-            .join("   ");
-        draw_text(&roster, x, y, 22.0, GOLD);
-        y += 34.0;
-    }
-    for slot in &room.slots {
-        let holder = if slot.login.is_empty() {
-            "open".to_string()
-        } else {
-            let ready = if slot.ready { " [ready]" } else { "" };
-            let away = if slot.connected { "" } else { " (away)" };
-            format!("{}{ready}{away}", slot.login)
-        };
-        let hero = slot
-            .hero
-            .and_then(|hero| crate::catalog::hero(hero.0))
-            .map_or(String::new(), |hero| format!(" as {}", hero.name));
-        let line = format!("{:?} seat {}: {holder}{hero}", slot.team, slot.slot.0);
-        let mine = app.my_slot == Some(slot.slot);
-        let color = if mine { WHITE } else { team_color(slot.team) };
-        draw_text(&line, x, y, 26.0, color);
-        y += 32.0;
-    }
-    if !room.watchers.is_empty() {
-        y += 12.0;
-        draw_text(
-            format!("watching: {}", room.watchers.join(", ")),
-            x,
-            y,
-            20.0,
-            GRAY,
-        );
-    }
 }
 
 const TREE: Color = Color::new(0.16, 0.30, 0.16, 1.0);
@@ -451,7 +380,7 @@ const MOVE_ORDER: Color = Color::new(0.35, 0.85, 0.45, 1.0);
 /// The marker colour of an attack order.
 const ATTACK_ORDER: Color = Color::new(0.95, 0.35, 0.30, 1.0);
 
-/// A short flash where each seat's latest order was aimed: a shrinking ring
+/// A short flash where each unit's latest order was aimed: a shrinking ring
 /// on the ground for a spot, a ring around the body for a unit or for an
 /// order aimed at nothing.
 ///
@@ -483,14 +412,7 @@ fn draw_orders(app: &App, view: &WorldView, to_screen: impl Fn(f32, f32) -> (f32
                 draw_circle_lines(x, y, body + 3.0 + 6.0 * fade, 2.0, colour);
             }
             Target::None => {
-                let ordered = shown.unit.or_else(|| {
-                    view.players
-                        .iter()
-                        .find(|player| player.slot == shown.slot)
-                        .and_then(|player| player.unit)
-                });
-                let from = ordered.and_then(|id| view.units.iter().find(|unit| unit.id == id));
-                let Some(from) = from else {
+                let Some(from) = view.units.iter().find(|unit| unit.id == shown.unit) else {
                     continue;
                 };
                 let (x, y) = to_screen(from.pos.x.to_f32(), from.pos.y.to_f32());
@@ -896,15 +818,9 @@ fn draw_hud(app: &App, view: &WorldView) {
         let panel = crate::hud::bottom_panel(screen_width(), screen_height());
         draw_text(reason, panel.x + 8.0, panel.y - 8.0, 20.0, ORANGE);
     }
-    if let Some(line) = &app.console {
-        // A dark strip above the panel, so what is typed reads against any
-        // ground.
-        let panel = crate::hud::bottom_panel(screen_width(), screen_height());
-        let (x, y, w, h) = (panel.x, panel.y - 62.0, panel.w.max(420.0), 30.0);
-        draw_rectangle(x, y, w, h, Color::new(0.0, 0.0, 0.0, 0.75));
-        draw_rectangle_lines(x, y, w, h, 1.0, GRAY);
-        draw_text(format!("> {line}_"), x + 8.0, y + 22.0, 22.0, WHITE);
-    }
+    // Above the panel, out of the way of the fight in the middle.
+    let panel = crate::hud::bottom_panel(screen_width(), screen_height());
+    crate::chat::draw_over_field(app, panel.x, panel.y - 32.0, panel.w.max(420.0));
     if app.attack_move_armed {
         center_text_at(
             "attack-move: click a target point",
@@ -915,13 +831,13 @@ fn draw_hud(app: &App, view: &WorldView) {
     }
     if let Some(slot) = app.my_slot
         && let Some(p) = view.players.iter().find(|p| p.slot == slot)
-        && p.unit.is_none()
+        && p.respawn_left > 0
         && app.over.is_none()
     {
         let secs = p.respawn_left / u32::from(app.tick_rate.max(1)) + 1;
         center_text(&format!("respawn in {secs}"), 36.0, WHITE);
     }
-    if app.lost {
+    if app.lost || app.game_lost {
         center_text_at(
             "connection lost",
             screen_height() / 2.0 - 80.0,
@@ -937,7 +853,7 @@ fn draw_hud(app: &App, view: &WorldView) {
                 player.speed
             )
         }
-        Source::Live(_) => {
+        Source::Live { .. } => {
             "[RMB] move/attack  [A] attack-move  [S] stop  [H] hold  [wheel] zoom".to_string()
         }
     };
@@ -954,16 +870,31 @@ fn draw_top_panel(app: &App, view: &WorldView) {
         let base = team_color(p.team);
         let bg = Color::new(base.r * 0.45, base.g * 0.45, base.b * 0.45, 0.95);
         draw_rectangle(rect.x, rect.y, rect.w, rect.h, bg);
+        // A hero waiting to stand up again is shown in shadow.
+        let tint = if unit.is_none() && p.respawn_left > 0 {
+            Color::new(0.38, 0.38, 0.38, 1.0)
+        } else {
+            WHITE
+        };
+        crate::icons::draw_hero_portrait(p.hero.0, rect.x, rect.y, rect.w, rect.h, tint);
+        draw_rectangle(rect.x, rect.y + rect.h - 4.0, rect.w, 4.0, base);
         let border = if p.unit.is_some() && p.unit == app.selected {
             WHITE
         } else {
             BLACK
         };
         draw_rectangle_lines(rect.x, rect.y, rect.w, rect.h, 2.0, border);
+        draw_rectangle(
+            rect.x + 1.0,
+            rect.y + 1.0,
+            18.0,
+            17.0,
+            Color::new(0.04, 0.04, 0.05, 1.0),
+        );
         draw_text(
             format!("{}", p.level),
             rect.x + 4.0,
-            rect.y + 16.0,
+            rect.y + 14.0,
             16.0,
             WHITE,
         );
@@ -983,7 +914,7 @@ fn draw_top_panel(app: &App, view: &WorldView) {
                 6.0,
                 base,
             );
-        } else if p.unit.is_some() {
+        } else if p.respawn_left == 0 {
             draw_text(
                 "?",
                 rect.x + rect.w / 2.0 - 4.0,
@@ -993,13 +924,6 @@ fn draw_top_panel(app: &App, view: &WorldView) {
             );
         } else {
             let secs = p.respawn_left / rate + 1;
-            draw_rectangle(
-                rect.x,
-                rect.y,
-                rect.w,
-                rect.h,
-                Color::new(0.0, 0.0, 0.0, 0.55),
-            );
             draw_text(
                 format!("{secs}"),
                 rect.x + rect.w / 2.0 - 8.0,
@@ -1104,7 +1028,7 @@ fn draw_bottom_panel(app: &App, view: &WorldView) {
     if let Some(u) = unit {
         draw_vitals(u, &rect);
     }
-    if p.unit.is_none() {
+    if p.respawn_left > 0 {
         let secs = p.respawn_left / rate + 1;
         draw_text(
             format!("dead - respawns in {secs}s"),
@@ -1583,7 +1507,7 @@ fn draw_item_box(
         return;
     };
     if !crate::icons::draw_item_icon(item.id.0, r.x + 1.0, r.y + 1.0, r.w - 2.0, r.h - 2.0) {
-        let name = crate::catalog::item(item.id.0).map_or("?", |face| face.name);
+        let name = bota_proto::item_name(item.id).unwrap_or("?");
         draw_text(name, r.x + 2.0, r.y + 16.0, 12.0, WHITE);
     }
     if let Some(charges) = item.charges.filter(|left| *left > 0) {
@@ -1635,7 +1559,7 @@ fn draw_held_item(app: &App) {
     let (mx, my) = mouse_position();
     let (w, h) = (32.0, 26.0);
     if !crate::icons::draw_item_icon(item.id.0, mx - w / 2.0, my - h / 2.0, w, h) {
-        let name = crate::catalog::item(item.id.0).map_or("?", |face| face.name);
+        let name = bota_proto::item_name(item.id).unwrap_or("?");
         draw_text(name, mx - w / 2.0, my + 4.0, 12.0, WHITE);
     }
 }
@@ -1743,7 +1667,7 @@ fn draw_shop(app: &App, view: &WorldView) {
         } else {
             r.x + 4.0
         };
-        draw_text(face.name, text, r.y + 16.0, 15.0, color);
+        draw_text(face.name(), text, r.y + 16.0, 15.0, color);
         draw_text(face.stats, text + 62.0, r.y + 16.0, 13.0, DARKGRAY);
         // What the parts already in hand save is worth showing beside what
         // the whole would have cost.
@@ -1774,11 +1698,14 @@ pub const TREE_RADIUS: f32 = 48.0;
 /// What the shop charges is worked out against this, so a part already in hand
 /// is not asked for twice.
 fn held_items(view: &WorldView, p: &bota_proto::PlayerView) -> Vec<bota_proto::ItemId> {
-    let bag = p
-        .unit
-        .and_then(|id| view.units.iter().find(|u| u.id == id))
-        .map(|u| u.items.as_slice())
-        .unwrap_or_default();
+    let bag = match &p.kit {
+        Some(kit) => kit.items.as_slice(),
+        None => p
+            .unit
+            .and_then(|id| view.units.iter().find(|u| u.id == id))
+            .map(|u| u.items.as_slice())
+            .unwrap_or_default(),
+    };
     bag.iter()
         .chain(p.stash.iter().flatten())
         .flatten()
@@ -1883,7 +1810,7 @@ fn draw_tooltips(app: &App, view: &WorldView) {
                         ));
                     }
                     lines.push(where_to.to_string());
-                    tip = Some((format!("{}  {} g", face.name, price), lines));
+                    tip = Some((format!("{}  {} g", face.name(), price), lines));
                 }
             }
         }
@@ -1919,7 +1846,7 @@ fn draw_tooltips(app: &App, view: &WorldView) {
 /// The popup lines of one owned item.
 fn item_tip(item: &bota_proto::ItemView, backpack: bool, rate: u32) -> (String, Vec<String>) {
     let face = crate::catalog::item(item.id.0);
-    let name = face.map_or("?", |face| face.name);
+    let name = bota_proto::item_name(item.id).unwrap_or("?");
     let mut lines = vec![face.map_or("", |face| face.blurb).to_string()];
     if let Some(charges) = item.charges {
         lines.push(format!(

@@ -30,8 +30,8 @@ pub struct Archive {
 impl Archive {
     /// Opens the directory, creating it, and reads every summary in it.
     ///
-    /// A match left playing by a crash is marked abandoned and its partial
-    /// replay kept under the finished name.
+    /// A match left on its game server by a crash is marked abandoned, and
+    /// what its replay holds is kept under the finished name.
     pub fn open(root: &Path) -> io::Result<Archive> {
         fs::create_dir_all(root.join("replays"))?;
         fs::create_dir_all(root.join("tournaments"))?;
@@ -50,12 +50,9 @@ impl Archive {
             let Some((mut summary, stats)) = read_meta(&path) else {
                 continue;
             };
-            if summary.stage == Stage::Playing {
+            if matches!(summary.stage, Stage::Picking | Stage::Playing) {
                 summary.stage = Stage::Abandoned;
-                let part = archive.part_path(summary.id);
-                if part.exists() {
-                    let _ = fs::rename(&part, archive.replay_path(summary.id));
-                }
+                archive.finish_replay(summary.id);
                 archive.write_meta(&summary, stats.as_ref())?;
             }
             archive.index.push(summary);
@@ -72,8 +69,18 @@ impl Archive {
             }
         }
         archive.tournaments.sort_by_key(|info| info.id);
-        archive.next_match = archive.index.last().map_or(1, |summary| summary.id.0 + 1);
-        archive.next_tournament = archive.tournaments.last().map_or(1, |info| info.id.0 + 1);
+        archive.next_match = archive
+            .index
+            .last()
+            .map_or(0, |summary| summary.id.0)
+            .max(highest_number(&root.join("replays"))?)
+            + 1;
+        archive.next_tournament = archive
+            .tournaments
+            .last()
+            .map_or(0, |info| info.id.0)
+            .max(highest_number(&root.join("tournaments"))?)
+            + 1;
         Ok(archive)
     }
 
@@ -104,6 +111,18 @@ impl Archive {
     /// The replay of a match while it is being written.
     pub fn part_path(&self, id: MatchId) -> PathBuf {
         self.root.join("replays").join(format!("{}.brp.part", id.0))
+    }
+
+    /// Gives the replay of a match its finished name, or drops it when
+    /// nothing of it was written.
+    pub fn finish_replay(&self, id: MatchId) {
+        let part = self.part_path(id);
+        let written = fs::metadata(&part).is_ok_and(|meta| meta.len() > 0);
+        if written {
+            let _ = fs::rename(&part, self.replay_path(id));
+        } else {
+            let _ = fs::remove_file(&part);
+        }
     }
 
     fn meta_path(&self, id: MatchId) -> PathBuf {
@@ -227,4 +246,21 @@ fn read_tournament(path: &Path) -> Option<TournamentInfo> {
     let mut reader = FrameReader::new();
     reader.push(&bytes);
     reader.next_message::<TournamentInfo>().ok()?
+}
+
+/// The highest number a file of a directory is named with before its first
+/// dot, readable or not. Zero when none is.
+pub fn highest_number(dir: &Path) -> io::Result<u64> {
+    let mut highest = 0;
+    for entry in fs::read_dir(dir)? {
+        let name = entry?.file_name();
+        let number = name
+            .to_str()
+            .and_then(|name| name.split('.').next())
+            .and_then(|stem| stem.parse::<u64>().ok());
+        if let Some(number) = number {
+            highest = highest.max(number);
+        }
+    }
+    Ok(highest)
 }

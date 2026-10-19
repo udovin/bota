@@ -1,20 +1,26 @@
 //! Keys and mouse into orders and camera motion.
 
 use bota_proto::{
-    AbilitySlot, Aim, Auth, ClientMsg, EntityId, ItemId, ItemSlot, Order, Role, Stage, Target,
-    Team, TournamentFormat, TournamentStage, UnitKind, Vec2, WorldView,
+    AbilitySlot, Aim, Auth, EntityId, ItemId, ItemSlot, MAX_CHAT_CHARS, Order, Role, Stage, Target,
+    Team, ToGame, ToHub, TournamentFormat, TournamentStage, UnitKind, Vec2, WorldView,
 };
 use macroquad::prelude::*;
 
 use crate::slots::{Press, Slot, order_for, press};
-use crate::state::{App, Phase, Source, Tap};
+use crate::state::{App, Confirm, Draft, Phase, Source, Tap};
 
 /// Handles one frame of input.
 pub fn handle(app: &mut App) {
+    if found_controls(app) {
+        return;
+    }
     if prompt_controls(app) {
         return;
     }
-    if console_controls(app) {
+    if confirm_controls(app) {
+        return;
+    }
+    if chat_controls(app) {
         return;
     }
     if is_key_pressed(KeyCode::Escape) {
@@ -28,8 +34,8 @@ pub fn handle(app: &mut App) {
             app.stop_watching();
         } else if matches!(app.source, Source::Replay(_)) {
             app.quit = true;
-        } else if matches!(app.phase, Phase::Lobby | Phase::Playing) {
-            app.source.send(&ClientMsg::LeaveMatch);
+        } else if matches!(app.phase, Phase::Lobby | Phase::Picking | Phase::Playing) {
+            app.source.tell_hub(&ToHub::LeaveMatch);
             app.leave_room();
         } else if app.phase == Phase::Cup {
             app.close_cup();
@@ -61,7 +67,7 @@ pub fn handle(app: &mut App) {
                 .copied(),
         };
         let seat = app.eyes;
-        app.source.send(&ClientMsg::ViewAs { seat });
+        app.source.tell_game(&ToGame::ViewAs { seat });
     }
     if app.phase == Phase::SignIn {
         signin_controls(app);
@@ -79,6 +85,7 @@ pub fn handle(app: &mut App) {
     match app.phase {
         Phase::SignIn | Phase::Hall | Phase::Cup => {}
         Phase::Lobby => lobby_controls(app),
+        Phase::Picking => picking_controls(app),
         Phase::Playing => {
             pick_controls(app);
             replay_controls(app);
@@ -98,38 +105,71 @@ pub fn handle(app: &mut App) {
     }
 }
 
-/// Opens the console line on Enter and, while it is open, types into it.
-/// Enter sends what was typed, Escape drops it. Returns whether the console
-/// took the frame's keys, so typing never doubles as hotkeys.
-fn console_controls(app: &mut App) -> bool {
-    let Some(line) = app.console.as_mut() else {
-        if app.phase == Phase::Playing && app.my_slot.is_some() && is_key_pressed(KeyCode::Enter) {
-            app.console = Some(String::new());
-            while get_char_pressed().is_some() {}
-            return true;
+/// Opens a chat line, types into it while it is open, and sends it on Enter.
+///
+/// In a match Enter opens a line to one's own side and Shift+Enter one to
+/// everybody; on the hall's screens T opens one. A slash opens one with the
+/// slash already typed, for a command. Tab turns a line between one's side
+/// and everybody, Escape drops it. Returns whether the line took the frame's
+/// keys, so typing never doubles as hotkeys.
+fn chat_controls(app: &mut App) -> bool {
+    let Some(draft) = app.draft.as_mut() else {
+        app.draft = chat_opened(app);
+        if app.draft.is_none() {
+            return false;
         }
-        return false;
+        while get_char_pressed().is_some() {}
+        return true;
     };
     while let Some(typed) = get_char_pressed() {
-        if !typed.is_control() {
-            line.push(typed);
+        if !typed.is_control() && draft.text.chars().count() < MAX_CHAT_CHARS {
+            draft.text.push(typed);
         }
     }
     if is_key_pressed(KeyCode::Backspace) {
-        line.pop();
+        draft.text.pop();
+    }
+    if is_key_pressed(KeyCode::Tab) {
+        draft.team = !draft.team;
     }
     if is_key_pressed(KeyCode::Escape) {
-        app.console = None;
-        return true;
-    }
-    if is_key_pressed(KeyCode::Enter) {
-        let line = app.console.take().unwrap_or_default();
-        match crate::console::parse(&line) {
-            Ok(order) => app.send_order(order),
-            Err(why) => app.reject = Some((why, 2.5)),
-        }
+        app.draft = None;
+    } else if is_key_pressed(KeyCode::Enter)
+        && let Some(said) = app.draft.take()
+        && !said.text.trim().is_empty()
+    {
+        app.say(said.text, said.team);
     }
     true
+}
+
+/// The chat line a key opens on this screen this frame, if one does.
+fn chat_opened(app: &App) -> Option<Draft> {
+    if app.me.is_none() || app.replaying() {
+        return None;
+    }
+    let in_match = matches!(app.phase, Phase::Lobby | Phase::Picking | Phase::Playing);
+    let in_hall = matches!(app.phase, Phase::Hall | Phase::Cup);
+    let shift = is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift);
+    if (in_match || in_hall) && is_key_pressed(KeyCode::Slash) {
+        return Some(Draft {
+            text: "/".to_string(),
+            team: false,
+        });
+    }
+    if in_match && is_key_pressed(KeyCode::Enter) {
+        return Some(Draft {
+            text: String::new(),
+            team: !shift,
+        });
+    }
+    if in_hall && is_key_pressed(KeyCode::T) {
+        return Some(Draft {
+            text: String::new(),
+            team: false,
+        });
+    }
+    None
 }
 
 /// Handles clicks landing on the HUD. Returns whether one did, so a click on
@@ -173,7 +213,7 @@ fn ui_clicks(app: &mut App) -> bool {
         let wx = (mx - minimap.x) / minimap.w * 18432.0;
         let wy = (1.0 - (my - minimap.y) / minimap.h) * 18432.0;
         let ground = world_vec(wx, wy);
-        let commands = app.controls_selection() && app.my_hero().is_some();
+        let commands = app.controls_selection() && app.hero_stands();
         if right && commands {
             app.send_order(Order::Move {
                 target: Target::Pos(ground),
@@ -202,7 +242,10 @@ fn ui_clicks(app: &mut App) -> bool {
     if app.controls_selection() {
         // Only the boxes this unit actually carries: the rest are not drawn,
         // and a box that is not drawn must not swallow a click either.
-        let carried = app.slot_unit().map_or(0, |unit| unit.abilities.len());
+        let carried = match app.slot_unit() {
+            Some(unit) => unit.abilities.len(),
+            None => app.slot_kit().map_or(0, |kit| kit.abilities.len()),
+        };
         for (slot, rect) in crate::hud::ability_boxes(&panel) {
             if usize::from(slot) < carried && rect.contains(mx, my) {
                 if left {
@@ -438,8 +481,80 @@ fn prompt_controls(app: &mut App) -> bool {
     true
 }
 
+/// Answers the question waiting for a yes or a no. Returns whether one was
+/// waiting, so nothing behind it takes the frame's keys or clicks.
+fn confirm_controls(app: &mut App) -> bool {
+    let Some(confirm) = app.confirm else {
+        return false;
+    };
+    let (sw, sh) = (screen_width(), screen_height());
+    let (mx, my) = mouse_position();
+    let clicked = is_mouse_button_pressed(MouseButton::Left);
+    if is_key_pressed(KeyCode::Escape)
+        || (clicked && crate::hall::confirm_no(sw, sh).contains(mx, my))
+    {
+        app.confirm = None;
+    } else if clicked && crate::hall::confirm_yes(sw, sh).contains(mx, my) {
+        match confirm {
+            Confirm::Abandon(id) => app.abandon(id),
+        }
+    }
+    true
+}
+
+/// Answers a match the queue found: Enter or a click accepts, a click on
+/// Decline turns it down. Returns whether one was offered, so nothing behind
+/// it takes the frame's keys or clicks.
+fn found_controls(app: &mut App) -> bool {
+    if !matches!(app.search, bota_proto::Search::Found { .. }) {
+        return false;
+    }
+    let (sw, sh) = (screen_width(), screen_height());
+    let (mx, my) = mouse_position();
+    let clicked = is_mouse_button_pressed(MouseButton::Left);
+    while get_char_pressed().is_some() {}
+    if is_key_pressed(KeyCode::Enter)
+        || (clicked && crate::hall::found_accept(sw, sh).contains(mx, my))
+    {
+        app.accept_found();
+    } else if clicked && crate::hall::found_decline(sw, sh).contains(mx, my) {
+        app.decline_found();
+    }
+    true
+}
+
+/// Presses the buttons of the panel at the bottom right: a match offered
+/// back, or the search going on. Returns whether a click landed on one.
+fn corner_controls(app: &mut App) -> bool {
+    if !is_mouse_button_pressed(MouseButton::Left) {
+        return false;
+    }
+    let (sw, sh) = (screen_width(), screen_height());
+    let (mx, my) = mouse_position();
+    if let Some((id, stage)) = app.match_to_rejoin().map(|m| (m.id, m.stage)) {
+        if crate::hall::rejoin_button(sw, sh).contains(mx, my) {
+            app.rejoin(id);
+            return true;
+        }
+        let started = matches!(stage, Stage::Picking | Stage::Playing);
+        if started && crate::hall::abandon_button(sw, sh).contains(mx, my) {
+            app.confirm = Some(Confirm::Abandon(id));
+            return true;
+        }
+        return false;
+    }
+    if app.searching() && crate::hall::abandon_button(sw, sh).contains(mx, my) {
+        app.cancel_search();
+        return true;
+    }
+    false
+}
+
 /// Presses the buttons of the tournament screen and its bracket.
 fn cup_controls(app: &mut App) {
+    if corner_controls(app) {
+        return;
+    }
     let (mx, my) = mouse_position();
     let clicked = is_mouse_button_pressed(MouseButton::Left);
     let cup = app.tournament.as_ref().map(|cup| (cup.id, cup.stage));
@@ -471,12 +586,12 @@ fn cup_controls(app: &mut App) {
                 continue;
             };
             if action == "Watch" {
-                app.source.send(&ClientMsg::JoinMatch {
+                app.source.tell_hub(&ToHub::JoinMatch {
                     id: match_id,
                     role: Role::Spectator,
                 });
             } else {
-                app.source.send(&ClientMsg::FetchReplay { match_id });
+                app.source.tell_hub(&ToHub::FetchReplay { match_id });
             }
             return;
         }
@@ -494,9 +609,9 @@ fn cup_controls(app: &mut App) {
     match actions[at] {
         "Back" => app.close_cup(),
         "Join team" => app.ask(crate::state::Asking::JoinTeam(id)),
-        "Leave" => app.source.send(&ClientMsg::LeaveTournament),
-        "Start" => app.source.send(&ClientMsg::StartTournament { id }),
-        "Cancel" => app.source.send(&ClientMsg::CancelTournament { id }),
+        "Leave" => app.source.tell_hub(&ToHub::LeaveTournament),
+        "Start" => app.source.tell_hub(&ToHub::StartTournament { id }),
+        "Cancel" => app.source.tell_hub(&ToHub::CancelTournament { id }),
         _ => {}
     }
 }
@@ -557,6 +672,9 @@ fn signin_controls(app: &mut App) {
 
 /// Picks a list, a mode, and what to do with a row of it.
 fn hall_controls(app: &mut App) {
+    if corner_controls(app) {
+        return;
+    }
     let (mx, my) = mouse_position();
     let clicked = is_mouse_button_pressed(MouseButton::Left);
     let (_, wheel) = mouse_wheel();
@@ -593,7 +711,13 @@ fn hall_controls(app: &mut App) {
                 app.mode_at = (app.mode_at + 1) % app.modes.len();
             }
         }
-        (crate::state::HallTab::Matches, Some(1)) => app.quick_play(),
+        (crate::state::HallTab::Matches, Some(1)) => {
+            if app.searching() {
+                app.cancel_search();
+            } else {
+                app.find_match();
+            }
+        }
         (crate::state::HallTab::Matches, Some(2)) => app.ask(crate::state::Asking::NewMatch),
         (crate::state::HallTab::Tournaments, Some(1)) => {
             app.cup_format = match app.cup_format {
@@ -617,8 +741,11 @@ fn hall_controls(app: &mut App) {
         }
         _ => {}
     }
-    if is_key_pressed(KeyCode::Enter) && app.tab == crate::state::HallTab::Matches {
-        app.quick_play();
+    if is_key_pressed(KeyCode::Enter)
+        && app.tab == crate::state::HallTab::Matches
+        && !app.searching()
+    {
+        app.find_match();
     }
     if !clicked {
         return;
@@ -636,12 +763,13 @@ fn hall_controls(app: &mut App) {
                     continue;
                 };
                 let (id, stage) = (found.id, found.stage);
-                let role = if second && stage == Stage::Gathering {
-                    Role::Player
+                let mine = app.holds_seat_in(found);
+                let role = if (second && stage == Stage::Gathering) || (first && mine) {
+                    Role::Player { seats: 1 }
                 } else {
                     Role::Spectator
                 };
-                app.source.send(&ClientMsg::JoinMatch { id, role });
+                app.source.tell_hub(&ToHub::JoinMatch { id, role });
             }
             crate::state::HallTab::Tournaments => {
                 let Some(found) = crate::hall::cup_at(app, at) else {
@@ -660,38 +788,77 @@ fn hall_controls(app: &mut App) {
                     continue;
                 };
                 let match_id = found.id;
-                app.source.send(&ClientMsg::FetchReplay { match_id });
+                app.source.tell_hub(&ToHub::FetchReplay { match_id });
             }
         }
         break;
     }
 }
 
+/// Leaves the match, or starts it for its host.
 fn lobby_controls(app: &mut App) {
+    if !is_mouse_button_pressed(MouseButton::Left) {
+        return;
+    }
+    let (sw, sh) = (screen_width(), screen_height());
+    let (mx, my) = mouse_position();
+    if app.room.is_some() && crate::lobby::leave_button(sw, sh).contains(mx, my) {
+        app.source.tell_hub(&ToHub::LeaveMatch);
+        app.leave_room();
+        return;
+    }
+    let gathering = app
+        .room
+        .as_ref()
+        .is_some_and(|room| room.stage == Stage::Gathering);
+    if gathering && app.hosts() && crate::lobby::action_button(sw, sh).contains(mx, my) {
+        app.start_match();
+    }
+}
+
+/// Selects a hero by card or by number, picks the one selected or one at
+/// random, and leaves.
+fn picking_controls(app: &mut App) {
     let picks = [
         KeyCode::Key1,
         KeyCode::Key2,
         KeyCode::Key3,
         KeyCode::Key4,
         KeyCode::Key5,
+        KeyCode::Key6,
+        KeyCode::Key7,
+        KeyCode::Key8,
+        KeyCode::Key9,
     ];
-    if app.my_slot.is_some() {
-        for (id, key) in picks
-            .into_iter()
-            .enumerate()
-            .take(crate::catalog::HEROES.len())
-        {
-            if is_key_pressed(key) {
-                app.source.send(&ClientMsg::PickHero {
-                    hero: bota_proto::HeroId(id as u16),
-                });
-            }
-        }
+    let (sw, sh) = (screen_width(), screen_height());
+    let (mx, my) = mouse_position();
+    let clicked = is_mouse_button_pressed(MouseButton::Left);
+    if clicked && crate::lobby::picking_leave_button(sw, sh).contains(mx, my) {
+        app.source.tell_hub(&ToHub::LeaveMatch);
+        app.leave_room();
+        return;
     }
-    if app.my_slot.is_some() && is_key_pressed(KeyCode::R) {
-        app.ready = !app.ready;
-        let ready = app.ready;
-        app.source.send(&ClientMsg::SetReady(ready));
+    if !app.may_pick() {
+        return;
+    }
+    let heroes = crate::catalog::HEROES.len();
+    let hero_at = |at: usize| bota_proto::HeroId(crate::catalog::HEROES[at].id);
+    if clicked && crate::lobby::action_button(sw, sh).contains(mx, my) {
+        app.pick_selected();
+        return;
+    }
+    if clicked && crate::lobby::random_button(sw, sh).contains(mx, my) {
+        app.pick_hero(hero_at(macroquad::rand::gen_range(0, heroes)));
+        return;
+    }
+    let mut selected = picks.into_iter().take(heroes).position(is_key_pressed);
+    if clicked && selected.is_none() {
+        selected = crate::lobby::cards(app)
+            .iter()
+            .position(|card| card.contains(mx, my));
+    }
+    if let Some(at) = selected {
+        app.select_hero(hero_at(at));
     }
 }
 
@@ -715,9 +882,11 @@ fn camera_controls(app: &mut App) {
     }
     let dt = get_frame_time();
     let pan = 900.0 * dt;
-    // The arrows always drive the camera. W, A, S and D are orders once there
-    // is a hero to give them to, and only a seat with none may pan by them.
-    let letters = app.my_hero().is_none();
+    // The arrows always drive the camera. W, A, S and D are orders while our
+    // hero stands; otherwise they pan, unless Control holds them for skill
+    // points.
+    let ctrl = is_key_down(KeyCode::LeftControl) || is_key_down(KeyCode::RightControl);
+    let letters = !app.hero_stands() && !ctrl;
     let mut steer = (0.0, 0.0);
     if is_key_down(KeyCode::Up) || (letters && is_key_down(KeyCode::W)) {
         steer.1 -= pan;
@@ -808,6 +977,14 @@ fn order_controls(app: &mut App) {
     if app.my_hero().is_none() || !app.controls_selection() {
         return;
     }
+    // A fallen hero still spends skill points; every other order waits for
+    // it to stand.
+    if !app.hero_stands() {
+        if is_key_down(KeyCode::LeftControl) || is_key_down(KeyCode::RightControl) {
+            ability_keys(app);
+        }
+        return;
+    }
     // A player's hero cannot pan by keys, so the letters are free for orders.
     if is_key_pressed(KeyCode::A) {
         app.attack_move_armed = true;
@@ -850,9 +1027,10 @@ fn order_controls(app: &mut App) {
                 .map(Target::Unit),
             Some(Aim::Own) | None => Some(Target::None),
         };
-        if let Some(target) = target {
-            app.aimed_from = Some((app.seq + 1, slot));
-            app.send_order(order_for(slot, target));
+        if let Some(target) = target
+            && let Some(sent) = app.send_order(order_for(slot, target))
+        {
+            app.aimed_from = Some((sent, slot));
         }
         return;
     }
@@ -865,14 +1043,11 @@ fn order_controls(app: &mut App) {
             unit_under_cursor(view, wx, wy, me, true)
                 .or_else(|| enemy_near_cursor(view, wx, wy, app.my_team()))
         });
-        match target {
-            Some(target) => app.send_order(Order::Attack {
-                target: Target::Unit(target),
-            }),
-            None => app.send_order(Order::Attack {
-                target: Target::Pos(ground),
-            }),
-        }
+        let aimed_at = match target {
+            Some(target) => Target::Unit(target),
+            None => Target::Pos(ground),
+        };
+        app.send_order(Order::Attack { target: aimed_at });
         return;
     }
     if is_mouse_button_pressed(MouseButton::Right) {
@@ -900,16 +1075,16 @@ fn order_controls(app: &mut App) {
                 .and_then(|view| view.units.iter().find(|unit| unit.id == id))
                 .is_some_and(|unit| Some(unit.team) == app.my_team())
         });
-        match (target, lying) {
-            (Some(target), _) if own => app.send_order(Order::Move {
+        let order = match (target, lying) {
+            (Some(target), _) if own => Order::Move {
                 target: Target::Unit(target),
-            }),
-            (Some(target), _) => app.send_order(Order::Attack {
+            },
+            (Some(target), _) => Order::Attack {
                 target: Target::Unit(target),
-            }),
-            (None, Some(item)) => app.send_order(Order::Take {
+            },
+            (None, Some(item)) => Order::Take {
                 target: Target::Unit(item),
-            }),
+            },
             // Near an enemy the click still attacks it; only open ground is
             // walked to.
             (None, None) => {
@@ -918,15 +1093,16 @@ fn order_controls(app: &mut App) {
                     .as_ref()
                     .and_then(|view| enemy_near_cursor(view, wx, wy, app.my_team()));
                 match near {
-                    Some(mark) => app.send_order(Order::Attack {
+                    Some(mark) => Order::Attack {
                         target: Target::Unit(mark),
-                    }),
-                    None => app.send_order(Order::Move {
+                    },
+                    None => Order::Move {
                         target: Target::Pos(ground),
-                    }),
+                    },
                 }
             }
-        }
+        };
+        app.send_order(order);
     }
 }
 
@@ -970,8 +1146,9 @@ pub fn do_press(app: &mut App, slot: Slot, ctrl: bool) {
     match press(app, slot, ctrl) {
         Press::Send(order) => {
             app.aiming = None;
-            app.aimed_from = Some((app.seq + 1, slot));
-            app.send_order(order);
+            if let Some(sent) = app.send_order(order) {
+                app.aimed_from = Some((sent, slot));
+            }
         }
         Press::Aim(slot) => {
             app.attack_move_armed = false;

@@ -2,10 +2,7 @@ use std::cell::Cell;
 use std::io::{self, Cursor, Read};
 use std::rc::Rc;
 
-use bota_proto::{
-    LobbySlot, MAX_PAYLOAD_LEN, MatchId, MatchState, ModeId, ReplayRecord, ServerMsg, SlotId,
-    Stage, Team,
-};
+use bota_proto::{FromGame, MAX_PAYLOAD_LEN, ReplayRecord};
 
 use super::fixtures::{CountedRead, counted, message, snapshot, wire};
 use crate::replay_play::{
@@ -30,7 +27,7 @@ fn first_snapshot_is_available_without_reading_the_replay_tail() {
     let messages = player.poll(0.0);
 
     assert_eq!(messages.len(), 1);
-    assert!(matches!(&messages[0], ServerMsg::Snapshot { view } if view.tick == 0));
+    assert!(matches!(&messages[0], FromGame::Snapshot { view } if view.tick == 0));
     assert_eq!(bytes.get(), wire(&[snapshot(0)]).len());
 }
 
@@ -42,7 +39,7 @@ fn initial_frame_time_does_not_skip_the_start_of_the_replay() {
     let messages = player.poll(60.0);
 
     assert_eq!(messages.len(), 1, "loading time is not playback time");
-    assert!(matches!(&messages[0], ServerMsg::Snapshot { view } if view.tick == 0));
+    assert!(matches!(&messages[0], FromGame::Snapshot { view } if view.tick == 0));
 }
 
 #[test]
@@ -136,32 +133,14 @@ fn virtual_gigabyte_replays_have_constant_startup_and_per_poll_cost() {
 }
 
 fn maximum_payload_record() -> ReplayRecord {
-    let mut record = ReplayRecord::Msg(ServerMsg::MatchState {
-        state: MatchState {
-            id: MatchId(1),
-            name: "x".repeat(MAX_PAYLOAD_LEN - 96),
-            mode: ModeId(0),
-            host: None,
-            stage: Stage::Gathering,
-            slots: vec![LobbySlot {
-                slot: SlotId(0),
-                team: Team::Radiant,
-                login: String::new(),
-                hero: None,
-                ready: false,
-                connected: true,
-            }],
-            watchers: Vec::new(),
-            you: None,
-        },
+    let mut record = ReplayRecord::Msg(FromGame::Notice {
+        text: "x".repeat(MAX_PAYLOAD_LEN - 96),
     });
     let length = wire(&[record.clone()]).len() - 4;
-    let ReplayRecord::Msg(ServerMsg::MatchState { state }) = &mut record else {
+    let ReplayRecord::Msg(FromGame::Notice { text }) = &mut record else {
         unreachable!()
     };
-    state
-        .name
-        .extend(std::iter::repeat_n('x', MAX_PAYLOAD_LEN - length));
+    text.extend(std::iter::repeat_n('x', MAX_PAYLOAD_LEN - length));
     assert_eq!(wire(&[record.clone()]).len(), MAX_PAYLOAD_LEN + 4);
     record
 }
@@ -190,7 +169,7 @@ fn maximum_payload_spans_polls_without_exceeding_byte_or_read_budgets() {
 #[test]
 fn read_call_budget_yields_with_a_partial_payload_and_preserves_loading_clock() {
     let mut record = snapshot(0);
-    let ReplayRecord::Msg(ServerMsg::Snapshot { view }) = &mut record else {
+    let ReplayRecord::Msg(FromGame::Snapshot { view }) = &mut record else {
         unreachable!()
     };
     view.felled_trees = vec![1; MAX_READS_PER_POLL * 2];
@@ -257,7 +236,7 @@ fn orders_only_batches_do_not_accumulate_in_an_unconsumed_side_queue() {
         assert!(
             batch
                 .iter()
-                .all(|message| matches!(message, ServerMsg::Orders { .. }))
+                .all(|message| matches!(message, FromGame::Orders { .. }))
         );
     }
     assert!(player.error().is_none());

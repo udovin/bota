@@ -13,10 +13,11 @@ Code conventions — `CLAUDE.md`.
 | Tick mode | Realtime **and** Lockstep | humans play in realtime, bots are debugged/trained in reproducible lockstep |
 | v0.1 scope | 1v1, three lanes, 1 hero | a vertical slice of the whole stack on minimal content |
 | Transport | TCP + length-prefixed frames | no tokio: a thread per client + a simulation thread + mpsc |
+| Servers | a hub and game servers | the hub keeps accounts, the hall, matchmaking and the archive and never runs a tick; a game server runs matches and never sees a password. One binary plays either role, or both at once |
 | Serialization | `serde` + `postcard` | derive removes ~250 lines of manual put/get; the format is compact (varint) and stable within 1.x |
 | Player networking | full snapshots with fog | measured: 1425 bytes per snapshot in 1v1, 41 KB/s at 30 Hz. Deltas will be needed by 5v5, not earlier |
 | Live spectating | the same snapshots, without fog | client-side simulation is impossible, and that is intentional |
-| Replay | fogless `ServerMsg` stream + all orders | plays back without a server: the client reads frames from a file instead of a socket; coupled to the wire format only, so it survives balance changes; the client still cannot simulate |
+| Replay | fogless `FromGame` stream + all orders | plays back without a server: the client reads frames from a file instead of a socket; coupled to the wire format only, so it survives balance changes; the client still cannot simulate |
 | PRNG | `rand_chacha::ChaCha8Rng` in `bota-server` | value-stable by the crate's contract; `rand::StdRng` is **forbidden** — it is allowed to change its algorithm in a minor release |
 
 ## Structure
@@ -26,7 +27,7 @@ bota/
 ├── Cargo.toml               # workspace, resolver = "3"
 ├── crates/
 │   ├── bota-proto/          # shared vocabulary + codec. deps: serde, postcard
-│   ├── bota-server/         # simulation + networking + lobby. deps: proto
+│   ├── bota-server/         # the hub, the game server, the simulation. deps: proto
 │   ├── bota-client/         # macroquad: rendering, input, spectating. deps: proto
 │   └── bota-bot/            # bot SDK + example. deps: proto
 ├── assets/
@@ -55,7 +56,8 @@ The single rule deciding where code lives:
 |---|---|
 | `Fixed`, `Angle`, `Vec2`, `EntityId`, `SlotId`, `PlayerId`, `Team`, `HeroId`, `AbilityId`, `ItemId`, `AbilitySlot`, `ItemSlot`, `MapId`, `UnitKind` | `World`, `step`, units, combat, movement, vision, economy |
 | `Order`, `EventKind`, `WorldView`, codec and framing | `Command`, `Event.visible_to`, `MatchRng`, `Stream`, `Chance`, `Ratio` |
-| `MatchInfo`, `ClientMsg`, `ServerMsg`, `ReplayRecord` | `MatchConfig`, balance constants, hero stats, ability implementations |
+| `MatchInfo`, `ToHub`, `FromHub`, `ToGame`, `FromGame`, `Assign`, `Report`, `ReplayRecord` | `MatchConfig`, balance constants, hero stats, ability implementations |
+| `Token`, `Ticket`, `Nonce`, `Proof`: 32 bytes each | where they come from, the shared key, how a proof is made and checked |
 
 A previous version of the design had a `bota-core` crate holding the simulation. It was
 dropped: "core" had no checkable membership criterion, and `seed`, `tick_rate` and
@@ -69,16 +71,21 @@ simulating, `World` lives in a crate it does not depend on.
 proto/src/
 ├── math.rs       Fixed (Q16.16 in i32), Angle (brads), Vec2
 ├── ids.rs        EntityId, SlotId, PlayerId, Team, HeroId, AbilityId, ItemId,
-│                 AbilitySlot, ItemSlot, MapId, UnitKind
+│                 AbilitySlot, ItemSlot, MapId, UnitKind, Token, Ticket, Nonce, Proof
 ├── order.rs      Order, OrderTarget
 ├── event.rs      EventKind, DamageKind
 ├── view.rs       WorldView, UnitView, PlayerView, ProjectileView, AbilityView,
 │                 ItemView, StatusFlags
 ├── hall.rs       Auth, Role, Stage, MatchState, MatchSummary, MatchFilter,
 │                 ModeInfo, HallReason, tournaments
-├── msg.rs        ClientMsg, ServerMsg, MatchInfo, RejectReason, MatchStats,
-│                 ReplayRecord
-└── codec.rs      encode_frame, decode_payload, FrameReader, CodecError
+├── msg.rs        MatchInfo, RejectReason, UnitOrder, MatchStats: what a match is,
+│                 whichever server speaks of it
+├── hub_msg.rs    ToHub, FromHub: a client and the hub
+├── game_msg.rs   ToGame, FromGame, GameReason, ReplayRecord: a client and a game server
+├── link.rs       Assign, Report, MatchSetup, Pass: the hub and a game server
+├── rules.rs      Rules: what a match is played to
+├── names.rs      ITEM_NAMES: what items are called, in the shop and in commands
+└── codec.rs      encode_frame, decode_payload, FrameReader, CodecError, Message
 ```
 
 ```
@@ -106,22 +113,27 @@ server/src/
 ├── net/          accept loop, per-connection reader/writer threads, Outbox
 ├── hub/          THE ALWAYS-ON PART, one thread
 │   ├── serve.rs      every session, where each one is, and what it may do
+│   ├── servers.rs    one game server that proved itself: where it is, what it runs
 │   ├── account.rs    the ledger, argon2 hashes, session tokens
 │   ├── session.rs    one connection: who it is and where it is
-│   ├── matches.rs    a match from Gathering to Over
-│   ├── roster.rs     Roster (AccountId ↔ SlotId), seats, picks, readiness
+│   ├── matches.rs    a match from Gathering through Picking and Playing to Over
+│   ├── roster.rs     Roster (AccountId ↔ SlotId), seats, the heroes they play
 │   ├── modes.rs      the preset rule sets on offer
 │   ├── bracket.rs    pairing teams and moving a cup along, apart from any match
 │   ├── tournament.rs a cup as the hub holds it: teams, members, its wire state
 │   └── opts.rs       what the command line and the tests decide
-├── run/          ONE MATCH ON ITS OWN THREAD
-│   ├── runner.rs     the tick loop in both modes
-│   └── participant.rs who it sends to, and what the hub tells it
-├── archive/      WHAT STAYS ON DISK
+├── host/         A GAME SERVER, one thread
+│   └── serve.rs      the link to the hub, tickets, the matches it runs
+├── run/          ONE MATCH ON ITS OWN THREAD, on a game server
+│   ├── runner.rs     the picking of heroes, the tick loop in both modes, chat, commands
+│   └── participant.rs who it sends to, and what the game server tells it
+├── archive/      WHAT STAYS ON DISK, on the hub
 │   ├── store.rs      the data directory, the ids it hands out, the index
 │   └── fetch.rs      streaming a stored replay into a connection's outbox
-├── replay.rs     writes the replay: fogless frames plus per-tick orders
-└── main.rs       clap arguments
+├── replay.rs     records the replay in pieces: fogless frames plus per-tick orders
+├── commands.rs   the chat commands, one table entry each
+├── keys.rs       OS randomness, the shared key file, handshake proofs
+└── main.rs       clap arguments: hub, game, or both in one process
 ```
 
 No ECS: `World` is a set of `Arena<T>` stores — generational slot arenas iterated in
@@ -353,16 +365,14 @@ exploit any leak a human reviewer shrugs off:
   lanes are defined by their towers, while the demo map's corners trace the
   real road and its towers stand beside it — drawn through them, every wave
   hooked around its own tower on the way out.
-- A third, `MapId(2)`, is the Dota map to a short finish: the first side to lose
-  a tower or to lose `SKIRMISH_DEATH_LIMIT` heroes loses; opposing losses in one
-  tick draw. It spawns only mid waves and draws after fifteen gameplay minutes.
-  The same ground, buildings and routes come from `SKIRMISH` using `..DOTA`,
-  overriding only its id, wave selection and completion fields. What ends a
-  match is map data now (`death_limit` and `tower_ends_it`) rather than a
-  `map.id == MapId(1)` written into `fight.rs` twice: a rule keyed on which map
-  it is cannot be given to a second map without being written a third time. The
-  demo map used to carry both endings and now carries neither, which leaves it
-  what its name says — a lane to try things in, ending the way the big map does.
+- A map is ground, buildings and lanes, and nothing about how a match on it ends.
+  What a match is played to is its `Rules`, chosen by its mode: which lanes send
+  waves, which lanes' towers take no harm, how many hero deaths or whether a tower
+  lose it, how long it may run before it is a draw, and whether cheats are
+  honoured. The mid one-on-one is the Dota map under `MID_RULES`. It used to be a
+  third map, `MapId(2)`, a copy of the Dota one with three fields changed; the
+  copy cost a second baked field of the same ground, and a rule tied to a map
+  cannot be put on another without copying the map again.
 - The per-map route cache is indexed by `MapId`, not by the position in `MAPS`,
   so the two have to agree; a test says so, since nothing else would notice a map
   added out of order.
@@ -883,27 +893,47 @@ hash baselines — promises to survive across pre-release commits. Mismatched bu
 are not detected; they are simply not run against each other. Version and fingerprint
 fields appear with the first release, when there is something to be compatible with.
 
-### Client → server
+A client holds two connections: one to the hub for as long as it runs, and one to the
+game server of the match it is in from the match's start, heroes picked there, to its
+end. Each has its own pair of message types, so neither side can be sent what belongs to
+the other.
+
+### Client → hub
 
 ```rust
-enum ClientMsg {
+enum ToHub {
     Hello { auth: Auth },                  // Register | Login | Resume | Guest
     ChangePassword { old: String, new: String }, Logout,
     ListMatches { filter: MatchFilter, before: Option<MatchId>, limit: u16 },
-    CreateMatch { mode: ModeId, name: String, seed: Option<u64> },
-    QuickPlay { mode: ModeId },
-    JoinMatch { id: MatchId, role: Role },  // Role: Player|Spectator
-    LeaveMatch, TakeSeat { slot: Option<SlotId> }, Kick { account: AccountId },
-    PickHero { hero: HeroId },
-    SetReady(bool),
-    Order { seq: u32, unit: Option<EntityId>, order: Order },
-    Ack { tick: u32 },                     // lockstep: "I am ready for the tick"
-    ViewAs { seat: Option<SlotId> },
+    CreateMatch { mode: ModeId, name: String, seed: Option<u64>, seats: u8 },
+    FindMatch { mode: ModeId, seats: u8 }, // wait in the mode's queue
+    CancelSearch, Accept { id: MatchId }, Decline { id: MatchId },
+    JoinMatch { id: MatchId, role: Role },  // Role: Player { seats } | Spectator
+    LeaveMatch, Kick { account: AccountId },
+    StartMatch,                            // the host, once every seat's holder is in
+    Abandon { id: MatchId },               // give a started match's seats up for good
+    TakeSeat { slot: SlotId },             // one more seat, on the side already held
+    DropSeat { slot: Option<SlotId> },     // None: all of them
     CreateTournament { name, mode, format, best_of },
     StartTournament { id }, CancelTournament { id },
-    JoinTournament { id: TournamentId, team: String }, LeaveTournament,
+    JoinTournament { id: TournamentId, team: String, seats: u8 }, LeaveTournament,
     ViewTournament { id: Option<TournamentId> },
     FetchReplay { match_id: MatchId },
+    Chat { text: String, team: bool },     // the hall or a gathering match; '/' is a command
+}
+```
+
+### Client → game server
+
+```rust
+enum ToGame {
+    Join { ticket: Ticket },               // first, and only once
+    Select { seat: SlotId, hero: HeroId }, // while heroes are picked; shown to the side
+    Pick { seat: SlotId, hero: HeroId },   // while heroes are picked; final, to everybody
+    Orders { orders: Vec<UnitOrder> },     // at most MAX_ORDERS_PER_MESSAGE
+    Ack { tick: u32 },                     // lockstep, for every seat held
+    ViewAs { seat: Option<SlotId> },
+    Chat { text: String, team: bool },     // the match, picking or played; '/' is a command
 }
 
 enum Order {
@@ -915,34 +945,198 @@ enum Order {
 }
 
 enum Target { None, Pos(Vec2), Unit(EntityId) }
+
+struct UnitOrder { unit: EntityId, order: Order }   // given, told back, and kept in replays
 ```
 
 Casting is one variant, `Cast`, with the target kind expressed by
 `Target`; whether the variant fits the ability is validated by the server
 (`RejectReason::WrongTargetKind`).
 
-There is no chat in the protocol. The server exists for local bot testing; a message
-type that plays no part in the match is not worth its slot in the wire format.
+### Orders name units, not seats
 
-### Server → client
+An order names the unit that obeys and never a seat. The seat is the unit's owner,
+looked up on the server, and the order is accepted only when that seat is one the
+connection holds. This is Dota's own shape: its client sends
+`CDOTAClientMsg_ExecuteOrders`, a list of `CDOTAMsg_UnitOrder`, each addressed to units
+by entity index with a sequence number of its own, and whether a player may command a
+unit is a separate relation the server keeps, as shared unit control shows. Addressing
+seats instead made one connection one seat: an order with no seat in it could only mean
+the connection's own, and the hero by default.
+
+Two things follow. One connection may drive several seats and send all their orders in
+one message, which is what a bot playing a whole side wants. And the old rule of one
+order per seat per tick became one order per unit per tick: under the old rule an order
+to the courier took the place of the hero's order on the same tick.
+
+Dota's order names a list of units, for a player who selects a group and commands it
+at once. Here one unit per order is enough: a seat drives a hero and a courier, which
+are seldom told the same thing, and a list would make a refusal ambiguous — one number
+for three units, one of them dead, either refuses all or applies part and cannot say
+which. Several units told one thing are several entries of the message.
+
+Orders apply on the next tick sorted by seat and unit, whatever order they arrived in,
+so a tick does not depend on the network. A message carries at most
+`MAX_ORDERS_PER_MESSAGE`; every order past that is refused.
+
+One type carries an order everywhere: what a participant gives, what a spectator
+watching through a seat is told, and what a replay keeps. It used to be two, the told
+and kept kind carrying a seat beside the unit; once every order names its unit the seat
+is that unit's owner, and saying it twice is a chance for the two to disagree.
+
+Orders carry no number. A refusal names the order it turns down by giving it back
+whole, unit and order, with the reason. A number per order existed only to tie a
+refusal to its order, and the order does that by itself. A position in the message
+would not: a message with nothing refused gets no answer, so two refusals of the second
+order could belong to either of two messages. Answering every message to keep the
+positions apart would make one lost answer, such as the last one before a match ends,
+shift every answer after it. Two identical orders refused alike cannot be told apart,
+and need not be.
+
+A purchase is the seat's business whichever of its units the order names: it is judged
+by the hero's place and the hero's bag and goes to the hero. The client relies on it,
+since a purchase from the shop panel names whatever is selected, the courier included.
+
+### A fallen hero keeps its body
+
+A seat's hero is one entity for the whole match, as in Dota, where a respawn is called
+on the hero itself. Before, a hero that fell was freed and came back as a new entity,
+which left nothing to name in an order while it was dead: it could not be told to buy,
+and everybody driving it had to notice the handle change.
+
+In this simulation an entity that exists takes part. Every system walks every entity
+and acts on whatever components it finds, and freeing was the only way out of the
+world. So a hero that falls is laid down instead: it loses its place, its hull, its
+sight row, its action, its orders and walk and whatever was on it, and keeps its seat,
+its level, what it learned, what it carries and what it gathered. Without a place it
+blocks nobody, lights no fog, is in no view and stands in no shop; without a sight row
+nobody can see it, so nothing takes it for a target. The systems needed no new checks,
+only two that a new body used to give for free: mana does not mend while the health
+pool is empty, and standing up fills both pools, since stats follow a pool at zero to
+zero. When its time is up the same body stands up at its fountain. `Seat.fallen` holds
+it meanwhile, in place of the book and bag the seat used to keep for a body that was
+gone; its cooldowns run down on the body itself.
+
+A fallen hero is still its seat's to command for the business of its bag and the shop:
+it buys, and what it buys goes to the stash; it learns; it moves items about its bag.
+It does not sell. A sell order only marks, the stash included, and nothing of the seat
+marked for sale sells while its hero lies; once it stands up at the fountain, the
+existing pass that sells what has reached the shop sells it. Everything that needs a
+body is refused as before. A lookup by handle for a target does not find a fallen hero;
+one that names a unit to command does.
+
+Shadowraze's rule that a respawned caster cannot use the stacks of its last life used to
+fall out of the new generation a respawn brought. It now ends those records when the
+caster stands up: a record still outlives its source's fall and runs on until its own
+timer ends or its source stands again.
+
+### Chat and commands
+
+A line of chat is said where its speaker is: in the hall to everybody in the hall, in a
+match to everybody in the match, and to one side alone when it asks to be. The two never
+hear each other. A spectator hears both sides. Whether a spectator may write is the
+mode's to say, and no standard mode lets one: a spectator sees the whole map, and a line
+to the players is a way of telling them what they cannot see. A guest reads and does
+not write, since a guest's name is not checked against the accounts and could be
+anybody's. The speaker hears its own line back from the server, so a line on the screen
+is a line that was accepted.
+
+A line that starts with a slash is a command, and the server runs it. It is one message
+for both, as Minecraft had until 1.19, which split them only to sign chat messages, and as
+in Dota, where `-gold` is a chat line the game also reads. A command is text on the wire
+and its grammar lives on the server, so any client and any bot has every command, and a
+new one needs nothing new on the wire. Each command is one entry of a table — its name,
+how it is typed, what it does and the function that reads it — and `/help` is made from
+that table.
+
+Cheats are such commands and no longer orders. An order is what a unit is told; a cheat
+is a shortcut for a seat, and as an order it took the unit's one order of the tick. A
+cheat typed is checked by the match, kept for the next tick and taken there before the
+orders, in seat order, and the whole match is told who typed what, the replay included:
+in a match where cheats are allowed, everybody should know which numbers were earned. A
+cheat acts for every seat of the connection that typed it unless it names whom:
+`@<seat>`, `@radiant`, `@dire` or `@all`. A spectator does not cheat. A fallen hero is
+given gold, levels and items, the items going to the stash; a refresh leaves it as it
+lies, since filling a fallen body's pools would make it stand without its place.
+
+Not every command is a cheat. `/roll` draws a number for everybody present, to settle
+who goes where; it draws from the server's own randomness, so a roll during a match
+leaves the match's dice as they were.
+
+The server's own lines — the answer to a command, word that a cheat was typed or a
+number rolled — are a message of their own, with no speaker and no side.
+
+Item names are in `bota-proto`. A command names an item the way the shop shows it, so
+the client that shows it and the server that reads it need the same table; one copy of
+it in each would drift.
+
+### Hub → client
 
 ```rust
-enum ServerMsg {
+enum FromHub {
     Welcome { player_id, account: Option<AccountInfo>, token: Option<Token>,
               modes: Vec<ModeInfo> },
     Refused { reason: HallReason },
     Hall { matches: Vec<MatchSummary>, tournaments: Vec<TournamentSummary> },
     Matches { page: Vec<MatchSummary>, before: Option<MatchId> },
     MatchState { state: MatchState },      // receiving it means being in that match
+    Play { match_id, addr: String, ticket: Ticket },  // where the match plays, and the way in
     TournamentState { state: TournamentInfo },
     ReplayChunk { match_id, offset, bytes }, ReplayEnd { match_id, total },
+    Chat { from: String, side: Option<Team>, team: bool, text: String },
+    Notice { text: String },               // the hub's own line
+    Search { search: Search },             // Idle | Queued { mode, waiting }
+                                           // | Found { id, accepted, players, ms_left, .. }
+}
+```
+
+### Game server → client
+
+```rust
+enum FromGame {
+    Picking { state: PickState },          // every seat: login, hero, selection if allowed
+    PickRefused { seat, hero, reason: PickReason },  // NotYourSeat | AlreadyPicked | ..
     MatchStart { info: MatchInfo },        // the type has no seed field
     Snapshot { view: WorldView },          // whole; the tick is inside the view itself
     Events { tick: u32, events: Vec<EventKind> },
-    OrderRejected { seq: u32, reason: RejectReason },
+    OrderRejected { order: UnitOrder, reason: RejectReason },  // the order given back whole
+    Orders { tick: u32, orders: Vec<UnitOrder> },  // to a spectator watching through a seat
     MatchOver { winner: Team, stats: MatchStats },
-    ParticipantLeft { player_id: PlayerId, slot: Option<SlotId> },
+    ParticipantLeft { slots: Vec<SlotId> },
+    Chat { from: String, side: Option<Team>, team: bool, text: String },
+    Notice { text: String },               // the game server's own line
+    Refused { reason: GameReason },        // UnknownTicket | NotJoined; it hangs up after
 }
+```
+
+A connection that has joined is sent `MatchStart`, the snapshot of the tick as it
+stands and an empty `Events`, whenever it joins: the first time, after a dropped
+connection, or after a fresh sign-in on the hub. Under lockstep the snapshot is what a
+late seat acknowledges to let the match move on. While heroes are still being picked it
+is sent `Picking` instead, and everybody in the match is sent it again whenever a seat
+selects or picks, each with what it may know; `MatchStart` follows once every seat has
+its hero.
+
+### Hub ↔ game server
+
+```rust
+enum Assign {                              // hub -> game server
+    Challenge { nonce: Nonce },
+    Accepted { proof: Proof },             // the hub's answer to the game server's nonce
+    Start { setup: MatchSetup },           // seed, map, seats, pick_ms, rules, tick, passes
+    Admit { match_id, pass: Pass },        // one more connection may come
+    Abandon { match_id, seats, login },    // nobody drives these again
+    Stop { match_id },
+}
+
+enum Report {                              // game server -> hub
+    Register { proof: Proof, nonce: Nonce, addr: String, capacity: u16 },
+    Picked { match_id, picks: Vec<Pick> }, // every seat has its hero; the match plays
+    Replay { match_id, bytes: Vec<u8> },   // the next piece of the file, in order
+    Ended { match_id, winner: Option<Team>, stats: MatchStats, duration: u32 },
+}
+
+struct Pass { ticket: Ticket, login: String, seats: Vec<SlotId> }  // no seats: a spectator
 ```
 
 A Player/Bot receives a whole `WorldView` on every tick, filtered through its team's
@@ -996,13 +1190,14 @@ holding a `ReplayRecord`:
 
 ```rust
 enum ReplayRecord {
-    Msg(ServerMsg),                                       // the fogless spectator stream
-    Orders { tick: u32, orders: Vec<(SlotId, Order)> },   // what every seat asked for
+    Msg(FromGame),                                        // the fogless spectator stream
+    Orders { tick: u32, orders: Vec<UnitOrder> },         // what every seat asked for
 }
 ```
 
-The server records `MatchStart`, then per tick the fogless `Snapshot`, the `Events`
-and the orders it accepted. `ReplayRecord` lives in `bota-proto`: a replay file is a
+The game server records `MatchStart`, then per tick the fogless `Snapshot`, the
+`Events` and the orders it accepted, and hands the file to the hub in pieces as it
+grows. `ReplayRecord` lives in `bota-proto`: a replay file is a
 wire, and the client must read it. Replay mode in the client is reading frames from
 the file instead of the socket; the order records can be skipped, or rendered — which
 is what makes a replay more useful than a live spectator seat when debugging a bot.
@@ -1058,7 +1253,7 @@ does the work. There is no second decoding pass from input handling and no
 backward seek or replay-sized index.
 
 Records keep file order across all yields. `ReplayRecord::Orders` is converted
-in place to the already supported `ServerMsg::Orders`, instead of waiting in an
+in place to the already supported `FromGame::Orders`, instead of waiting in an
 independent order queue. This both bounds retention without a separate consumer
 and makes step-delivered orders reach the overlay with their snapshots/events,
 not on a later GUI frame. Snapshots and order records gate on their ticks;
@@ -1170,6 +1365,52 @@ W, A, S and D pan only for a seat with no hero to give orders to. Once there
 is one, those letters are orders — A is attack-move, S is stop — and the
 arrows are what is left to drive the camera by hand.
 
+### The lobby and the picking of heroes
+
+A gathering match shows both sides' seats, who holds each and who is away. Its host
+starts it with `StartMatch`, once every seat is held by somebody in the match, as a
+Dota lobby's host does; nobody else may, and a seat short is refused with `NotAllHere`.
+A match from the queue starts as it is made, the accepting having been its check that
+everybody is there, and a tournament game as soon as every seat's player has come.
+
+Heroes are picked after the start, on the game server, the way Dota's hero selection
+is part of the game and not of the lobby. They used to be picked on the hub with a
+Ready per seat: the hub carried hero ids it had no other use for, a ready flag per seat
+and a second clock per match, and drew random heroes for a game server that was then
+told the picks as settled. On the game server the picking is the first thing the
+match's own thread does, with the seats, the clock, the participants and the chat it has
+anyway, and the hub only learns the result, from `Report::Picked`, for the hall and the
+archive. Ready went with it: a pick is final, and a seat that has picked has said all a
+Ready would.
+
+The pick screen is Dota's: both sides' seats along the top, each with the portrait of
+the hero picked for it, the time left, and a card for every hero below — its portrait,
+its primary attribute and how it attacks, a line on how it plays, its abilities, and the
+names of whoever has picked it or is considering it. Choosing is two steps, as in Dota.
+A click on a card, or its number, only selects it: `ToGame::Select` shows the seat's own
+side, and spectators, which hero the seat is set on, and the other side learns nothing.
+The Pick button sends `ToGame::Pick` with the selected hero; that fixes it, shows it to
+everybody, and cannot be undone. A click used to pick at once, which left no moment to
+show the side what one meant to play, and a stray click was a pick for the whole match.
+Random picks at once, as Dota's does. Two seats may play one hero: three heroes among up
+to ten seats leave no other way.
+
+The seats have the hub's `pick_timeout`, a minute, given in `MatchSetup`. When it runs
+out every seat that has not picked is given the hero it is set on, or one at random when
+it is set on none: the hero on screen is what the player meant, and taking it is what a
+player who missed the button would want. So is every seat, at once, when a side has
+abandoned all of its own: the match begins and ends on its first tick, as an abandoned
+match does. A random hero comes from the operating system, not from the match's dice,
+which have not begun. The replay begins with the match: nothing said while heroes are
+picked is kept, and a match that ends before it begins leaves no replay.
+
+A hero's portrait is an SVG drawn the way the item icons are, in the same frame of the
+same canvas, and rasterised at a larger scale. The same drawing is cut to shape for
+the seat rows and for the portraits along the top of a match. What is drawn over a
+portrait is opaque: a see-through square over one showed a light seam along its top
+edge in a capture of the window, and an opaque one shows none. A hero waiting to stand
+up again is drawn darker rather than under a shade, for the same reason.
+
 ### Looking at what is not there
 
 Two different things are not there, and they are answered in two different
@@ -1213,31 +1454,46 @@ arena is lockstep and the modes people play are realtime, on one server at once.
 
 ## Server algorithm
 
-One process, running for as long as the machine is up, hosting many matches at once.
-It used to be one process per match: a lobby phase, one `World`, then exit. That shape
-cannot hold a tournament, and a match that has ended cannot be listed or handed back.
+Two kinds of server, running for as long as the machine is up: one hub, and any number
+of game servers that each run many matches at once. It used to be one process per
+match: a lobby phase, one `World`, then exit. That shape cannot hold a tournament, and a
+match that has ended cannot be listed or handed back. After that it was one process
+holding the hall and every match, which is the shape below with the link between the
+two inside one process.
 
 ```
-main:
-  parse args (--port, --data, --cheats)
-  listen TCP; the accept thread queues connections
+bota-server hub   --port 4455 --servers 127.0.0.1:4457 --data data [--key FILE]
+bota-server game  --hub 127.0.0.1:4457 --port 4456 --key FILE [--public ADDR] [--capacity 8]
+bota-server       --port 4455 --game-port 4456 --data data      (one of each, one process)
+
+hub:
   Hub::open(data) reads accounts.log, every replay meta, every tournament meta
+  listen for players and, apart, for game servers
   hub thread: loop { handle one event; housekeep }
+
+game server:
+  connect to the hub and prove the key; listen for players
+  host thread: loop { handle one event: the hub, a player, a match }
 ```
 
 The hub thread owns sessions, accounts, matches that are gathering or ended, the
-tournaments and the archive index. It never waits on a socket, a disk read or a
-simulation: every outgoing frame goes into that connection's `Outbox`, a replay is
-streamed by the fetch thread, and a match that starts moves onto a thread of its own.
+tournaments, the game servers that proved themselves and the archive index. It never
+waits on a socket, a disk read or a simulation: every outgoing frame goes into that
+connection's `Outbox`, a replay is streamed by the fetch thread, and a match that starts
+is handed to a game server.
 
 ```
-match thread (run/runner.rs), one per playing match:
+match thread (run/runner.rs), one per match, on a game server:
+  until every seat has a hero, or the time to pick runs out, or a side is given up:
+    take Pick, Join, Leave, Chat, ViewAs and Abandon; tell everybody every pick
+  a random hero for every seat still without one; tell the hub the picks
+  make the world from the picks; send MatchStart to everybody in the match
   loop {
-    // 1. gather input: the hub forwards Order, Ack, ViewAs, Join and Leave
+    // 1. gather input: the host forwards Order, Ack, ViewAs, Chat, Join and Leave
     realtime: drain until deadline = tick_start + 1/rate
     lockstep: wait for Ack(t) from every seat present (or ack-timeout)
 
-    // 2. validation: the hub already turned PlayerId into a seat
+    // 2. validation: the ticket already turned the connection into seats
     // 3. append the accepted orders to the replay
     // 4. events = world.step(&cmds)
     // 5. send: seats get their team's view, spectators the fogless one or the
@@ -1246,21 +1502,99 @@ match thread (run/runner.rs), one per playing match:
     //    if every seat has been away for abandon_after { break with no winner }
     realtime: sleep until the next tick with drift compensation
   }
-  rename <id>.brp.part to <id>.brp; tell the hub how it ended
+  send the last piece of the replay; tell the hub how it ended
 ```
 
-Nothing of the simulation changed with this. `game/` still knows only `SlotId`, the
-tick order is untouched, and a replay recorded before the hub existed still plays.
+### The hub and the game servers
+
+The split is the one Dota has between its Game Coordinator and its dedicated servers.
+The hub is everything about a match except playing it: who somebody is, where they are,
+which match they sit in, the cup it belongs to, the file it left. A game server is the
+playing and nothing else. It knows no accounts and keeps no disk; what it is told of a
+match is `MatchSetup` — seed, map, the seats and who holds them, the time to pick,
+rules, clock — and a `Pass` per connection that may come: a ticket, the login to show
+and the seats it drives. It has the heroes picked and reports them, runs the match, says
+the chat and runs the commands typed in it, sends the replay to the hub as it grows, and
+reports how the match ended.
+
+The point is what each side no longer shares. A match that panics, a tick that runs
+long, a machine that is busy with forty simulations leave the hall where it was;
+matches are added by adding game servers, on other machines too, and none of them
+holds a password hash. One binary plays either role, and with no role it plays both in
+one process over loopback with a key made for the run. That is the same code and the
+same link as two machines, so the tests and a local game go through the real handshake
+and the real tickets.
+
+A match that starts goes to the game server with the most room, measured as fewest
+matches running against the capacity it registered with. With no room anywhere it
+waits, says so once to everybody in it, and starts when a match ends or a server
+registers; a custom match whose seat came open meanwhile goes back to its host instead.
+The hub then tells everybody in the match to `Play`: the address the game server gave
+as its public one, and a ticket.
+
+**Tickets** are 256 bits from the operating system's generator, one per connection and
+match. Guessing one is guessing a 256-bit number, so nothing else stands between a
+connection and the seats its ticket names. The hub keeps the passes of a running match:
+a connection that comes back for the same seats is handed the same ticket, and a
+connection that arrives with a ticket already in use takes it over and the older one is
+let go, the rule sign-in already has. A spectator is a pass with no seats; it is told
+to `Play` when it joins a match that plays, and is admitted with `Assign::Admit` first.
+The `Admit` and the client's `Join` travel on two connections and may arrive in either
+order, so a ticket the game server does not know yet is held for a few seconds before
+it is refused.
+
+A client that loses the game server mid-match joins it again once with its ticket, the
+way it would come back after a fresh sign-in. A game server that loses the hub stops
+every match it runs, and the hub marks every match of a server it lost abandoned; a
+tournament replays an abandoned game, as it would after any crash. A match is not
+abandoned before the first of its seats has had time to arrive: a match given to a game
+server is a match nobody has connected to yet. It is counted as empty from that moment,
+though, so one nobody ever comes to is abandoned like one everybody left.
+
+**The link** between hub and game server is guarded. Anybody who could register as a
+game server would be handed every pass of the matches it was given — tickets and seats
+— and could report any result. The hub and its game servers share a 256-bit key, kept
+in a file of 64 hexadecimal digits that the hub makes when it is missing. The hub opens
+with a challenge, a fresh nonce; the game server answers with a keyed BLAKE3 hash of a
+label and that nonce, and a nonce of its own; the hub checks it in constant time and
+answers that nonce the same way under another label. A game server that cannot prove
+the key is dropped before it is told anything, and a hub that cannot is dropped by the
+game server before it is believed. The labels differ, so a proof seen one way cannot be
+sent back the other. The game servers' port listens on loopback unless told otherwise.
+
+What it does not give is privacy or integrity after the handshake: the link is plain
+TCP, like every connection here, and a machine on the path can read the passes or
+change a frame. Encrypting the connections is a decision of its own, for all of them at
+once.
+
+All of the randomness that is a secret or needs to differ — tokens, tickets, nonces,
+password salts and the seeds of matches nobody fixed — comes from the operating system
+through `rand`'s `SysRng`, and none of it from a generator of our own seeded once. The
+match's own dice are unchanged: `MatchRng` over `ChaCha8Rng`, keyed from the seed the
+hub picked, on the game server.
+
+The chat follows the match. In the hall and in a gathering match a line goes to the
+hub; in a match that has started, heroes being picked or the match played, it goes to
+the game server, which says it to the match and, once the match plays, records it in
+the replay, and the hub refuses a line for a started match. The command table is one,
+`commands.rs`, read by both; the hub refuses a cheat, which only a match on its game
+server can apply. One typed while heroes are picked is taken on the first tick.
+
+Nothing of the simulation changed with this. `game/` still knows only `SlotId` and the
+tick order is untouched. A replay recorded before the split does not play: its records
+hold the message type both directions used to share.
 
 ### The hall, and what lives in it
 
 ```
 Account     id, login, argon2 hash                 accounts.log, append only
 Session     one connection: who signed in, its token, where it is
-Mode        map, seats, tick mode, tick rate, cheats          a fixed catalogue
-Match       Gathering -> Playing -> Over | Abandoned | (cancelled, never recorded)
+Mode        map, seats, tick mode, tick rate, rules,
+            whether spectators write                          a fixed catalogue
+Match       Gathering -> Picking -> Playing -> Over | Abandoned | (cancelled, never recorded)
 Tournament  Registration -> Running -> Finished
 Archive     <id>.brp beside <id>.meta; tournaments/<id>.meta
+Server      a game server that proved the key: its address, capacity, matches   memory
 ```
 
 A lobby is not a separate thing from a match. Every lobby became exactly one match,
@@ -1269,15 +1603,94 @@ id under which seats are taken is the id the replay is written under, the id a
 tournament pairing points at, and the id the client asks the archive for.
 
 A seat belongs to an **account**, not to a connection. That is the whole of
-reconnection: a client that drops leaves its hero standing, and signing in again puts
-it back on its seat with `MatchState` and a fresh `MatchStart`. An account is signed
-in on one connection at a time; a second sign-in throws the first out, which is how a
-hung connection is taken over rather than waited for.
+reconnection: a client that drops, or steps out to the hall, leaves its hero standing
+and its seat its own. The hall lists the match with the account's name on the seat, and
+the client offers it back the way Dota's dashboard does, bottom right: Reconnect, or
+Abandon. Reconnecting is `JoinMatch` as a player, answered with `MatchState` and a
+`Play` carrying the same ticket, on which the game server gives a fresh `MatchStart`
+and the tick as it stands. An account is signed in on one connection at a time; a second
+sign-in throws the first out, which is how a hung connection is taken over rather than
+waited for.
+
+Signing in does not put the account back into a match that has started; it is offered,
+and the player decides. It used to happen by itself, which left no moment to choose to
+abandon instead, and sent a client that had come to do something else straight back
+into a game. A gathering match is still rejoined on sign-in: its seat is a tournament's
+or the queue's to keep, and the alternative to coming back is forfeiting a cup game on
+its deadline. A bot that restarts mid-match names the match with `--match`.
+
+**Abandoning** gives every seat the account holds in a match that has started up for
+good, as Dota's abandon does. The hero stays where it stands, driven by nobody; the account's
+pass is taken back, so its ticket opens nothing, and the seat keeps its login, marked
+abandoned, so the archive still says who played. The account is free for other
+matches. A side whose every seat is abandoned loses at once — one player leaving a
+one-on-one has conceded it — rather than standing idle until the other side has walked
+to its Ancient. A side with a seat still held plays on. Leaving to the hall is not
+abandoning: `LeaveMatch` keeps the seat, which is what Reconnect comes back to.
+
+### Matchmaking
+
+There are two ways into a match, as in Dota: the queue, and a custom match. A custom
+match is opened with `CreateMatch` and filled from the hall's list with `JoinMatch`; it
+is what tournaments, fixed seeds and arranged games use. The queue is `FindMatch`: the
+connection waits for a mode, and the match is made only when the queue holds enough to
+fill it. It used to be `QuickPlay`, which sat a player in any open lobby of the mode or
+opened one, so a match began as a half-empty lobby waiting for strangers to click Join.
+
+The queue fills both sides in the order connections joined it: each goes to the first
+side with room for all its seats, and one with room on neither waits for a later match.
+A connection asks for its number of seats, as a party asks for its size in Dota: to the
+queue one account of three seats is a party of three that one connection drives. The
+first to wait is on the Radiant, so bots started one after another keep the seats they
+always had.
+
+A full match is first a match found. Everybody it is for is told `Search::Found` and has
+fifteen seconds to accept it. When all have, the match is made; when one declines or
+says nothing, it falls through: that one leaves the queue, and those who accepted wait
+again in the places they had, so someone else's no costs them nothing. The found match
+takes its id at once, the id the match will have, and one that falls through leaves a
+gap in the numbering.
+
+A match made from the queue gives every seat to its account from the start, as a
+tournament's does: nobody else may take one. It has no host and starts as it is made:
+it goes straight to a game server, where its heroes are picked. Whoever steps out of the
+picking keeps the seat and comes back with Reconnect.
+
+An account with a match that has started, or a seat kept in a gathering one, is turned
+away from the queue with `MatchInProgress`: one match at a time. A seat taken anywhere else —
+a custom match, a tournament game pulling its team in — ends the search.
 
 Roles are per match, not per connection or per account: the same session may watch one
 match and then sit down in another. `JoinMatch { role }` says which, and there is no
 bot flag anywhere — the simulation never distinguished a program from a person, and
 neither does the wire.
+
+### Seats per player
+
+A bot is a player. It signs in to an account, waits in the queue, joins custom matches
+and registers in cups the way a person does, and nothing on the wire or in the hub says
+which it is. What a bot does that a person usually does not is drive several heroes at
+once, and that is not a property of being a bot: it is how many seats an account asks
+for, which anybody may ask.
+
+Every way into a match says how many: `CreateMatch`, `JoinMatch` as a player,
+`FindMatch` and `JoinTournament` each carry `seats`, one by default. The mode decides how
+many one account may hold, `seats_per_player`. The modes people play are Dota's and give
+one, as Dota does; the bot arenas give a whole side. The rule is the mode's and is the
+same for everybody, so a bot in a Dota mode plays one hero and a person in an arena may
+play five. A request past the limit, past a side or of none is refused with
+`TooManySeats`. The client asks for one seat; driving several from it is a matter of its
+screens, not of the wire.
+
+A newcomer to a custom match is seated on the side with the most room for all its
+seats, the side of the lower open seat on a tie, which for single seats fills the sides
+in turn. `TakeSeat` adds one named seat on the side already held, within the limit, and
+`DropSeat` gives seats up. A seat on the other side is refused with `SeatsAcrossTeams`:
+a connection is sent one whole snapshot a tick, fogged by its side, and two sides would
+mean two snapshots a tick and a bot holding both fogs on one socket. Self-play opens one
+connection a side. A connection acknowledges a lockstep tick once for all its seats.
+`TakeSeat` with no seat named used to take every free seat of the side; asking for the
+seats when joining says the same thing in the one place every way in shares.
 
 ### Accounts
 
@@ -1286,19 +1699,22 @@ argon2id PHC string over a random salt and never travels anywhere but the wire. 
 wire is plain TCP, so this is worth exactly what a local or trusted network is worth;
 TLS is a later decision, and the hash is what stops one player using another's name.
 
-A successful sign-in hands out a `Token`: 128 random bits, good for seven days, kept
-in memory only. The client writes it beside its binary and resumes with it, so a
-restart does not ask for the password again; a server restart does, which is the price
-of not storing tokens. Guests sign in with a name alone and may watch and list, never
-sit, host or enter a cup.
+A successful sign-in hands out a `Token`: 256 random bits from the operating system,
+good for seven days, kept in memory only. The client writes it as 64 hexadecimal digits
+in its settings directory and resumes with it, so a restart does not ask for the
+password again; a hub restart does, which is the price of not storing tokens. Guests
+sign in with a name alone and may watch and list, never sit, host or enter a cup.
 
 ### Tournaments
 
 A cup is teams, a format and a series length, all chosen when it is created. Its team
-size is not chosen: it is the mode's seats halved, so a 1v1 cup has teams of one and a
-2v2 cup teams of two. A team is made by being the first to name it and joined by naming
-it again, like a party code; a team short of members when the organizer starts is left
-out rather than paired against a full one.
+size is not chosen: it is the mode's seats halved, so a 1v1 cup has teams of one seat
+and a 2v2 cup teams of two. A team is made by being the first to name it and joined by
+naming it again, like a party code. A member registers with its number of seats, within
+the mode's limit, and a team is full when its members' seats fill a side: in an arena
+one bot can be a whole team. A team short of seats when the organizer starts is left out
+rather than paired against a full one. In every game each member is seated on as many of
+its team's seats as it registered with.
 
 `bracket.rs` holds the pairing and the scoring and touches nothing else: single
 elimination seeds first against last with byes already won, round robin turns a circle.
@@ -1308,12 +1724,13 @@ socket in sight.
 When a pairing can play, the hub creates its match with the seats already assigned and
 the sides swapping every game of the series. Everybody the game is for is brought to
 it, wherever they were: the hall, a cup screen, a lobby they were waiting in, or the
-game of this series that has just ended. Only a match still being played keeps somebody
-where they are. Pulling only from the hall was the first shape and it was wrong — after
-the first game of a best-of-three, both players are sitting in a match that has ended,
-so the second game would have waited for nobody and forfeited on its ready deadline.
+game of this series that has just ended. Only a match that has started and not ended
+keeps somebody where they are. Pulling only from the hall was the first shape and it was
+wrong — after the first game of a best-of-three, both players are sitting in a match that
+has ended, so the second game would have waited for nobody and forfeited on its deadline.
 
-A team that has not shown up by that deadline forfeits the game. A game that ends
+The game starts as soon as every seat's player is in it, and its heroes are picked on its
+game server. A team that has not shown up by the deadline forfeits the game. A game that ends
 without a winner is voided and set up again, so a crash costs a rematch rather than the
 cup. The whole state is written to disk on every change, and a server that restarts
 mid-cup rebuilds it from the stored games. Only the organizer may start a cup, and only
@@ -1321,12 +1738,20 @@ before it starts may they take it down.
 
 ### The archive
 
-Every match that starts is recorded. The replay is written to `<id>.brp.part` and
-renamed when it is whole, so a `.part` left by a crash is unmistakable: it is kept
-under the finished name and its match is marked abandoned. Beside it sits `<id>.meta`,
+Every match that starts is recorded, on the hub. The game server sends the replay in
+pieces of 64 KiB as it records it, and the hub appends them to `<id>.brp.part` and
+renames it when the match has ended, so a `.part` left by a crash is unmistakable: it is kept
+under the finished name and its match is marked abandoned. A match that ended while its
+heroes were picked wrote nothing, and its empty `.part` is removed rather than kept as a
+replay with no records. Beside it sits `<id>.meta`,
 a `MatchSummary` frame plus the final `MatchStats`, which is what the hall and the
 listings read — the index is built from those at startup and never from the replays
 themselves.
+
+A summary written by an older build may not read; its match drops out of the listings,
+but not its number. The next id is one past the highest number any file in the
+directory is named with, read or not. Taking it from the summaries alone handed out
+numbers already on disk, and the next match overwrote an old replay.
 
 `FetchReplay` streams the file in 64 KiB chunks from a thread of its own, waiting for
 the connection's outbox to drain between them, so one client pulling half a gigabyte
@@ -1358,8 +1783,8 @@ Fixed. Changing it invalidates every recorded replay and every hash baseline.
 
 A bot that plays by rules rather than by weights, and the seam anything else would hold
 a seat through. `Bot` is that seam — seated, match started, one tick in and at most one
-`Ask` out, events, refusals, the end — and `play` is the loop that carries it over a
-socket, written once so a second bot does not write it again. `Playbook` is the bot that
+`Ask` out, events, refusals, the end — and `play` is the loop that carries it over the
+sockets, written once so a second bot does not write it again. `Playbook` is the bot that
 ships: `Field` reads a snapshot into a settled shape, `decide` walks a fixed list of
 wants top to bottom and takes the first that answers. The whole crate is `bota-proto`
 and `clap`. Float is allowed here, as it is in the client: what is recorded of a bot is
@@ -1585,9 +2010,37 @@ lands: one of the bot's own says the cycle began a wind-up ago and comes round a
 interval after that. Without this the bot orders last hits it cannot take for another
 second and loses them all.
 
+### Several seats on one connection
+
+`Bot` holds one seat and answers a tick with at most one `Ask`. `Crew` holds every seat
+its connection was given and answers a tick with any number of asks, each beside the
+seat whose hero an ask for no unit means; `play_crew` sends them in one message.
+`Squad` is the crew most bots want: one `Bot` per seat, made when the seats are known,
+each handed the same view and told its own refusals. That keeps `Playbook` a one-seat
+policy. The bot always plays as a squad, of one seat or of `--seats N`, which it asks
+the hub for wherever it goes in — the queue, a match, a cup — as any player would.
+
+An ask for no unit is resolved to the seat's hero on the bot's side of the wire, from
+the view the bot answered; the wire itself only ever names units. While the hero is
+down there is nobody to name and the ask is not sent.
+
+### Two connections
+
+A bot holds what a client holds: a `Link` to the hub, where it signs in and is seated,
+and a `Table` on the game server the hub names in `Play`, where it plays. The hub's
+connection is not read while a match plays, so whatever the hub said of that match
+meanwhile — its state at the start, at the end, as seats came and went — is waiting
+there afterwards. The link remembers which matches it went to play and takes no seat
+from news of them, nor from a match that has ended.
+
+Between the games of a tournament the bot sends nothing. The hub brings the account to
+its next game itself, from a match that has ended, and `LeaveMatch` names no match: one
+sent after the end races the hub's move and can take the account out of the game it
+was just brought to. A bot leaves only a match it walked away from on its tick limit.
+
 ### One order a tick, and saying nothing
 
-The server keeps one order per seat per tick and the last one wins, so a want is a
+The server keeps one order per unit per tick and the last one wins, so a want is a
 single `Order` and the policy ranks its wants rather than queueing them. Re-sending the
 want already standing is not free: an order cancels the recovery after a swing and calls
 the creeps onto whoever gave it. So a want equal to the one in hand is not sent again
@@ -1604,7 +2057,7 @@ wherever it stands — and only while a courier of its own is standing, because 
 hand is worth more than an item in a stash nothing is coming for.
 
 The errands are abilities the courier carries, so an order for one names the courier in
-`ClientMsg::Order`'s `unit` and casts the slot the errand sits in. Which slot that is, is
+its `UnitOrder`'s `unit` and casts the slot the errand sits in. Which slot that is, is
 read off the courier rather than assumed: the order the server fills its book in is the
 server's business. A `Want` therefore carries whom it is for, and what the bot answers
 with each tick is an `Ask` — an order and a unit — rather than an order alone.
@@ -2414,48 +2867,46 @@ starting a search at our budget of one match a second, which is where months go.
 | 8 | 🔄 `bota-bot` and `bota-client` | SDK + bot, bot-vs-bot match. Done: the client — macroquad: map, units, HP bars, orders, lobby, spectating, replay playback; the bot — the `Bot` seam and `play`, a deterministic playbook for Shadow Fiend and Sylla, lockstep acks, two of it playing a match through to an Ancient |
 | 9 | hero Sylla complete and determinism test | abilities, levels, items, shop; 20 000-tick hash baseline, run on musl/wasm32; mirror test: a diagonally mirrored match ends in the mirrored outcome |
 
-## Map2: mid-only play on the full Dota map
+## Rules: what a match is played to, apart from where
 
-`MapId(2)` copies the single `DOTA` definition in `game/config/map.rs`, overriding
-the wire id, creep-wave lane selection and upstream completion fields. No landmark, tree,
-camp, terrain, or blocker tables are duplicated. `MapDef.lanes` and `lanes()`
-remain geometric: Map0 and Map2 both have three lane centerlines, and tree
-clearance and route construction still see all three. The separate
-`wave_lanes` slice selects mid alone on Map2. Setting `lanes` to one instead
-would leave extra trees on the side roads and change passability and vision,
-so it would not preserve the full map. Static side-lane structures and the
-jungle remain active. Map0 and the hero demo Map1 keep the upstream data, wave
-order and completion rules: neither loses on a tower or hero death. The prior
-local Map1 short-ending rules are not restored during the upstream merge.
+`Rules` belong to a mode and travel with it: in `ModeInfo` for the hall and in
+`MatchInfo` for the match, so a bot knows at the start what the match is played to.
+They used to be fields of the map, and the mid one-on-one was a third map, a copy of
+the Dota one with its waves and its ending changed. The map now says only where
+things are.
 
-Map2 ends when a side loses its second hero life, counted across that side's
-seats, or its first tower on any lane. All deaths of a tick are processed
-before adjudication; if both sides lose on that tick, the result is a draw.
-This includes a tower lost on one side and a second hero death on the other.
-Choosing a winner inside the burial loop would make that draw depend on hit
-iteration order. Couriers do not consume hero lives. An Ancient is not a
-separate Map2 win condition: its normal protection cannot open before a tower
-has already ended the match.
+The lanes stay whole whatever the rules: three centerlines, the same tree clearing
+and the same routes. A lane with no waves keeps its road; taking the lane away would
+leave trees on the side roads and change passing and sight, and the ground would no
+longer be the Dota map. Waves spawn in a fixed order, mid, top, bottom, skipping the
+lanes the rules leave empty, the order the Dota map always spawned in.
 
-The limit is fifteen gameplay minutes at the fixed simulation rate, 27,000 ticks,
-plus the unchanged 900 pregame ticks. Tick 27,900 runs completely, including
-orders, scheduled waves, economy, combat, and death accounting, then draws
-even if one side loses on that tick. A loss at 27,899 still wins immediately.
-Wall-clock `tick_rate` and realtime/lockstep mode do not alter this limit.
-`World::advance` and `World::step` stop mutating a completed Map2, including
-orders with immediate shop side effects. A world already at the cap seals
-the draw without running a late tick. Map0/Map1 do not gain either this cap
-or this post-completion freeze.
+Under the mid rules the side towers take no harm: with no creeps on the side lanes,
+the first tower that ends the match would otherwise be the one nobody guards. The
+guard is the one every protected structure wears, invulnerability recomputed after
+stats each tick, so targeting, orders and blows refuse those towers the same way.
+Their barracks need no rule of their own; the protection keeps them shut until a
+tier three falls.
 
-`World::victor()` and the existing native `ServerMsg::MatchOver.winner` use
-`Team::Neutral` to mean a Map2 draw, not a jungle victory. This avoids a new
-wire outcome schema: TCP and in-process runners read the same World result
-and `match_stats().duration` after the final tick. The existing globally
-visible `StructureDestroyed` event identifies the fallen tower and side;
-final seat death counts and duration identify life-limit and cap endings.
-There is no new reason field in MatchOver. Consumers must classify Neutral
-as Draw rather than as a loss for both seats. The existing bota client banner
-for this value reads `NOBODY WINS`; this change does not modify the viewer.
+One judgement decides every match, once a tick, after every death of the tick is
+buried. A side loses with its Ancient, with any tower when the rules say a tower
+ends it, and once its heroes have died as often as the rules allow, counted across
+its seats; a courier is not a life. Both sides losing on one tick is a draw — two
+Ancients falling together included, which used to go to whichever was buried
+first. Choosing inside the burial would make the result depend on the order the
+blows were handled in.
+
+A time limit counts ticks of play after the unchanged pregame, at the fixed
+simulation rate, so the wall-clock rate and the tick mode do not move it. The last
+tick runs whole — orders, waves, economy, combat, deaths — and is a draw even if a
+side loses on it. A decided match does not change any more, under any rules:
+`World::advance` and `World::step` do nothing once there is a winner, the shop
+included, and a world already past its limit seals the draw without a late tick.
+
+`World::victor()` and `FromGame::MatchOver.winner` use `Team::Neutral` for a draw.
+There is no reason field in `MatchOver`: the public `StructureDestroyed` event names
+a fallen tower and its side, and the final death counts and the duration tell a
+lost life or the clock. A consumer reads Neutral as a draw, not as a loss for both.
 
 ## Mango and stacking Shadowraze: the 2026-09-10 balance choice
 
@@ -2575,12 +3026,13 @@ least time left, with current record order breaking ties. Refreshing an existing
 source evicts nothing. Expired records are discarded before capacity selection.
 
 The source key and count are an appended `StatusKind::Shadowraze` on the victim's
-existing timed `Statuses`, not a permanent `Stacks` entry kept on its seat. Target
-death and respawn therefore cannot carry the debuff into a new body. A source's
-record can finish its timer after that source dies, but its respawned or reused
-arena index has a different generation and cannot use the old bonus. This avoids
-a lifecycle hook in `fight.rs`, another world table, and a cleanup pass scanning
-all victims on every death.
+existing timed `Statuses`, not a permanent `Stacks` entry kept on its seat. A target
+that falls loses whatever was on it, so its death cannot carry the debuff into its next
+life. A source's record can finish its timer after that source dies; when the source
+stands up again, the records of its last life end, so the life standing up cannot use
+the old bonus. That used to follow from the new generation a respawn brought; since a
+hero keeps its body through death it is one pass over the world when a hero stands up,
+which is rare.
 
 An appended server-only `HitEffect::Shadowraze` tags the queued damage with the
 zero-based cast level. Stack lookup and application happen in the existing hit

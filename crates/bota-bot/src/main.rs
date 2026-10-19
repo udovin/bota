@@ -1,14 +1,16 @@
 //! Command line entry point of the bot.
 
-use bota_bot::{Chair, Playbook, Role, Want, play, play_every};
+use std::rc::Rc;
+
+use bota_bot::{Chair, Crew, Outcome, Playbook, Role, Squad, Want, play_crew, play_every};
 use bota_proto::{HeroId, MatchId, ModeId, TournamentId};
 use clap::Parser;
 
-/// bota bot: signs in, takes a seat, and plays.
+/// bota bot: signs in, takes seats as any player does, and plays.
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Args {
-    /// Where the server listens.
+    /// Where the hub listens.
     #[arg(long, default_value = "127.0.0.1:4455")]
     addr: String,
     /// The account to play as. Registered the first time it is used.
@@ -17,10 +19,10 @@ struct Args {
     /// Its password.
     #[arg(long, default_value = "bot")]
     password: String,
-    /// Take a seat in any open match of this mode.
+    /// Wait in the queue of this mode and play the match it makes.
     #[arg(long, default_value_t = 0, conflicts_with_all = ["match_id", "tournament"])]
     mode: u16,
-    /// Take a seat in this match instead.
+    /// Take seats in this match instead.
     #[arg(long = "match", value_name = "ID")]
     match_id: Option<u64>,
     /// Play every game this tournament gives.
@@ -29,29 +31,38 @@ struct Args {
     /// Which team to register in the tournament as.
     #[arg(long)]
     team: Option<String>,
-    /// Which hero to ask for: 0 Sylla, 1 Pudge, 2 Shadow Fiend.
-    #[arg(long, default_value_t = 2)]
-    hero: u16,
-    /// What the seat is there to do, one to five.
-    #[arg(long, default_value_t = 2)]
-    role: u8,
+    /// How many seats to take, all on one side and played on one
+    /// connection, within what the mode lets one account hold.
+    #[arg(long, default_value_t = 1)]
+    seats: u8,
+    /// Heroes to pick, seat by seat, comma separated: 0 Sylla, 1 Pudge,
+    /// 2 Shadow Fiend. A list shorter than the seats starts over.
+    #[arg(long, value_delimiter = ',', default_value = "2")]
+    hero: Vec<u16>,
+    /// What each seat is there to do, one to five, comma separated, seat by
+    /// seat. A list shorter than the seats starts over.
+    #[arg(long, value_delimiter = ',', default_value = "2")]
+    role: Vec<u8>,
     /// Leave after this many ticks.
     #[arg(long, value_name = "TICKS")]
     limit: Option<u32>,
-    /// Write a line about what the seat is doing every so many ticks.
+    /// Write a line about what each seat is doing every so many ticks.
     #[arg(long, value_name = "TICKS", default_value_t = 0)]
     trace: u32,
 }
 
 fn main() -> std::io::Result<()> {
     let args = Args::parse();
-    let Some(role) = Role::of(args.role) else {
-        return Err(std::io::Error::other(format!(
-            "there is no role {}: they are numbered one to five",
-            args.role
-        )));
-    };
-    let hero = HeroId(args.hero);
+    let mut roles = Vec::new();
+    for number in &args.role {
+        let Some(role) = Role::of(*number) else {
+            return Err(std::io::Error::other(format!(
+                "there is no role {number}: they are numbered one to five"
+            )));
+        };
+        roles.push(role);
+    }
+    let heroes: Vec<HeroId> = args.hero.iter().map(|id| HeroId(*id)).collect();
     let want = match (args.match_id, args.tournament) {
         (Some(id), _) => Want::Match { id: MatchId(id) },
         (None, Some(id)) => Want::Tournament {
@@ -67,26 +78,31 @@ fn main() -> std::io::Result<()> {
         login: args.login,
         password: args.password,
         want,
-        hero,
+        heroes: heroes.clone(),
+        seats: args.seats,
         limit: args.limit,
     };
     let trace = args.trace;
-    let make = move || {
-        let mut playbook = Playbook::new(role, hero);
+    let playbook = Rc::new(move |n: usize| {
+        let mut playbook = Playbook::new(roles[n % roles.len()], heroes[n % heroes.len()]);
         playbook.trace_every(trace);
-        Box::new(playbook) as Box<dyn bota_bot::Bot>
+        playbook
+    });
+    // One playbook to a seat, however many seats the account holds.
+    let crew = move || {
+        let playbook = Rc::clone(&playbook);
+        Squad::new(move |n, _| playbook(n))
     };
-    let played = match chair.want {
-        Want::Tournament { .. } => play_every(make, &chair)?,
-        _ => {
-            let mut bot = make();
-            vec![play(bot.as_mut(), &chair)?]
-        }
+    let played: Vec<Outcome> = if let Want::Tournament { .. } = chair.want {
+        play_every(move || Box::new(crew()) as Box<dyn Crew>, &chair)?
+    } else {
+        play_crew(&mut crew(), &chair)?
     };
     for out in &played {
         let mine = out.mine.as_ref();
         println!(
-            "played {} ticks as {:?}: {} last hits, {} denies, {} kills, {} deaths, level {}",
+            "seat {:?} played {} ticks as {:?}: {} last hits, {} denies, {} kills, {} deaths, level {}",
+            out.slot.map(|slot| slot.0),
             out.ticks,
             out.team,
             mine.map_or(0, |row| row.last_hits),

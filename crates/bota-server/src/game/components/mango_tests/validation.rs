@@ -130,6 +130,38 @@ fn courier_named_buy_order_counts_hero_stack_room_at_shop() {
 }
 
 #[test]
+fn courier_named_buy_of_a_whole_item_judges_the_hero_shop_and_bag() {
+    let (mut world, hero) = fixture();
+    let mut filler = mango(1);
+    filler.id = ItemId(crate::game::ITEM_RECIPE_PHASE_BOOTS);
+    filler.charges = 0;
+    world.seats[0].stash.slots.fill(Some(filler));
+    world.stand_up_courier(0);
+    world.settle();
+    let courier = world.seats[0].courier.unwrap();
+    let boots = Order::Buy {
+        item: ItemId(crate::game::ITEM_BOOTS),
+    };
+    // The hero stands at its shop with room in its bag; where the courier
+    // stands does not matter, the boots go to the hero.
+    world.transform.get_mut(courier).unwrap().pos = AWAY;
+    assert!(world.at_shop(hero));
+    assert_eq!(
+        world.validate_order(OWNER, Some(wire_id(courier)), &boots),
+        Ok(())
+    );
+    // The other way round: a courier at the shop with an empty bag is no
+    // room for the hero's boots while the stash is full.
+    world.transform.get_mut(courier).unwrap().pos = world.transform.get(hero).unwrap().pos;
+    world.transform.get_mut(hero).unwrap().pos = AWAY;
+    assert!(world.at_shop(courier));
+    assert_eq!(
+        world.validate_order(OWNER, Some(wire_id(courier)), &boots),
+        Err(RejectReason::InventoryFull)
+    );
+}
+
+#[test]
 fn non_mango_buy_order_keeps_catalog_price_and_empty_slot_validation() {
     let (mut world, hero) = fixture();
     let mut stick = mango(1);

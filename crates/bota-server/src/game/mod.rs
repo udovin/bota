@@ -39,6 +39,8 @@ pub use vision::*;
 pub use world::*;
 
 #[cfg(test)]
-mod map2_tests;
+mod fallen_tests;
+#[cfg(test)]
+mod mid_rules_tests;
 #[cfg(test)]
 mod tests;

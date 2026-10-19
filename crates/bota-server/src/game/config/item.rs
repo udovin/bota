@@ -1043,6 +1043,8 @@ pub const ITEMS: [ItemDef; 52] = [
     },
 ];
 
+const _: () = assert!(bota_proto::ITEM_NAMES.len() == ITEMS.len());
+
 /// What one item is, or nothing if no such item exists.
 pub fn item_def(id: ItemId) -> Option<&'static ItemDef> {
     ITEMS.get(usize::from(id.0))

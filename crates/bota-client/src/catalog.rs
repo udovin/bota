@@ -52,8 +52,6 @@ pub struct AbilityFace {
 pub struct ItemFace {
     /// The id it answers to on the wire.
     pub id: u16,
-    /// Short name for the panel and the shop.
-    pub name: &'static str,
     /// Its one-line stats, for the shop row.
     pub stats: &'static str,
     /// What it does, for the hover popup.
@@ -82,6 +80,12 @@ pub struct HeroFace {
     pub id: u16,
     /// Its name, for the roster and the panel.
     pub name: &'static str,
+    /// Its primary attribute and how it attacks, for its pick card.
+    pub kind: &'static str,
+    /// How it plays, in a line, for its pick card.
+    pub blurb: &'static str,
+    /// Its abilities by id, in the order its panel shows them.
+    pub abilities: &'static [u16],
     /// The drawing of it. Absent while there is none.
     pub icon: Option<&'static [u8]>,
 }
@@ -234,364 +238,312 @@ pub const ABILITIES: [AbilityFace; 20] = [
 pub const ITEMS: [ItemFace; 52] = [
     ItemFace {
         id: 0,
-        name: "Boots",
         stats: "+45 MS",
         blurb: "+45 movement speed.",
         icon: Some(include_bytes!("../assets/items/boots.svg")),
     },
     ItemFace {
         id: 1,
-        name: "Clarity",
         stats: "150MP/25s",
         blurb: "Consumable. Restores 150 mana over 25 s. Any hero's hit breaks it.",
         icon: Some(include_bytes!("../assets/items/clarity.svg")),
     },
     ItemFace {
         id: 2,
-        name: "Salve",
         stats: "400HP/10s",
         blurb: "Consumable. Restores 400 health over 10 s. Any hero's hit breaks it.",
         icon: Some(include_bytes!("../assets/items/healing_salve.svg")),
     },
     ItemFace {
         id: 3,
-        name: "Branch",
         stats: "+30HP+15MP",
         blurb: "+30 maximum health, +15 maximum mana, +1 attack damage.",
         icon: Some(include_bytes!("../assets/items/iron_branch.svg")),
     },
     ItemFace {
         id: 4,
-        name: "Obs",
         stats: "Vision",
         blurb: "Consumable. Stands a ward that sees 1600 and that the enemy cannot see.",
         icon: Some(include_bytes!("../assets/items/observer_ward.svg")),
     },
     ItemFace {
         id: 5,
-        name: "Quell",
         stats: "+18 creep",
         blurb: "+18 attack damage against creeps. Fells the tree you point at.",
         icon: Some(include_bytes!("../assets/items/quelling_blade.svg")),
     },
     ItemFace {
         id: 6,
-        name: "Sentry",
         stats: "True sight",
         blurb: "Consumable. Stands a ward that gives true sight, revealing enemy wards.",
         icon: Some(include_bytes!("../assets/items/sentry_ward.svg")),
     },
     ItemFace {
         id: 7,
-        name: "Tango",
         stats: "115HP x3",
         blurb: "Three charges. Eats a tree to restore 115 health over 16 s.",
         icon: Some(include_bytes!("../assets/items/tango.svg")),
     },
     ItemFace {
         id: 8,
-        name: "TP",
         stats: "Teleport",
         blurb: "Consumable. Channels, then carries you to an allied building.",
         icon: Some(include_bytes!("../assets/items/town_portal_scroll.svg")),
     },
     ItemFace {
         id: 9,
-        name: "Circlet",
         stats: "+2 all",
         blurb: "+2 to every attribute.",
         icon: Some(include_bytes!("../assets/items/circlet.svg")),
     },
     ItemFace {
         id: 10,
-        name: "Gauntlet",
         stats: "+3 STR",
         blurb: "+3 strength.",
         icon: Some(include_bytes!("../assets/items/gauntlets.svg")),
     },
     ItemFace {
         id: 11,
-        name: "Slippers",
         stats: "+3 AGI",
         blurb: "+3 agility.",
         icon: Some(include_bytes!("../assets/items/slippers.svg")),
     },
     ItemFace {
         id: 12,
-        name: "Mantle",
         stats: "+3 INT",
         blurb: "+3 intelligence.",
         icon: Some(include_bytes!("../assets/items/mantle.svg")),
     },
     ItemFace {
         id: 13,
-        name: "Belt",
         stats: "+6 STR",
         blurb: "+6 strength.",
         icon: Some(include_bytes!("../assets/items/belt.svg")),
     },
     ItemFace {
         id: 14,
-        name: "Band",
         stats: "+6 AGI",
         blurb: "+6 agility.",
         icon: Some(include_bytes!("../assets/items/band.svg")),
     },
     ItemFace {
         id: 15,
-        name: "Robe",
         stats: "+6 INT",
         blurb: "+6 intelligence.",
         icon: Some(include_bytes!("../assets/items/robe.svg")),
     },
     ItemFace {
         id: 16,
-        name: "Ogre Axe",
         stats: "+10 STR",
         blurb: "+10 strength.",
         icon: Some(include_bytes!("../assets/items/ogre_axe.svg")),
     },
     ItemFace {
         id: 17,
-        name: "Alacrity",
         stats: "+10 AGI",
         blurb: "+10 agility.",
         icon: Some(include_bytes!("../assets/items/blade_of_alacrity.svg")),
     },
     ItemFace {
         id: 18,
-        name: "Wizardry",
         stats: "+10 INT",
         blurb: "+10 intelligence.",
         icon: Some(include_bytes!("../assets/items/staff_of_wizardry.svg")),
     },
     ItemFace {
         id: 19,
-        name: "Gloves",
         stats: "+20 AS",
         blurb: "+20 attack speed.",
         icon: Some(include_bytes!("../assets/items/gloves.svg")),
     },
     ItemFace {
         id: 20,
-        name: "Blades",
         stats: "+9 DMG",
         blurb: "+9 attack damage.",
         icon: Some(include_bytes!("../assets/items/blades_of_attack.svg")),
     },
     ItemFace {
         id: 21,
-        name: "Broad",
         stats: "+18 DMG",
         blurb: "+18 attack damage.",
         icon: Some(include_bytes!("../assets/items/broadsword.svg")),
     },
     ItemFace {
         id: 22,
-        name: "Qstaff",
         stats: "+10DMG+10AS",
         blurb: "+10 attack damage, +10 attack speed.",
         icon: Some(include_bytes!("../assets/items/quarterstaff.svg")),
     },
     ItemFace {
         id: 23,
-        name: "Ring Pro",
         stats: "+2 ARM",
         blurb: "+2 armor.",
         icon: Some(include_bytes!("../assets/items/ring_of_protection.svg")),
     },
     ItemFace {
         id: 24,
-        name: "Chain",
         stats: "+5 ARM",
         blurb: "+5 armor.",
         icon: Some(include_bytes!("../assets/items/chainmail.svg")),
     },
     ItemFace {
         id: 25,
-        name: "Regen",
         stats: "+2 HP/s",
         blurb: "+2 health a second.",
         icon: Some(include_bytes!("../assets/items/ring_of_regen.svg")),
     },
     ItemFace {
         id: 26,
-        name: "Sage",
         stats: "+1 MP/s",
         blurb: "+1 mana a second.",
         icon: Some(include_bytes!("../assets/items/sages_mask.svg")),
     },
     ItemFace {
         id: 27,
-        name: "Vitality",
         stats: "+250 HP",
         blurb: "+250 maximum health.",
         icon: Some(include_bytes!("../assets/items/vitality_booster.svg")),
     },
     ItemFace {
         id: 28,
-        name: "Energy",
         stats: "+250 MP",
         blurb: "+250 maximum mana.",
         icon: Some(include_bytes!("../assets/items/energy_booster.svg")),
     },
     ItemFace {
         id: 29,
-        name: "Treads",
         stats: "+45MS+25AS",
         blurb: "+45 movement speed, +25 attack speed, +10 to the attribute it is set to. Using them sets them to the next one.",
         icon: Some(include_bytes!("../assets/items/power_treads.svg")),
     },
     ItemFace {
         id: 30,
-        name: "Phase",
         stats: "+45MS+18DMG",
         blurb: "+45 movement speed, +18 attack damage. Walks 20% faster and through bodies for 3 s. 8 s wait.",
         icon: Some(include_bytes!("../assets/items/phase_boots.svg")),
     },
     ItemFace {
         id: 31,
-        name: "Blink",
         stats: "1200 jump",
         blurb: "Carries you to a point up to 1200 away. 15 s wait, and any hero's blow sets it back 3 s.",
         icon: Some(include_bytes!("../assets/items/blink_dagger.svg")),
     },
     ItemFace {
         id: 32,
-        name: "Bracer",
         stats: "+6STR+3+3",
         blurb: "+6 strength, +3 agility, +3 intelligence.",
         icon: Some(include_bytes!("../assets/items/bracer.svg")),
     },
     ItemFace {
         id: 33,
-        name: "Wraith",
         stats: "+6AGI+3+3",
         blurb: "+6 agility, +3 strength, +3 intelligence.",
         icon: Some(include_bytes!("../assets/items/wraith_band.svg")),
     },
     ItemFace {
         id: 34,
-        name: "Null",
         stats: "+6INT+3+3",
         blurb: "+6 intelligence, +3 strength, +3 agility.",
         icon: Some(include_bytes!("../assets/items/null_talisman.svg")),
     },
     ItemFace {
         id: 35,
-        name: "Stick",
         stats: "10 charges",
         blurb: "Gains a charge from every enemy cast within 1200. Spends them all to restore 15 health and mana each. 13 s wait.",
         icon: Some(include_bytes!("../assets/items/magic_stick.svg")),
     },
     ItemFace {
         id: 36,
-        name: "Wand",
         stats: "+3 all",
         blurb: "+3 to every attribute. Gains a charge from every enemy cast within 1200, up to twenty. 13 s wait.",
         icon: Some(include_bytes!("../assets/items/magic_wand.svg")),
     },
     ItemFace {
         id: 37,
-        name: "Rcp Phase",
         stats: "recipe",
         blurb: "Builds Phase Boots out of Boots and two Blades of Attack.",
         icon: Some(include_bytes!("../assets/items/recipe.svg")),
     },
     ItemFace {
         id: 38,
-        name: "Rcp Bracer",
         stats: "recipe",
         blurb: "Builds a Bracer out of a Circlet and Gauntlets of Strength.",
         icon: Some(include_bytes!("../assets/items/recipe.svg")),
     },
     ItemFace {
         id: 39,
-        name: "Rcp Wraith",
         stats: "recipe",
         blurb: "Builds a Wraith Band out of a Circlet and Slippers of Agility.",
         icon: Some(include_bytes!("../assets/items/recipe.svg")),
     },
     ItemFace {
         id: 40,
-        name: "Rcp Null",
         stats: "recipe",
         blurb: "Builds a Null Talisman out of a Circlet and a Mantle of Intelligence.",
         icon: Some(include_bytes!("../assets/items/recipe.svg")),
     },
     ItemFace {
         id: 41,
-        name: "Rcp Wand",
         stats: "recipe",
         blurb: "Builds a Magic Wand out of a Magic Stick and two Iron Branches.",
         icon: Some(include_bytes!("../assets/items/recipe.svg")),
     },
     ItemFace {
         id: 42,
-        name: "Mango",
         stats: "+0.4 HP/s each",
         blurb: "One charge per purchase, stacks up to three. Each charge adds 0.4 health regeneration per second. Self-use consumes one charge to restore up to 100 mana instantly. Requires missing mana.",
         icon: Some(include_bytes!("../assets/items/mango.svg")),
     },
     ItemFace {
         id: 43,
-        name: "Eaglesong",
         stats: "+25 AGI",
         blurb: "+25 agility.",
         icon: Some(include_bytes!("../assets/items/eaglesong.svg")),
     },
     ItemFace {
         id: 44,
-        name: "Claymore",
         stats: "+20 DMG",
         blurb: "+20 attack damage.",
         icon: Some(include_bytes!("../assets/items/claymore.svg")),
     },
     ItemFace {
         id: 45,
-        name: "Talisman",
         stats: "15% evasion",
         blurb: "15% of attacks at the carrier miss. Of several evasions carried, only the best counts.",
         icon: Some(include_bytes!("../assets/items/talisman_of_evasion.svg")),
     },
     ItemFace {
         id: 46,
-        name: "Butterfly",
         stats: "+30 AGI, 35% eva",
         blurb: "+30 agility, +30 attack damage, +20% base attack speed. 35% of attacks at the carrier miss. Of several evasions carried, only the best counts.",
         icon: Some(include_bytes!("../assets/items/butterfly.svg")),
     },
     ItemFace {
         id: 47,
-        name: "Javelin",
         stats: "25% pierce",
         blurb: "25% of attacks pierce: they cannot miss and deal 60 bonus magical damage. Not against buildings.",
         icon: Some(include_bytes!("../assets/items/javelin.svg")),
     },
     ItemFace {
         id: 48,
-        name: "Demon Edge",
         stats: "+40 DMG",
         blurb: "+40 attack damage.",
         icon: Some(include_bytes!("../assets/items/demon_edge.svg")),
     },
     ItemFace {
         id: 49,
-        name: "Blitz",
         stats: "+35 AS",
         blurb: "+35 attack speed.",
         icon: Some(include_bytes!("../assets/items/blitz_knuckles.svg")),
     },
     ItemFace {
         id: 50,
-        name: "Rcp MKB",
         stats: "recipe",
         blurb: "Builds a Monkey King Bar out of a Demon Edge, Blitz Knuckles and a Javelin.",
         icon: Some(include_bytes!("../assets/items/recipe.svg")),
     },
     ItemFace {
         id: 51,
-        name: "MKB",
         stats: "+50 DMG, 80% pierce",
         blurb: "+50 attack damage, +50 attack speed, +50 attack range in melee hands. 80% of attacks pierce: they cannot miss and deal 70 bonus magical damage. Not against buildings. Of several pierces carried, only the best counts.",
         icon: Some(include_bytes!("../assets/items/monkey_king_bar.svg")),
@@ -715,17 +667,26 @@ pub const HEROES: [HeroFace; 3] = [
     HeroFace {
         id: 0,
         name: "Sylla",
-        icon: None,
+        kind: "Agility, ranged",
+        blurb: "A hooded archer whose bolts bounce from foe to foe.",
+        abilities: &[0, 1, 2, 3],
+        icon: Some(include_bytes!("../assets/heroes/sylla.svg")),
     },
     HeroFace {
         id: 1,
         name: "Pudge",
-        icon: None,
+        kind: "Strength, melee",
+        blurb: "A butcher who hooks a foe in and eats it alive.",
+        abilities: &[4, 5, 6, 7],
+        icon: Some(include_bytes!("../assets/heroes/pudge.svg")),
     },
     HeroFace {
         id: 2,
         name: "Shadow Fiend",
-        icon: None,
+        kind: "Agility, ranged",
+        blurb: "A demon who razes the ground and keeps the souls it takes.",
+        abilities: &[13, 14, 15, 17, 18, 16],
+        icon: Some(include_bytes!("../assets/heroes/shadow_fiend.svg")),
     },
 ];
 
@@ -790,6 +751,13 @@ pub fn ability(id: u16) -> Option<&'static AbilityFace> {
 /// The item of that id, or nothing for one the catalog does not hold.
 pub fn item(id: u16) -> Option<&'static ItemFace> {
     ITEMS.get(usize::from(id))
+}
+
+impl ItemFace {
+    /// Short name for the panel and the shop, the one a command reads too.
+    pub fn name(&self) -> &'static str {
+        bota_proto::item_name(bota_proto::ItemId(self.id)).unwrap_or("?")
+    }
 }
 
 /// The effect of that id, or nothing for one the catalog does not hold.

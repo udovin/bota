@@ -10,6 +10,11 @@
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
+/// Anything that crosses a socket: it encodes into a frame and decodes back.
+pub trait Message: Serialize + DeserializeOwned + Send + 'static {}
+
+impl<T: Serialize + DeserializeOwned + Send + 'static> Message for T {}
+
 /// Largest payload accepted in one frame.
 ///
 /// A frame claiming more than this is treated as a broken or hostile peer rather

@@ -1,8 +1,31 @@
 //! Everything a match is created from.
 
-use bota_proto::{EntityId, EventKind, MapId, MatchInfo, Order, Pick, SlotId, Team, TickMode};
+use bota_proto::{
+    EntityId, EventKind, Lanes, MapId, MatchInfo, Order, Pick, Rules, SlotId, Team, TickMode,
+};
 
-use crate::game::MatchRng;
+use crate::game::{MatchRng, rules};
+
+/// The game as Dota plays it: waves down every lane, won with the Ancient.
+pub const STANDARD_RULES: Rules = Rules {
+    waves: Lanes::ALL,
+    invulnerable_towers: Lanes::NONE,
+    death_limit: 0,
+    tower_ends_it: false,
+    time_limit: 0,
+    cheats: false,
+};
+
+/// One lane of play: waves in mid alone, the side towers out of reach, two
+/// hero deaths or the first tower lose it, and a draw after fifteen minutes.
+pub const MID_RULES: Rules = Rules {
+    waves: Lanes::MID,
+    invulnerable_towers: Lanes::SIDES,
+    death_limit: 2,
+    tower_ends_it: true,
+    time_limit: 15 * 60 * rules::TICKS_PER_SECOND,
+    cheats: false,
+};
 
 /// Full server-side description of one match.
 ///
@@ -25,8 +48,17 @@ pub struct MatchConfig {
     /// In lockstep, how long to wait for an acknowledgement before advancing
     /// with an empty order, in ticks of wall-clock time at `tick_rate`.
     pub ack_timeout_ticks: u32,
-    /// Whether cheat orders are honoured.
-    pub cheats: bool,
+    /// What the match is played to and what runs in it.
+    pub rules: Rules,
+}
+
+/// The key a match's randomness is drawn from, laid out from its seed.
+pub fn key_from_seed(seed: u64) -> [u8; 32] {
+    let mut key = [0u8; 32];
+    for (at, byte) in seed.to_le_bytes().iter().cycle().take(32).enumerate() {
+        key[at] = *byte;
+    }
+    key
 }
 
 impl MatchConfig {
@@ -49,6 +81,7 @@ impl MatchConfig {
             mode: self.mode,
             picks: self.picks.clone(),
             shop: crate::game::shop_entries(),
+            rules: self.rules,
         }
     }
 }

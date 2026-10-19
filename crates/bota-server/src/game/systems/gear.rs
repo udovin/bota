@@ -116,22 +116,13 @@ impl World {
     /// Runs down every cooldown an entity is waiting on.
     pub fn tick_gear(&mut self) {
         // A wait runs whether the body it belongs to is standing or not: what
-        // waits with a seat runs down beside what waits on a body.
+        // waits with a seat runs down beside what waits on a body, and a
+        // fallen hero is still a body that carries its cooldowns.
         for seat in self.seats.iter_mut() {
             for (_, left) in seat.item_clocks.iter_mut() {
                 *left = left.saturating_sub(1);
             }
             seat.item_clocks.retain(|(_, left)| *left > 0);
-            let Some(kept) = seat.kept.as_mut() else {
-                continue;
-            };
-            for slot in kept.book.slots.iter_mut() {
-                slot.cooldown = slot.cooldown.saturating_sub(1);
-            }
-            for stack in kept.bag.slots.iter_mut().flatten() {
-                stack.cooldown = stack.cooldown.saturating_sub(1);
-                stack.mute = stack.mute.saturating_sub(1);
-            }
         }
         let entities = self.take_entity_snapshot();
         for entity in entities.iter().copied() {
@@ -246,12 +237,12 @@ impl World {
     /// Mergeable charges fill a compatible stack before taking an empty slot.
     /// At its own shop it goes to the hero's bag, and
     /// to the stash when that bag is full. Anywhere else it goes to the stash
-    /// and waits there.
+    /// and waits there, and so does whatever a fallen hero buys.
     pub fn buy(&mut self, slot: SlotId, item: ItemId, events: &mut Vec<Event>) -> bool {
         let Some(index) = self.seats.iter().position(|s| s.slot == slot) else {
             return false;
         };
-        let Some(unit) = self.seats[index].unit else {
+        let Some(unit) = self.seats[index].hero_unit() else {
             return false;
         };
         if item_def(item).is_none() {
@@ -304,7 +295,7 @@ impl World {
         let Some(seat) = self.seats.iter().position(|seat| seat.slot == slot) else {
             return false;
         };
-        let Some(unit) = self.seats[seat].unit else {
+        let Some(unit) = self.seats[seat].hero_unit() else {
             return false;
         };
         let Some(def) = item_def(item) else {
@@ -868,8 +859,11 @@ impl World {
         }
         // What waits in the stash waits at the shop, so it sells from
         // anywhere; what a unit carries sells only where that unit stands.
-        // Anywhere else the order is a mark, and marks toggle.
-        if !in_stash(at) && !self.at_shop(unit) {
+        // Anywhere else the order is a mark, and marks toggle. A seat whose
+        // hero lies fallen sells nothing: it only marks, and what is marked
+        // sells once the hero stands again.
+        let hero_fallen = self.seats[seat].fallen.is_some();
+        if hero_fallen || (!in_stash(at) && !self.at_shop(unit)) {
             if let Some(stack) = self.slot_mut(unit, seat, at) {
                 stack.for_sale = !stack.for_sale;
                 return true;
@@ -886,6 +880,13 @@ impl World {
         let back = self.sale_price(&stack);
         self.seats[seat].gold += back;
         true
+    }
+
+    /// Whether the seat at a slot has its hero lying fallen.
+    fn owner_fallen(&self, slot: SlotId) -> bool {
+        self.seats
+            .iter()
+            .any(|seat| seat.slot == slot && seat.fallen.is_some())
     }
 
     /// What selling a stack pays right now.
@@ -913,14 +914,15 @@ impl World {
     /// A marked stack sells wherever it sits — its owner's stash, or any bag
     /// standing within the owner's home shop area — and the gold goes to the
     /// owner. One pass owns every way a stack can arrive: carried there,
-    /// delivered by courier, or put back into the stash.
+    /// delivered by courier, or put back into the stash. Nothing of a seat
+    /// whose hero lies fallen sells until it stands again.
     pub fn settle_sales(&mut self) {
         for seat in 0..self.seats.len() {
             for at in 0..self.seats[seat].stash.slots.len() {
                 let Some(stack) = self.seats[seat].stash.slots[at] else {
                     continue;
                 };
-                if !stack.for_sale {
+                if !stack.for_sale || self.owner_fallen(stack.owner) {
                     continue;
                 }
                 let back = self.sale_price(&stack);
@@ -948,6 +950,9 @@ impl World {
                 let Some(owner) = self.seats.iter().position(|s| s.slot == stack.owner) else {
                     continue;
                 };
+                if self.seats[owner].fallen.is_some() {
+                    continue;
+                }
                 let shop = crate::game::fountain_pos(self.map, self.seats[owner].team);
                 if !at_pos.within(shop, rules::units(rules::SHOP_RANGE)) {
                     continue;

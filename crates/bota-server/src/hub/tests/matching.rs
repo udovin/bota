@@ -2,8 +2,8 @@ use std::thread;
 use std::time::Duration;
 
 use bota_proto::{
-    Auth, ClientMsg, FrameReader, HallReason, Order, RejectReason, ReplayRecord, Role, ServerMsg,
-    SlotId, Stage, Target, Team, Vec2,
+    Auth, FrameReader, FromGame, FromHub, HallReason, HeroId, Order, PickReason, RejectReason,
+    ReplayRecord, Role, SlotId, Stage, Target, Team, ToGame, ToHub, Vec2,
 };
 
 use super::fixtures::*;
@@ -17,33 +17,29 @@ fn a_realtime_match_reaches_two_clients_and_is_archived_once_abandoned() {
     assert_eq!(first.viewer, Some(Team::Radiant));
     assert_eq!(first.players.len(), 2);
     assert!(first.units.iter().any(|u| u.team == Team::Radiant));
-    let first_events = c1.recv_until(|msg| match msg {
-        ServerMsg::Events { tick, events } if tick == first.tick => Some(events),
+    let first_events = c1.game_recv_until(|msg| match msg {
+        FromGame::Events { tick, events } if tick == first.tick => Some(events),
         _ => None,
     });
     assert!(first_events.is_empty());
 
     // A legal order passes silently; an impossible one is named and refused.
-    c1.send(&ClientMsg::Order {
-        seq: 1,
-        unit: None,
-        order: Order::Move {
-            target: Target::Pos(Vec2::from_ints(1000, 1000)),
-        },
-    });
-    c1.send(&ClientMsg::Order {
-        seq: 2,
-        unit: None,
-        order: Order::Buy {
-            item: bota_proto::ItemId(999),
-        },
-    });
-    let (seq, reason) = c1.recv_until(|msg| match msg {
-        ServerMsg::OrderRejected { seq, reason } => Some((seq, reason)),
-        _ => None,
-    });
-    assert_eq!(seq, 2);
-    assert_eq!(reason, RejectReason::UnknownItem);
+    let hero = hero_of(&first, SlotId(0));
+    let given = c1.order(&[
+        (
+            hero,
+            Order::Move {
+                target: Target::Pos(Vec2::from_ints(1000, 1000)),
+            },
+        ),
+        (
+            hero,
+            Order::Buy {
+                item: bota_proto::ItemId(999),
+            },
+        ),
+    ]);
+    assert_eq!(c1.order_refused(), (given[1], RejectReason::UnknownItem));
     let later = c2.snapshot();
     assert_eq!(later.viewer, Some(Team::Dire));
 
@@ -59,16 +55,16 @@ fn a_realtime_match_reaches_two_clients_and_is_archived_once_abandoned() {
         if !bytes.is_empty() {
             let mut reader = FrameReader::new();
             reader.push(&bytes);
-            if let Ok(Some(ReplayRecord::Msg(ServerMsg::MatchStart { .. }))) =
+            if let Ok(Some(ReplayRecord::Msg(FromGame::MatchStart { .. }))) =
                 reader.next_message::<ReplayRecord>()
             {
-                eye.send(&ClientMsg::ListMatches {
+                eye.send(&ToHub::ListMatches {
                     filter: bota_proto::MatchFilter::default(),
                     before: None,
                     limit: 10,
                 });
                 let page = eye.recv_until(|msg| match msg {
-                    ServerMsg::Matches { page, .. } => Some(page),
+                    FromHub::Matches { page, .. } => Some(page),
                     _ => None,
                 });
                 let ours = page.iter().find(|s| s.id == id).expect("listed");
@@ -89,56 +85,95 @@ fn a_seat_holder_who_drops_comes_back_to_the_same_seat() {
     alpha.snapshot();
     let (_, beta_token) = {
         let mut probe = TestClient::connect(addr);
-        probe.send(&ClientMsg::Hello {
+        probe.send(&ToHub::Hello {
             auth: Auth::Login {
                 login: "beta".to_string(),
                 password: "beta-pw".to_string(),
             },
         });
         probe.recv_until(|msg| match msg {
-            ServerMsg::Welcome { account, token, .. } => Some((account, token)),
+            FromHub::Welcome { account, token, .. } => Some((account, token)),
             _ => None,
         })
     };
-    // Signing in elsewhere threw beta's first connection out of the match.
+    // Signing in elsewhere threw beta's first connection out of the hub.
     assert!(beta.hung_up());
-    let left = alpha.recv_until(|msg| match msg {
-        ServerMsg::ParticipantLeft { slot, .. } => Some(slot),
-        ServerMsg::MatchState { state } if !state.slots[1].connected => Some(Some(SlotId(1))),
+    let away = alpha.recv_until(|msg| match msg {
+        FromHub::MatchState { state } if !state.slots[1].connected => Some(state),
         _ => None,
     });
-    assert_eq!(left, Some(SlotId(1)));
-    // The probe was put straight back on beta's seat.
+    assert_eq!(away.slots[1].login, "beta", "the seat stays beta's");
+    // Signing in again leaves beta in the hall, which lists the match with
+    // beta's seat in it.
     let mut back = TestClient::connect(addr);
-    back.send(&ClientMsg::Hello {
+    back.send(&ToHub::Hello {
         auth: Auth::Resume {
             token: beta_token.expect("a token"),
         },
     });
+    let listed = back.hall();
+    let held = listed
+        .iter()
+        .find(|m| m.id == id)
+        .expect("the match is listed");
+    assert_eq!(held.stage, Stage::Playing);
+    assert!(
+        held.seats
+            .iter()
+            .any(|seat| seat.login == "beta" && !seat.abandoned),
+        "with beta's seat in it"
+    );
+    // Asking for it puts beta back on its seat and sends it to the same game
+    // server with the same ticket, which lets its old connection go.
+    back.send(&ToHub::JoinMatch {
+        id,
+        role: Role::Player { seats: 1 },
+    });
     let state = back.match_state();
     assert_eq!(state.id, id);
-    assert_eq!(state.you, Some(SlotId(1)));
+    assert_eq!(state.yours.first().copied(), Some(SlotId(1)));
     assert_eq!(state.stage, Stage::Playing);
+    let ticket = back.recv_until(|msg| match msg {
+        FromHub::Play { ticket, .. } => Some(ticket),
+        _ => None,
+    });
+    assert_eq!(
+        Some(ticket),
+        beta.play.as_ref().map(|(_, _, ticket)| *ticket),
+        "the same pass"
+    );
     back.match_start();
     assert_eq!(back.snapshot().viewer, Some(Team::Dire));
+    assert!(beta.game_hung_up(), "one connection a ticket");
+    let left = alpha.game_recv_until(|msg| match msg {
+        FromGame::ParticipantLeft { slots } => Some(slots),
+        _ => None,
+    });
+    assert_eq!(left, vec![SlotId(1)]);
 }
 
 #[test]
 fn a_gathering_match_passes_its_host_on_and_closes_when_empty() {
     let (addr, _dir) = hub("host");
     let (mut alpha, mut beta, id) = gathered(addr, REALTIME);
-    alpha.send(&ClientMsg::LeaveMatch);
+    alpha.send(&ToHub::LeaveMatch);
     let state = beta.match_state();
     assert_eq!(state.slots[0].login, "", "the seat was given up");
     assert_ne!(state.host, None);
     let hall = alpha.hall();
     assert!(hall.iter().any(|m| m.id == id), "still gathering");
-    beta.send(&ClientMsg::TakeSeat {
-        slot: Some(SlotId(0)),
+    // Seats are added, not swapped: changing sides is giving one up and
+    // taking the other.
+    beta.send(&ToHub::TakeSeat { slot: SlotId(0) });
+    assert_eq!(beta.refusal(), HallReason::SeatsAcrossTeams);
+    beta.send(&ToHub::DropSeat { slot: None });
+    beta.send(&ToHub::TakeSeat { slot: SlotId(0) });
+    let moved = beta.recv_until(|msg| match msg {
+        FromHub::MatchState { state } if !state.yours.is_empty() => Some(state),
+        _ => None,
     });
-    let moved = beta.match_state();
-    assert_eq!(moved.you, Some(SlotId(0)));
-    beta.send(&ClientMsg::LeaveMatch);
+    assert_eq!(moved.yours, vec![SlotId(0)]);
+    beta.send(&ToHub::LeaveMatch);
     let hall = beta.hall();
     assert!(
         hall.iter().all(|m| m.id != id),
@@ -147,43 +182,25 @@ fn a_gathering_match_passes_its_host_on_and_closes_when_empty() {
 }
 
 #[test]
-fn quick_play_fills_an_open_seat_before_opening_another_match() {
-    let (addr, _dir) = hub("quick");
-    let (mut alpha, _, _) = sign_up(addr, "alpha");
-    let (mut beta, _, _) = sign_up(addr, "beta");
-    let (mut gamma, _, _) = sign_up(addr, "gamma");
-    alpha.send(&ClientMsg::QuickPlay { mode: REALTIME });
-    let first = alpha.match_state();
-    beta.send(&ClientMsg::QuickPlay { mode: REALTIME });
-    let joined = beta.match_state();
-    assert_eq!(joined.id, first.id);
-    assert_eq!(joined.you, Some(SlotId(1)));
-    gamma.send(&ClientMsg::QuickPlay { mode: REALTIME });
-    let another = gamma.match_state();
-    assert_ne!(another.id, first.id, "a full match is not joined");
-    assert_eq!(another.you, Some(SlotId(0)));
-    gamma.send(&ClientMsg::QuickPlay {
-        mode: bota_proto::ModeId(99),
-    });
-    assert_eq!(gamma.refusal(), HallReason::NoSuchMode);
-}
-
-#[test]
 fn a_spectator_borrows_eyes_and_is_told_the_orders_they_see() {
     let (addr, _dir) = hub("eyes");
     let (mut c1, mut c2, id) = started(addr, REALTIME);
     let mut watcher = TestClient::connect(addr);
-    watcher.send(&ClientMsg::Hello {
+    watcher.send(&ToHub::Hello {
         auth: Auth::Guest {
             name: "eye".to_string(),
         },
     });
-    watcher.send(&ClientMsg::JoinMatch {
+    watcher.send(&ToHub::JoinMatch {
         id,
         role: Role::Spectator,
     });
     let state = watcher.match_state();
-    assert_eq!(state.you, None, "a spectator takes no seat");
+    assert_eq!(
+        state.yours.first().copied(),
+        None,
+        "a spectator takes no seat"
+    );
     assert_eq!(state.watchers, vec!["eye".to_string()]);
     watcher.match_start();
     let first = watcher.snapshot();
@@ -192,51 +209,53 @@ fn a_spectator_borrows_eyes_and_is_told_the_orders_they_see() {
         "everything, before any eyes are asked for"
     );
 
-    c1.send(&ClientMsg::Order {
-        seq: 1,
-        unit: None,
-        order: Order::Move {
+    c1.order(&[(
+        hero_of(&first, SlotId(0)),
+        Order::Move {
             target: Target::Pos(Vec2::from_ints(1000, 1000)),
         },
-    });
+    )]);
     let mut told_freely = 0u32;
     for _ in 0..3 {
-        watcher.recv_until(|msg| match msg {
-            ServerMsg::Orders { .. } => {
+        watcher.game_recv_until(|msg| match msg {
+            FromGame::Orders { .. } => {
                 told_freely += 1;
                 None
             }
-            ServerMsg::Snapshot { .. } => Some(()),
+            FromGame::Snapshot { .. } => Some(()),
             _ => None,
         });
     }
     assert_eq!(told_freely, 0, "watching everything is told no orders");
 
-    watcher.send(&ClientMsg::ViewAs {
+    watcher.send_game(&ToGame::ViewAs {
         seat: Some(SlotId(1)),
     });
-    let fogged = watcher.recv_until(|msg| match msg {
-        ServerMsg::Snapshot { view } if view.viewer.is_some() => Some(view),
+    let fogged = watcher.game_recv_until(|msg| match msg {
+        FromGame::Snapshot { view } if view.viewer.is_some() => Some(view),
         _ => None,
     });
     assert_eq!(fogged.viewer, Some(Team::Dire));
 
-    c2.send(&ClientMsg::Order {
-        seq: 1,
-        unit: None,
-        order: Order::Move {
+    let dire_hero = hero_of(&fogged, SlotId(1));
+    c2.order(&[(
+        dire_hero,
+        Order::Move {
             target: Target::Pos(Vec2::from_ints(15000, 15000)),
         },
-    });
-    let told = watcher.recv_until(|msg| match msg {
-        ServerMsg::Orders { orders, .. } => Some(orders),
+    )]);
+    let told = watcher.game_recv_until(|msg| match msg {
+        FromGame::Orders { orders, .. } => Some(orders),
         _ => None,
     });
-    assert!(told.iter().all(|given| given.slot == SlotId(1)));
+    assert!(
+        told.iter().all(|given| given.unit == dire_hero),
+        "only the orders of the seat watched through: {told:?}"
+    );
     // A guest may watch but never sit.
-    watcher.send(&ClientMsg::JoinMatch {
+    watcher.send(&ToHub::JoinMatch {
         id,
-        role: Role::Player,
+        role: Role::Player { seats: 1 },
     });
     assert_eq!(watcher.refusal(), HallReason::GuestsCannotPlay);
 }
@@ -249,7 +268,7 @@ fn lockstep_advances_as_fast_as_the_acks_come() {
     for _ in 0..5 {
         for client in [&mut c1, &mut c2] {
             let tick = client.snapshot().tick;
-            client.send(&ClientMsg::Ack { tick });
+            client.send_game(&ToGame::Ack { tick });
             last_tick = last_tick.max(tick);
         }
     }
@@ -262,7 +281,7 @@ fn a_lockstep_match_everybody_left_stops_advancing_instead_of_racing_ahead() {
     let (mut c1, mut c2, id) = started(addr, LOCKSTEP);
     for client in [&mut c1, &mut c2] {
         let tick = client.snapshot().tick;
-        client.send(&ClientMsg::Ack { tick });
+        client.send_game(&ToGame::Ack { tick });
     }
     // Nobody is left to acknowledge anything, so nothing may be taken for
     // an acknowledgement. The match waits out its abandon time instead of
@@ -271,13 +290,13 @@ fn a_lockstep_match_everybody_left_stops_advancing_instead_of_racing_ahead() {
     drop(c2);
     let mut eye = sign_up(addr, "eye").0;
     for _ in 0..200 {
-        eye.send(&ClientMsg::ListMatches {
+        eye.send(&ToHub::ListMatches {
             filter: bota_proto::MatchFilter::default(),
             before: None,
             limit: 10,
         });
         let page = eye.recv_until(|msg| match msg {
-            ServerMsg::Matches { page, .. } => Some(page),
+            FromHub::Matches { page, .. } => Some(page),
             _ => None,
         });
         let Some(ours) = page.iter().find(|s| s.id == id) else {
@@ -297,23 +316,70 @@ fn a_lockstep_match_everybody_left_stops_advancing_instead_of_racing_ahead() {
 }
 
 #[test]
+fn only_the_host_starts_a_match_and_only_with_every_seat_held_by_somebody_in_it() {
+    let (addr, _dir) = hub("start");
+    let (mut alpha, _, _) = sign_up(addr, "alpha");
+    alpha.send(&ToHub::CreateMatch {
+        mode: REALTIME,
+        name: "test".to_string(),
+        seed: None,
+        seats: 1,
+    });
+    let id = alpha.match_state().id;
+    alpha.send(&ToHub::StartMatch);
+    assert_eq!(alpha.refusal(), HallReason::NotAllHere, "a seat is open");
+    let (mut beta, _, _) = sign_up(addr, "beta");
+    beta.send(&ToHub::JoinMatch {
+        id,
+        role: Role::Player { seats: 1 },
+    });
+    beta.match_state();
+    beta.send(&ToHub::StartMatch);
+    assert_eq!(beta.refusal(), HallReason::NotHost);
+    alpha.send(&ToHub::StartMatch);
+    let stage = alpha.recv_until(|msg| match msg {
+        FromHub::MatchState { state } if state.stage != Stage::Gathering => Some(state.stage),
+        _ => None,
+    });
+    assert_eq!(
+        stage,
+        Stage::Picking,
+        "heroes are picked on the game server"
+    );
+    alpha.send(&ToHub::StartMatch);
+    assert_eq!(alpha.refusal(), HallReason::NotGathering);
+
+    // A hero nobody has is no pick. The time runs out, and the match begins
+    // with a hero for every seat all the same.
+    alpha.picking();
+    alpha.send_game(&ToGame::Pick {
+        seat: SlotId(0),
+        hero: HeroId(99),
+    });
+    assert_eq!(alpha.pick_refused().2, PickReason::NoSuchHero);
+    let info = alpha.match_start();
+    assert_eq!(info.picks.len(), 2);
+}
+
+#[test]
 fn the_host_may_kick_and_nobody_else_may() {
     let (addr, _dir) = hub("kick");
     let (mut alpha, alpha_account, _) = sign_up(addr, "alpha");
     let (mut beta, beta_account, _) = sign_up(addr, "beta");
-    alpha.send(&ClientMsg::CreateMatch {
+    alpha.send(&ToHub::CreateMatch {
         mode: REALTIME,
         name: "test".to_string(),
         seed: None,
+        seats: 1,
     });
     let opened = alpha.match_state();
-    beta.send(&ClientMsg::JoinMatch {
+    beta.send(&ToHub::JoinMatch {
         id: opened.id,
-        role: Role::Player,
+        role: Role::Player { seats: 1 },
     });
-    assert_eq!(beta.match_state().you, Some(SlotId(1)));
+    assert_eq!(beta.match_state().yours.first().copied(), Some(SlotId(1)));
 
-    beta.send(&ClientMsg::Kick {
+    beta.send(&ToHub::Kick {
         account: alpha_account.id,
     });
     assert_eq!(
@@ -321,13 +387,17 @@ fn the_host_may_kick_and_nobody_else_may() {
         HallReason::NotHost,
         "only the host throws anybody out"
     );
-    alpha.send(&ClientMsg::Kick {
+    alpha.send(&ToHub::Kick {
         account: beta_account.id,
     });
     beta.hall();
     let state = alpha.recv_until(|msg| match msg {
-        ServerMsg::MatchState { state } if state.slots[1].login.is_empty() => Some(state),
+        FromHub::MatchState { state } if state.slots[1].login.is_empty() => Some(state),
         _ => None,
     });
-    assert_eq!(state.you, Some(SlotId(0)), "the host keeps its own seat");
+    assert_eq!(
+        state.yours.first().copied(),
+        Some(SlotId(0)),
+        "the host keeps its own seat"
+    );
 }

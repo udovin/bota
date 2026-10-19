@@ -225,11 +225,11 @@ pub struct ProjectileView {
     pub ability: Option<AbilityId>,
 }
 
-/// What a hero's body left behind while it is gone.
+/// What a fallen hero has learned and carries.
 ///
-/// Abilities and items outlive the body they were carried on, so a seat with
-/// no hero standing still has both. While one stands they ride in its
-/// [`UnitView`] instead, and this is absent.
+/// A fallen hero is off the field and has no [`UnitView`], so its abilities
+/// and items are told here. While it stands they ride in its [`UnitView`]
+/// instead, and this is absent.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Kit {
     /// The ability slots, in the order they are shown.
@@ -250,7 +250,8 @@ pub struct PlayerView {
     pub team: Team,
     /// Which hero was picked. Set even while the hero is dead.
     pub hero: HeroId,
-    /// The hero's unit. Absent while dead.
+    /// The hero's unit, the same one standing and fallen. Absent for a seat
+    /// that has never had a hero.
     pub unit: Option<EntityId>,
     /// Hero level.
     pub level: u8,
@@ -261,9 +262,9 @@ pub struct PlayerView {
     /// The six stash slots at the home shop, in slot order. Absent for the
     /// opposing team.
     pub stash: Option<Vec<Option<ItemView>>>,
-    /// What the body left behind while it is gone. Absent while a hero
-    /// stands, and absent for the opposing team, which is left with whatever
-    /// it saw last.
+    /// What the hero has learned and carries while it lies fallen. Absent
+    /// while it stands, and absent for the opposing team, which is left with
+    /// whatever it saw last.
     pub kit: Option<Kit>,
     /// Kills scored.
     pub kills: u16,

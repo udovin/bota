@@ -1,8 +1,6 @@
 use std::io::Cursor;
 
-use bota_proto::{
-    EventKind, MatchStats, Order, ReplayRecord, ServerMsg, SlotId, SlotOrder, Target, Team,
-};
+use bota_proto::{EventKind, FromGame, MatchStats, Order, ReplayRecord, Target, Team, UnitOrder};
 
 use super::fixtures::{counted, match_start, message, snapshot, wire};
 use crate::replay_play::{MAX_RECORDS_PER_POLL, ReplayPlayer};
@@ -102,7 +100,7 @@ fn first_snapshot_anchors_a_nonzero_recording_start() {
 fn tick_records(tick: u32) -> Vec<ReplayRecord> {
     vec![
         snapshot(tick),
-        ReplayRecord::Msg(ServerMsg::Events {
+        ReplayRecord::Msg(FromGame::Events {
             tick,
             events: vec![EventKind::StructureDestroyed {
                 unit: bota_proto::EntityId {
@@ -114,9 +112,11 @@ fn tick_records(tick: u32) -> Vec<ReplayRecord> {
         }),
         ReplayRecord::Orders {
             tick,
-            orders: vec![SlotOrder {
-                slot: SlotId(0),
-                unit: None,
+            orders: vec![UnitOrder {
+                unit: bota_proto::EntityId {
+                    idx: 7,
+                    generation: 1,
+                },
                 order: Order::Move {
                     target: Target::None,
                 },
@@ -131,7 +131,7 @@ fn snapshots_events_orders_and_match_end_remain_in_file_order_across_batches() {
     for tick in 0..100 {
         records.extend(tick_records(tick));
     }
-    records.push(ReplayRecord::Msg(ServerMsg::MatchOver {
+    records.push(ReplayRecord::Msg(FromGame::MatchOver {
         winner: Team::Radiant,
         stats: MatchStats {
             duration: 99,
@@ -203,4 +203,17 @@ fn stepping_delivers_orders_to_the_app_in_the_same_batch_as_their_events() {
     assert_eq!(app.shown_orders.len(), 1);
     assert_eq!(app.shown_orders[0].tick, 1);
     assert_eq!(app.feed.len(), 2);
+}
+
+#[test]
+fn the_start_of_a_match_tells_the_client_how_its_ticks_advance() {
+    let player = ReplayPlayer::from_reader(Cursor::new(Vec::new()));
+    let mut app = App::new(Source::Replay(Box::new(player)));
+    assert_eq!(app.mode, None);
+    app.handle(crate::state::Heard::Game(message(match_start(30))));
+    assert_eq!(
+        app.mode,
+        Some(bota_proto::TickMode::Lockstep),
+        "a seat in a lockstep match acknowledges every tick it is shown"
+    );
 }

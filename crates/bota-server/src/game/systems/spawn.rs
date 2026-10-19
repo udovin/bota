@@ -4,8 +4,8 @@ use bota_proto::{AbilityId, Angle, Fixed, HeroId, SlotId, Team, Vec2};
 
 use crate::game::{
     Action, ActionState, Auras, Bounty, CampHome, Def, Entity, Errand, Expiry, Health, Hull,
-    Inventory, Lane, LaneAi, Level, Mana, March, Mark, Modifiers, Motion, NeutralAi, Orders, Plan,
-    Rax, Route, Tier, Transform, UnitDef, UnitOrder, Upgrades, World, rules,
+    Inventory, Lane, LaneAi, Level, Mana, March, Mark, ModifierKind, Modifiers, Motion, NeutralAi,
+    Orders, Plan, Rax, Route, Tier, Transform, UnitDef, UnitOrder, Upgrades, World, rules,
 };
 
 /// Which building of a side one is.
@@ -109,6 +109,62 @@ impl World {
             Inventory::empty(rules::INVENTORY_SLOTS + rules::BACKPACK_SLOTS),
         );
         entity
+    }
+
+    /// Lays a fallen hero down: it keeps its handle, its seat, what it
+    /// learned, what it carries and what it gathered, and gives up
+    /// everything that makes a body take part in the world.
+    ///
+    /// Without a place it blocks nobody, lights no fog and is in no view;
+    /// without a sight row nobody sees it; without an action, orders or a
+    /// walk it does nothing. Whatever was on it wears off.
+    pub fn lay_down_hero(&mut self, entity: Entity) {
+        self.transform.remove(entity);
+        self.visibility.remove(entity);
+        self.hull.remove(entity);
+        self.action.remove(entity);
+        self.orders.remove(entity);
+        self.route.remove(entity);
+        self.plan.remove(entity);
+        self.motion.remove(entity);
+        self.target.remove(entity);
+        self.handling.remove(entity);
+        if let Some(on_it) = self.modifiers.get_mut(entity) {
+            on_it.0.clear();
+        }
+        if let Some(health) = self.health.get_mut(entity) {
+            health.hp = Fixed::ZERO;
+        }
+    }
+
+    /// Stands a fallen hero up again at a spot, as the body it was, at the
+    /// seat's level, with its pools full.
+    ///
+    /// The Shadowraze records its last life left on others end here: they
+    /// belonged to that life, and the one standing up starts its own.
+    pub fn stand_up_hero(&mut self, entity: Entity, team: Team, pos: Vec2, level: u8) {
+        let entities = self.take_entity_snapshot();
+        for other in entities.iter().copied() {
+            if let Some(on_it) = self.modifiers.get_mut(other) {
+                on_it.take(ModifierKind::Shadowraze { stacks: 1 }, Some(entity));
+            }
+        }
+        self.recycle_entity_snapshot(entities);
+        let body = self.def.get(entity).map_or(&crate::game::HERO, |def| def.0);
+        self.transform.insert(
+            entity,
+            Transform {
+                pos,
+                facing: Angle::default(),
+            },
+        );
+        self.set_team(entity, team);
+        self.give_hull(entity, body);
+        self.give_action(entity);
+        self.give_orders(entity);
+        self.level.insert(entity, Level(level));
+        self.settle();
+        self.fill_pools(entity);
     }
 
     /// Puts a lane creep on the map, to march its lane from where it stands.

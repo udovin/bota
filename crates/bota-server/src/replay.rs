@@ -1,49 +1,59 @@
-//! Writing the replay file.
-
-use std::fs::File;
-use std::io::{BufWriter, Write};
-use std::path::Path;
+//! Writing a replay: the frames of a match, handed on in pieces.
 
 use bota_proto::{ReplayRecord, encode_frame_to_vec};
 
-/// Appends [`ReplayRecord`] frames to a `.brp` file.
-///
-/// A write error poisons the writer: recording stops, the match does not.
+/// Bytes gathered before a piece is handed on.
+pub const REPLAY_PIECE: usize = 64 * 1024;
+
+/// Gathers [`ReplayRecord`] frames and hands them on in pieces of about
+/// [`REPLAY_PIECE`] bytes, in file order.
 pub struct ReplayWriter {
-    out: Option<BufWriter<File>>,
+    out: Option<Box<dyn FnMut(Vec<u8>) + Send>>,
+    gathered: Vec<u8>,
 }
 
 impl ReplayWriter {
-    /// Creates or truncates the file.
-    pub fn create(path: &Path) -> std::io::Result<ReplayWriter> {
-        Ok(ReplayWriter {
-            out: Some(BufWriter::new(File::create(path)?)),
-        })
+    /// A writer that hands every piece to `out`.
+    pub fn to(out: Box<dyn FnMut(Vec<u8>) + Send>) -> ReplayWriter {
+        ReplayWriter {
+            out: Some(out),
+            gathered: Vec::new(),
+        }
     }
 
     /// A writer that records nothing.
     pub fn disabled() -> ReplayWriter {
-        ReplayWriter { out: None }
-    }
-
-    /// Appends one record.
-    pub fn record(&mut self, record: &ReplayRecord) {
-        let Some(out) = self.out.as_mut() else {
-            return;
-        };
-        let ok = encode_frame_to_vec(record)
-            .ok()
-            .and_then(|frame| out.write_all(&frame).ok())
-            .is_some();
-        if !ok {
-            self.out = None;
+        ReplayWriter {
+            out: None,
+            gathered: Vec::new(),
         }
     }
 
-    /// Flushes everything to disk.
+    /// Appends one record, handing a piece on once enough has gathered.
+    pub fn record(&mut self, record: &ReplayRecord) {
+        if self.out.is_none() {
+            return;
+        }
+        if let Ok(frame) = encode_frame_to_vec(record) {
+            self.gathered.extend_from_slice(&frame);
+        }
+        if self.gathered.len() >= REPLAY_PIECE {
+            self.hand_on();
+        }
+    }
+
+    /// Hands on whatever has gathered.
     pub fn finish(mut self) {
+        self.hand_on();
+    }
+
+    fn hand_on(&mut self) {
+        if self.gathered.is_empty() {
+            return;
+        }
+        let piece = std::mem::take(&mut self.gathered);
         if let Some(out) = self.out.as_mut() {
-            let _ = out.flush();
+            out(piece);
         }
     }
 }
